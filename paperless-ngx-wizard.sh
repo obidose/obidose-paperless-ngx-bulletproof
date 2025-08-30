@@ -584,5 +584,6 @@ else
 fi
 BASH
 
+dos2unix setup.sh >/dev/null 2>&1 || true
 chmod +x setup.sh
-bash ./setup.sh
+bash -x ./setup.sh
