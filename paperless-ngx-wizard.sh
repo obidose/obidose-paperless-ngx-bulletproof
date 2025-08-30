@@ -1,3 +1,4 @@
+cat > setup.sh <<'BASH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -10,7 +11,7 @@ set -Eeuo pipefail
 # - NO secrets in repo; wizard asks interactively and stores safely
 #
 # Tested on: Ubuntu 22.04 / 24.04 minimal VPS
-# Author: you (obidose) — public repo safe
+# Author: obidose
 # ======================================================================
 
 # --------------------------- helpers ----------------------------------
@@ -42,23 +43,19 @@ prompt_secret(){
 
 confirm(){
   local msg="$1"; local def="${2:-Y}"; local ans
-  case "$def" in Y|y) read -r -p "$msg [Y/n]: " ans || true; ans=${ans:-Y} ;;
-                     N|n) read -r -p "$msg [y/N]: " ans || true; ans=${ans:-N} ;;
-                     *) read -r -p "$msg [y/n]: " ans || true ;;
+  case "$def" in
+    Y|y) read -r -p "$msg [Y/n]: " ans || true; ans=${ans:-Y} ;;
+    N|n) read -r -p "$msg [y/N]: " ans || true; ans=${ans:-N} ;;
+    *)   read -r -p "$msg [y/n]: " ans || true ;;
   esac
   [[ "$ans" =~ ^[Yy]$ ]]
 }
 
-randpass(){ # length 22 safe chars
-  tr -dc 'A-Za-z0-9!@#%+=?' < /dev/urandom | head -c 22
-}
+randpass(){ tr -dc 'A-Za-z0-9!@#%+=?' < /dev/urandom | head -c 22; }
 
 ubuntu_version_ok(){
   . /etc/os-release
-  case "$VERSION_ID" in
-    22.04|24.04) return 0;;
-    *) return 1;;
-  esac
+  case "$VERSION_ID" in 22.04|24.04) return 0;; *) return 1;; esac
 }
 
 # --------------------------- defaults ---------------------------------
@@ -86,7 +83,7 @@ PAPERLESS_ADMIN_PASSWORD="$(randpass)"
 RCLONE_REMOTE_NAME="pcloud"
 RCLONE_REMOTE_PATH_TEMPLATE="backups/paperless/${INSTANCE_NAME}"
 RETENTION_DAYS=30
-CRON_TIME="30 3 * * *" # 03:30 daily
+CRON_TIME="30 3 * * *" # daily
 
 IMG_PAPERLESS="ghcr.io/paperless-ngx/paperless-ngx:latest"
 IMG_REDIS="redis:7-alpine"
@@ -110,7 +107,7 @@ install_prereqs(){
   log "Installing prerequisites..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y ca-certificates curl gnupg lsb-release unzip tar cron \ 
+  apt-get install -y ca-certificates curl gnupg lsb-release unzip tar cron \
                      software-properties-common
   if grep -q "^#\?user_allow_other" /etc/fuse.conf 2>/dev/null; then
     sed -i 's/^#\?user_allow_other/user_allow_other/' /etc/fuse.conf || true
@@ -131,9 +128,9 @@ install_docker(){
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
-    echo \ 
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \ 
-      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \ 
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
       > /etc/apt/sources.list.d/docker.list
     apt-get update -y
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -158,22 +155,21 @@ create_pcloud_remote(){
   local user="$1"; local pass_plain="$2"; local remote_name="$3"; local host="$4"
   local obscured
   obscured=$(rclone obscure "$pass_plain")
-  # delete if exists first
   rclone config delete "$remote_name" >/dev/null 2>&1 || true
   rclone config create "$remote_name" webdav vendor pcloud \
     url "$host" user "$user" pass "$obscured" >/dev/null
 }
 
-test_pcloud_remote(){
-  local remote_name="$1"
-  rclone lsd "$remote_name:" >/dev/null 2>&1
-}
+test_pcloud_remote(){ local rn="$1"; rclone lsd "$rn:" >/dev/null 2>&1; }
 
 setup_pcloud(){
-  log "Let's connect to your pCloud via WebDAV (2FA must be OFF)."
+  log "Connect to pCloud via WebDAV (2FA must be OFF)."
   local pc_user pc_pass host_global host_eu
-  pc_user=$(prompt "pCloud login email")
-  while [ -z "$pc_user" ]; do pc_user=$(prompt "pCloud login email (required)"); done
+  while true; do
+    pc_user=$(prompt "pCloud login email")
+    [ -n "$pc_user" ] && break
+    warn "Email is required."
+  done
   pc_pass=$(prompt_secret "pCloud password")
 
   host_global="https://webdav.pcloud.com"
@@ -194,15 +190,8 @@ setup_pcloud(){
   err "Could not authenticate to pCloud via WebDAV. Ensure 2FA is OFF and credentials are correct."
 }
 
-find_latest_snapshot(){
-  local base_path="$1"
-  rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true
-}
-
-list_snapshots(){
-  local base_path="$1"
-  rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort || true
-}
+find_latest_snapshot(){ local base_path="$1"; rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true; }
+list_snapshots(){ local base_path="$1"; rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort || true; }
 
 # --------------------------- compose/env -------------------------------
 prepare_dirs(){
@@ -477,9 +466,7 @@ bring_up(){
   (cd "$STACK_DIR" && docker compose --env-file "$ENV_FILE" up -d)
 }
 
-latest_backup(){
-  rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1
-}
+latest_backup(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1; }
 
 restore_from_remote(){
   local SNAP="$1"
@@ -507,7 +494,7 @@ restore_from_remote(){
     docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db \
       psql -U "$POSTGRES_USER" -c "DROP DATABASE IF EXISTS \"${POSTGRES_DB}\"; CREATE DATABASE \"${POSTGRES_DB}\";"
     log "Importing SQL dump"
-    cat "$tmpdir/postgres.sql" | docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
+    cat "$tmpdir/postgres.sql" | docker compose -f "$STACK_DIR"/docker-compose.yml exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
   else
     warn "No postgres.sql found in snapshot"
   fi
@@ -529,16 +516,16 @@ wizard(){
 
   TIMEZONE=$(prompt "Timezone" "$TIMEZONE_DEFAULT")
   INSTANCE_NAME=$(prompt "Instance name" "$INSTANCE_NAME")
+  RCLONE_REMOTE_PATH_TEMPLATE="backups/paperless/${INSTANCE_NAME}"
+
   DATA_ROOT=$(prompt "Data root" "$DATA_ROOT")
   STACK_DIR=$(prompt "Stack dir" "$STACK_DIR")
 
-  # passwords (offer generated defaults)
   PAPERLESS_ADMIN_USER=$(prompt "Paperless admin username" "$PAPERLESS_ADMIN_USER")
   local gen1="$PAPERLESS_ADMIN_PASSWORD"; local gen2="$POSTGRES_PASSWORD"
   PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password" "$gen1")
   POSTGRES_PASSWORD=$(prompt "Postgres password" "$gen2")
 
-  # Traefik or port expose
   ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no)" "$ENABLE_TRAEFIK")
   if [ "$ENABLE_TRAEFIK" = "yes" ]; then
     DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here)" "$DOMAIN")
@@ -549,17 +536,21 @@ wizard(){
     PAPERLESS_URL="http://localhost:${HTTP_PORT}"
   fi
 
-  # pCloud + backups
   RCLONE_REMOTE_NAME=$(prompt "rclone remote name" "$RCLONE_REMOTE_NAME")
-  RCLONE_REMOTE_PATH_TEMPLATE="backups/paperless/${INSTANCE_NAME}"
   RCLONE_REMOTE_PATH=$(prompt "Remote path for backups" "$RCLONE_REMOTE_PATH_TEMPLATE")
   RETENTION_DAYS=$(prompt "Retention days" "$RETENTION_DAYS")
   CRON_TIME=$(prompt "Backup cron (m h dom mon dow)" "$CRON_TIME")
 
-  # connect to pCloud and detect backups
   setup_pcloud
+
+  prepare_dirs
+  write_env
+  write_compose
+  write_backup_script
+  install_cron
+
   local latest
-  latest=$(find_latest_snapshot "$RCLONE_REMOTE_PATH") || true
+  latest=$(latest_backup || true)
   if [ -n "$latest" ]; then
     echo
     log "Found snapshot(s) under ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
@@ -576,13 +567,6 @@ wizard(){
     fi
   fi
 
-  # finalize dirs/env/compose/cron
-  prepare_dirs
-  write_env
-  write_compose
-  write_backup_script
-  install_cron
-
   if [ -n "${RESTORE_SNAP:-}" ]; then
     restore_from_remote "$RESTORE_SNAP"
   else
@@ -598,3 +582,7 @@ if [[ "${1:-}" == "--noninteractive" ]]; then
 else
   wizard "$@"
 fi
+BASH
+
+chmod +x setup.sh
+bash ./setup.sh
