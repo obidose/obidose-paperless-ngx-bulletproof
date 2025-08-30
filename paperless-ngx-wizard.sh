@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set -o errtrace
+trap 'echo -e "\e[1;31m[x]\e[0m Error at ${BASH_SOURCE}:${LINENO}: ${BASH_COMMAND}"; exit 1' ERR
 
 # ======================================================================
 # Paperless-ngx • Bulletproof One-Stop Wizard
@@ -505,6 +507,8 @@ restore_from_remote(){
 
 # --------------------------- wizard -----------------------------------
 wizard(){
+  echo
+  log "Starting Paperless-ngx setup wizard…"
   need_root
   ubuntu_version_ok || warn "Ubuntu $(. /etc/os-release; echo $VERSION_ID) detected; tested on 22.04/24.04"
 
@@ -572,12 +576,10 @@ wizard(){
     bring_up
   fi
 
-  log "Done. Access Paperless at: ${PAPERLESS_URL}"
+  echo
+  log "All set! Access Paperless at: ${PAPERLESS_URL}"
 }
 
 # --------------------------- entrypoint -------------------------------
-if [[ "${1:-}" == "--noninteractive" ]]; then
-  err "This script is an interactive wizard. Just run: bash $0"
-else
-  wizard "$@"
-fi
+main(){ wizard "$@"; }
+main "$@"
