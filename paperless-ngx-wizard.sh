@@ -1,4 +1,3 @@
-cat > setup.sh <<'BASH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
