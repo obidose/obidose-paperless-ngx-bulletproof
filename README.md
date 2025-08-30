@@ -24,7 +24,7 @@ ufw allow 80,443
 ufw enable
 
 # Get and run the wizard
-curl -fsSL https://raw.githubusercontent.com/obidose/paperless-ngx-bulletproof/main/paperless-ngx-wizard.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless-ngx-wizard.sh -o setup.sh
 chmod +x setup.sh
 bash ./setup.sh
 ```
