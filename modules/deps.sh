@@ -22,7 +22,7 @@ ensure_user(){
 }
 
 install_docker(){
-  if ! command -v docker >/dev/null 2%; then
+  if ! command -v docker >/dev/null 2>&1; then
     log "Installing Docker Engine + Compose plugin…"
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
