@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 # modules/common.sh
 # Shared helpers + default config for the Paperless-ngx Bulletproof installer
 
@@ -5,24 +8,24 @@
 [ -n "${__COMMON_SH__:-}" ] && return 0
 __COMMON_SH__=1
 
-# ---------- color + messaging fallbacks (install.sh defines these; we provide safe defaults) ----------
-COLOR_BLUE=${COLOR_BLUE:-""}
-COLOR_GREEN=${COLOR_GREEN:-""}
-COLOR_YELLOW=${COLOR_YELLOW:-""}
-COLOR_RED=${COLOR_RED:-""}
-COLOR_OFF=${COLOR_OFF:-""}
+# ---------- color + messaging fallbacks (install.sh may define these) ----------
+COLOR_BLUE=${COLOR_BLUE:-"\e[1;34m"}
+COLOR_GREEN=${COLOR_GREEN:-"\e[1;32m"}
+COLOR_YELLOW=${COLOR_YELLOW:-"\e[1;33m"}
+COLOR_RED=${COLOR_RED:-"\e[1;31m"}
+COLOR_OFF=${COLOR_OFF:-"\e[0m"}
 
 if ! command -v say >/dev/null 2>&1; then
-  say(){  echo -e "[*] $*"; }
+  say(){  echo -e "${COLOR_BLUE}[*]${COLOR_OFF} $*"; }
 fi
 if ! command -v ok >/dev/null 2>&1; then
-  ok(){   echo -e "[OK] $*"; }
+  ok(){   echo -e "${COLOR_GREEN}[OK]${COLOR_OFF} $*"; }
 fi
 if ! command -v warn >/dev/null 2>&1; then
-  warn(){ echo -e "[!] $*"; }
+  warn(){ echo -e "${COLOR_YELLOW}[!]${COLOR_OFF} $*"; }
 fi
 if ! command -v die >/dev/null 2>&1; then
-  die(){  echo -e "[x] $*"; exit 1; }
+  die(){  echo -e "${COLOR_RED}[x]${COLOR_OFF} $*"; exit 1; }
 fi
 if ! command -v log >/dev/null 2>&1; then
   log(){  say "$@"; }
@@ -42,29 +45,12 @@ preflight_ubuntu() {
 }
 
 # ---------- helpers ----------
+# IMPORTANT: avoid pipefail during generation, because this runs at source-time in defaults below.
 randpass() {
-  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
-}
-
-trim(){
-  # trim leading/trailing whitespace
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
-}
-
-to_lower(){ printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-
-is_yes(){
-  case "$(to_lower "$(trim "$1")")" in
-    y|yes|true|1) return 0 ;;
-    *)            return 1 ;;
-  esac
-}
-
-normalize_yesno(){
-  if is_yes "$1"; then echo yes; else echo no; fi
+  (
+    set +o pipefail
+    LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
+  )
 }
 
 prompt(){
@@ -91,7 +77,7 @@ confirm(){
     N|n) read -r -p "$msg [y/N]: " ans || true; ans=${ans:-N} ;;
     *)   read -r -p "$msg [y/n]: " ans || true ;;
   esac
-  [[ "$(to_lower "$(trim "$ans")")" =~ ^y(es)?$ ]]
+  [[ "$ans" =~ ^[Yy]$ ]]
 }
 
 # ---------- default instance paths (installer may export these earlier) ----------
@@ -152,7 +138,7 @@ merge_env_file(){
     [ -f "$src" ] || die "Preset file not found: $src"
     cp "$src" "$tmp"
   fi
-  command -v dos2unix >/dev/null 2>&1 && dos2unix "$tmp" >/dev/null 2>&1 || true
+  dos2unix "$tmp" >/dev/null 2>&1 || true
   set -a
   # shellcheck disable=SC1090
   source "$tmp"
@@ -191,9 +177,8 @@ prompt_core_values(){
   PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$PAPERLESS_ADMIN_PASSWORD")
   POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$POSTGRES_PASSWORD")
 
-  # Normalize various forms of yes/no to "yes" or "no"
-  ENABLE_TRAEFIK=$(normalize_yesno "$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")")
-  if is_yes "$ENABLE_TRAEFIK"; then
+  ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")
+  if [ "$ENABLE_TRAEFIK" = "yes" ] || [[ "$ENABLE_TRAEFIK" =~ ^[Yy](es)?$ ]]; then
     DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here; Enter=default)" "$DOMAIN")
     LETSENCRYPT_EMAIL=$(prompt "Let's Encrypt email (Enter=default)" "$LETSENCRYPT_EMAIL")
     PAPERLESS_URL="https://${DOMAIN}"
