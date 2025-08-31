@@ -42,6 +42,17 @@ preflight_ubuntu(){
   esac
 }
 
+ed -s modules/common.sh <<'ED'
+/# ------------ config state -------------/i
+# ------------ helpers -------------
+randpass() {
+  # Generate a 22-char strong password from /dev/urandom
+  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
+}
+.
+wq
+ED
+
 # ------------ config state -------------
 TZ="${TZ:-$(cat /etc/timezone 2>/dev/null || echo Etc/UTC)}"
 PUID="${PUID:-1001}"
