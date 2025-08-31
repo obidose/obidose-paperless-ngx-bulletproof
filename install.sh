@@ -2,12 +2,14 @@
 set -Eeuo pipefail
 
 # ===== Pretty output (ASCII only) =====
-say(){  echo -e "[*] $*"; }
-ok(){   echo -e "[OK] $*"; }
-warn(){ echo -e "[!] $*"; }
-die(){  echo -e "[x] $*"; exit 1; }
+COLOR_BLUE="\e[1;34m"; COLOR_GREEN="\e[1;32m"; COLOR_YELLOW="\e[1;33m"; COLOR_RED="\e[1;31m"; COLOR_OFF="\e[0m"
+say(){  echo -e "${COLOR_BLUE}[*]${COLOR_OFF} $*"; }
+ok(){   echo -e "${COLOR_GREEN}[ok]${COLOR_OFF} $*"; }
+warn(){ echo -e "${COLOR_YELLOW}[!]${COLOR_OFF} $*"; }
+die(){  echo -e "${COLOR_RED}[x]${COLOR_OFF} $*"; exit 1; }
+log(){  say "$@"; }
 
-trap 'code=$?; echo -e "[x] Installer failed at ${BASH_SOURCE[0]:-$0}:${LINENO} (exit ${code})"; exit $code' ERR
+trap 'code=$?; echo -e "${COLOR_RED}[x]${COLOR_OFF} Installer failed at ${BASH_SOURCE[0]}:${LINENO} (exit ${code})"; exit $code' ERR
 
 need_root(){ [ "$(id -u)" -eq 0 ] || die "Run as root (sudo -i)."; }
 need_root
@@ -22,13 +24,13 @@ trap cleanup EXIT
 
 fetch(){ curl -fsSL "$1" -o "$2"; }
 
-say "Fetching modules..."
+say "[*] Fetching modules..."
 fetch "${GITHUB_RAW}/modules/common.sh"  "${TMP_DIR}/common.sh"
 fetch "${GITHUB_RAW}/modules/deps.sh"    "${TMP_DIR}/deps.sh"
 fetch "${GITHUB_RAW}/modules/pcloud.sh"  "${TMP_DIR}/pcloud.sh"
 fetch "${GITHUB_RAW}/modules/files.sh"   "${TMP_DIR}/files.sh"
 
-# Normalize line endings just in case
+# Normalize line endings if available
 command -v dos2unix >/dev/null 2>&1 && dos2unix "${TMP_DIR}/"*.sh >/dev/null 2>&1 || true
 
 # ===== Source modules =====
@@ -38,38 +40,58 @@ source "${TMP_DIR}/deps.sh"
 source "${TMP_DIR}/pcloud.sh"
 source "${TMP_DIR}/files.sh"
 
-say "Starting Paperless-ngx setup wizard..."
+# Helper: check function existence
+fn_exists(){ declare -F "$1" >/dev/null 2>&1; }
 
-# ===== System deps =====
+say "[*] Starting Paperless-ngx setup wizard..."
+
+# 0) System deps
 preflight_ubuntu
 install_prereqs
 ensure_user
 install_docker
 install_rclone
 
-# ===== pCloud setup (OAuth preferred, auto region) =====
-pcloud_auto_region_or_setup
-pcloud_early_restore_or_continue   # will exit 0 on successful restore
+# 1) pCloud connect first so we can auto-restore if backups exist
+if fn_exists ensure_pcloud_remote_or_menu; then
+  ensure_pcloud_remote_or_menu
+else
+  # Back-compat with earlier module names
+  setup_pcloud_remote_interactive
+  early_restore_or_continue
+fi
 
-# ===== Optional presets, then prompts =====
+# If the early restore succeeded, the module may have exited 0 already.
+# Otherwise, continue with fresh setup.
+
+# 2) Optional presets, then core prompts
 pick_and_merge_preset "${GITHUB_RAW}"
 prompt_core_values
-ensure_dir_tree
 
-# ===== Write files & deploy =====
+# 3) Ensure directories, write files, launch stack
+ensure_dir_tree
 write_env_file
 write_compose_file
+bring_up_stack
 
-# Bring up the stack even if helper function is absent
-if declare -F bring_up_stack >/dev/null 2>&1; then
-  bring_up_stack
+# 4) Install/refresh cron job for backups (module handles idempotency)
+install_cron_backup
+
+# 5) Install Bulletproof CLI (menu + one-shot commands).
+#    Do NOT fail the installer if file missing while repo updates are in-flight.
+CLI_URL="${GITHUB_RAW}/tools/bulletproof.sh"
+CLI_DST="/usr/local/bin/bulletproof"
+if curl -fsSL "$CLI_URL" -o "$CLI_DST"; then
+  chmod +x "$CLI_DST" || true
+  ok "Bulletproof CLI installed at ${CLI_DST}"
 else
-  ( cd "$STACK_DIR" && docker compose pull && docker compose up -d )
+  warn "Bulletproof CLI not found at ${CLI_URL} (skipping). You can add it later with:
+  curl -fsSL ${CLI_URL} -o ${CLI_DST} && chmod +x ${CLI_DST}"
 fi
 
-# ===== Backups (if helper exists) =====
-if declare -F create_backup_job >/dev/null 2>&1; then
-  create_backup_job
-fi
-
-ok "Done. Access your instance once containers are healthy."
+echo
+ok "Setup complete."
+echo "Next steps:"
+echo "  - If using Traefik + HTTPS, point DNS to this host and wait for certs."
+echo "  - CLI: run 'bulletproof' for the backup/restore menu (if installed)."
+echo "  - Or: 'bulletproof backup', 'bulletproof list', 'bulletproof restore'."
