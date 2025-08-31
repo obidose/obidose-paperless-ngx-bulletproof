@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # modules/pcloud.sh
 # pCloud setup + early-restore helpers for the Paperless-ngx Bulletproof installer.
-# Requires: say/ok/warn/die (from install.sh), rclone (installed by deps.sh), docker.
-set -Eeuo pipefail
+# Requires in caller: say/ok/warn/die; rclone installed; docker present.
 
-# ---- Defaults pulled from common.sh if not already exported ----
+# ---- Defaults (honor env from common.sh if set) ----
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -17,7 +16,7 @@ ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
 
 ENV_BACKUP_PASSPHRASE_FILE="${ENV_BACKUP_PASSPHRASE_FILE:-/root/.paperless_env_pass}"
 
-# Derived dirs (will already exist from common.sh, but keep local fallbacks)
+# Derived dirs (recomputed if DATA_ROOT changed before sourcing)
 DIR_EXPORT="${DIR_EXPORT:-${DATA_ROOT}/export}"
 DIR_MEDIA="${DIR_MEDIA:-${DATA_ROOT}/media}"
 DIR_DATA="${DIR_DATA:-${DATA_ROOT}/data}"
@@ -27,7 +26,6 @@ DIR_TIKA_CACHE="${DIR_TIKA_CACHE:-${DATA_ROOT}/tika-cache}"
 
 # ---- tiny utils ----
 _has(){ command -v "$1" >/dev/null 2>&1; }
-
 _dc(){ docker compose -f "$COMPOSE_FILE" "$@"; }
 
 _timeout(){
@@ -47,7 +45,7 @@ _pcloud_remote_exists(){
 }
 
 _pcloud_remote_ok(){
-  # quick check; do not spam API if it’s obviously absent
+  # quick check; do not call API if remote obviously absent
   _pcloud_remote_exists || return 1
   _timeout 10 rclone about "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1
 }
@@ -56,7 +54,6 @@ _pcloud_set_oauth_token(){
   # arg: token JSON string
   local token_json="$1"
   rclone config delete "${RCLONE_REMOTE_NAME}" >/dev/null 2>&1 || true
-  # Create pcloud backend with the token JSON
   rclone config create "${RCLONE_REMOTE_NAME}" pcloud token "$token_json" --non-interactive >/dev/null
 }
 
@@ -86,15 +83,14 @@ _pcloud_webdav_try_both(){
   return 1
 }
 
-# ---- interactive connection menu ----
+# ---- interactive connection menu (exported) ----
 ensure_pcloud_remote_or_menu(){
-  # Fast path
+  # Fast path: already good
   if _pcloud_remote_ok; then
     ok "pCloud remote '${RCLONE_REMOTE_NAME}:' is ready."
     return 0
   fi
 
-  # Show menu until configured or skipped
   while true; do
     echo
     say "Choose how to connect to pCloud:"
@@ -104,6 +100,7 @@ ensure_pcloud_remote_or_menu(){
     echo "  4) Skip"
     read -r -p "Choose [1-4] [1]: " _choice
     _choice="${_choice:-1}"
+
     case "$_choice" in
       1)
         echo
@@ -120,6 +117,7 @@ ensure_pcloud_remote_or_menu(){
         fi
         warn "Token invalid or creation failed. Try again."
         ;;
+
       2)
         echo
         say "Headless OAuth:"
@@ -134,6 +132,7 @@ ensure_pcloud_remote_or_menu(){
         fi
         warn "Token invalid or creation failed. Try again."
         ;;
+
       3)
         echo
         say "Legacy WebDAV auth (email + password or App Password)."
@@ -145,10 +144,12 @@ ensure_pcloud_remote_or_menu(){
         fi
         warn "Authentication failed on both endpoints."
         ;;
+
       4)
         warn "Skipping pCloud configuration for now."
         return 1
         ;;
+
       *)
         warn "Invalid choice."
         ;;
@@ -164,9 +165,14 @@ _pcloud_list_snapshots(){
 
 _pcloud_latest_snapshot(){ _pcloud_list_snapshots | tail -n1; }
 
-# ---- Early restore path ----
+# ---- Ensure dirs ----
+_pcloud_ensure_dirs(){
+  mkdir -p "$STACK_DIR" "$DATA_ROOT" \
+           "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE"
+}
+
+# ---- Early restore (exported) ----
 pcloud_early_restore_or_continue(){
-  # Only offer restore if remote works
   if ! _pcloud_remote_ok; then
     say "pCloud not configured; proceeding with fresh setup."
     return 0
@@ -185,7 +191,7 @@ pcloud_early_restore_or_continue(){
   _ans="${_ans:-Y}"
   if [[ "$_ans" =~ ^[Yy]$ ]]; then
     _pcloud_restore_from_snapshot "$latest"
-    return 0 # (unreached; restore exits 0 on success)
+    return 0
   fi
 
   read -r -p "List and choose another snapshot? [y/N]: " _ans2
@@ -200,12 +206,6 @@ pcloud_early_restore_or_continue(){
   fi
 
   say "Skipping early restore — continuing with fresh setup."
-}
-
-# Ensure dirs exist
-_pcloud_ensure_dirs(){
-  mkdir -p "$STACK_DIR" "$DATA_ROOT" \
-           "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE"
 }
 
 _pcloud_restore_from_snapshot(){
@@ -296,5 +296,6 @@ _pcloud_restore_from_snapshot(){
   (cd "$STACK_DIR" && docker compose up -d)
   ok "Restore complete."
 
+  # Exit the installer after a successful early restore
   exit 0
 }
