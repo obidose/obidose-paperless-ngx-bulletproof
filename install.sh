@@ -9,7 +9,7 @@ set -Eeuo pipefail
 # Where to fetch raw files (override if you fork)
 GITHUB_RAW="${GITHUB_RAW:-https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main}"
 
-# Default instance paths (can be overridden later)
+# Default instance settings (can be overridden by presets/answers)
 INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
 STACK_DIR="${STACK_DIR:-/home/docker/paperless-setup}"
 DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
@@ -22,73 +22,81 @@ ENV_FILE="${STACK_DIR}/.env"
 TMP_DIR="/tmp/paperless-wiz.$$"
 mkdir -p "$TMP_DIR"
 
-fetch() { curl -fsSL "$1" -o "$2"; }
-say()   { echo -e "\e[1;34m[•]\e[0m $*"; }
-ok()    { echo -e "\e[1;32m[✓]\e[0m $*"; }
-warn()  { echo -e "\e[1;33m[!]\e[0m $*"; }
-die()   { echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
+say(){  echo -e "\e[1;34m[•]\e[0m $*"; }
+ok(){   echo -e "\e[1;32m[✓]\e[0m $*"; }
+warn(){ echo -e "\e[1;33m[!]\e[0m $*"; }
+die(){  echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
 need_root(){ [ "$(id -u)" -eq 0 ] || die "Run as root (sudo -i)."; }
 
-cleanup_tmp() {
-  local d="${1:-$TMP_DIR}"
-  rm -rf "$d" 2>/dev/null || true
+fetch_or_die() {
+  local url="$1" dest="$2"
+  curl -fsSL "$url" -o "$dest" || die "Fetch failed: $url"
 }
 
-main() {
-  need_root
+cleanup() { rm -rf "$TMP_DIR" 2>/dev/null || true; }
 
-  say "Fetching modules…"
-  fetch "${GITHUB_RAW}/modules/common.sh" "${TMP_DIR}/common.sh"
-  fetch "${GITHUB_RAW}/modules/deps.sh"   "${TMP_DIR}/deps.sh"
-  fetch "${GITHUB_RAW}/modules/pcloud.sh" "${TMP_DIR}/pcloud.sh"
-  fetch "${GITHUB_RAW}/modules/files.sh"  "${TMP_DIR}/files.sh"
+trap 'die "Installer failed at ${BASH_SOURCE[0]}:${LINENO} (exit $?)"' ERR
+need_root
 
-  # shellcheck disable=SC1090
-  source "${TMP_DIR}/common.sh"
-  source "${TMP_DIR}/deps.sh"
-  source "${TMP_DIR}/pcloud.sh"
-  source "${TMP_DIR}/files.sh"
+say "Fetching modules…"
+for f in common deps pcloud files; do
+  fetch_or_die "${GITHUB_RAW}/modules/${f}.sh" "${TMP_DIR}/${f}.sh"
+done
 
-  say "Starting Paperless-ngx setup wizard…"
+# Normalize CRLF just in case (no-op if dos2unix unavailable)
+if command -v dos2unix >/dev/null 2>&1; then
+  dos2unix "${TMP_DIR}"/*.sh >/dev/null 2>&1 || true
+fi
 
-  # 0) Basic sanity
-  preflight_ubuntu
+# Syntax check each module with line numbers on failure
+for m in "${TMP_DIR}"/*.sh; do
+  if ! bash -n "$m" 2>/dev/null; then
+    warn "Syntax error in $(basename "$m"); context:"
+    nl -ba "$m" | sed -n '1,200p'
+    die "Aborting due to syntax error in $(basename "$m")."
+  fi
+done
 
-  # 1) Dependencies (apt, docker, rclone)
-  install_prereqs
-  ensure_user
-  install_docker
-  install_rclone
+# Export a few vars some modules may expect
+export GITHUB_RAW INSTANCE_NAME STACK_DIR DATA_ROOT COMPOSE_FILE ENV_FILE
 
-  # 2) Authenticate to pCloud first so we can early-restore
-  setup_pcloud_remote_interactive
+# Some modules may reference variables not yet defined; relax nounset while sourcing
+set +u
+# shellcheck disable=SC1090
+source "${TMP_DIR}/common.sh"
+source "${TMP_DIR}/deps.sh"
+source "${TMP_DIR}/pcloud.sh"
+source "${TMP_DIR}/files.sh"
+set -u
 
-  # 3) If backups exist, offer early restore before other prompts
-  early_restore_or_continue
+say "Starting Paperless-ngx setup wizard…"
 
-  # 4) Fresh install path: load defaults/presets, prompt for missing values
-  load_env_defaults_from "${GITHUB_RAW}/env/.env.example"
-  pick_and_merge_preset   "${GITHUB_RAW}"      # lets user choose traefik/direct/custom
-  prompt_core_values                          # minimal questions with defaults
+# --- main flow ---
+preflight_ubuntu                 # checks distro and basic environment
+install_prereqs                  # apt update/upgrade + basics (curl, cron, etc.)
+ensure_user                      # creates 'docker' user if missing
+install_docker                   # Docker Engine + Compose plugin
+install_rclone                   # rclone for pCloud
 
-  # 5) Create directories, write env, fetch compose, install ops & cron & menu
-  prepare_dirs
-  write_env_file
-  fetch_compose_file   "${GITHUB_RAW}"        # picks traefik/direct compose
-  install_ops_backup   "${GITHUB_RAW}"        # installs backup_to_pcloud.sh
-  install_cron_job
-  install_bulletproof_menu "${GITHUB_RAW}"    # installs /usr/local/bin/bulletproof
+setup_pcloud_remote_interactive  # login to pCloud first (EU→Global), creates remote
 
-  # 6) Late restore option (safety)
-  maybe_offer_restore
+early_restore_or_continue        # if snapshots exist, offer early restore path
 
-  # 7) Bring up stack and summarize
-  bring_up_stack
-  final_summary
+load_env_defaults_from "${GITHUB_RAW}/env/.env.example"
+pick_and_merge_preset   "${GITHUB_RAW}"       # choose traefik/direct/custom (or URL/local)
+prompt_core_values                          # ask only for missing values (clear defaults)
 
-  ok "Done."
-  cleanup_tmp
-}
+prepare_dirs                               # create stack/data directories with proper owner
+write_env_file                             # write .env based on answers/preset
+fetch_compose_file   "${GITHUB_RAW}"       # fetch correct compose file (traefik/direct)
+install_ops_backup   "${GITHUB_RAW}"       # install ops/backup_to_pcloud.sh
+install_cron_job                            # add daily cron line if not present
+install_bulletproof_menu "${GITHUB_RAW}"    # install /usr/local/bin/bulletproof
 
-trap 'die "Installer failed at line $LINENO."' ERR
-main "$@"
+maybe_offer_restore                         # optional late restore safety
+
+bring_up_stack                              # docker compose up -d
+final_summary                               # print URLs, next steps
+
+ok "Done."
+cleanup
