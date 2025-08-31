@@ -5,7 +5,7 @@
 [ -n "${__COMMON_SH__:-}" ] && return 0
 __COMMON_SH__=1
 
-# ---------- color + messaging fallbacks (install.sh provides these, but we’re safe here) ----------
+# ---------- color + messaging fallbacks (install.sh defines these; we provide safe defaults) ----------
 COLOR_BLUE=${COLOR_BLUE:-"\e[1;34m"}
 COLOR_GREEN=${COLOR_GREEN:-"\e[1;32m"}
 COLOR_YELLOW=${COLOR_YELLOW:-"\e[1;33m"}
