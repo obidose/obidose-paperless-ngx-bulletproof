@@ -36,7 +36,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
   - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
 - `backup.sh` and `restore.sh` scripts placed into the stack dir
-- Optional cron job for nightly snapshots with retention
+-  Cron job for nightly snapshots with retention
 - `bulletproof` command for backups, listing snapshots, restores, health, and logs
 
 ---
