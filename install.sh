@@ -43,12 +43,12 @@ for f in common deps pcloud files; do
   fetch_or_die "${GITHUB_RAW}/modules/${f}.sh" "${TMP_DIR}/${f}.sh"
 done
 
-# Normalize CRLF just in case (no-op if dos2unix unavailable)
+# Normalize CRLF if present (no-op if dos2unix not installed)
 if command -v dos2unix >/dev/null 2>&1; then
   dos2unix "${TMP_DIR}"/*.sh >/dev/null 2>&1 || true
 fi
 
-# Syntax check each module with line numbers on failure
+# Syntax check each module; show context on error
 for m in "${TMP_DIR}"/*.sh; do
   if ! bash -n "$m" 2>/dev/null; then
     warn "Syntax error in $(basename "$m"); context:"
@@ -72,31 +72,29 @@ set -u
 say "Starting Paperless-ngx setup wizard…"
 
 # --- main flow ---
-preflight_ubuntu                 # checks distro and basic environment
-install_prereqs                  # apt update/upgrade + basics (curl, cron, etc.)
+preflight_ubuntu                 # distro sanity
+install_prereqs                  # apt update/upgrade + basics
 ensure_user                      # creates 'docker' user if missing
 install_docker                   # Docker Engine + Compose plugin
 install_rclone                   # rclone for pCloud
 
 setup_pcloud_remote_interactive  # login to pCloud first (EU→Global), creates remote
-
-early_restore_or_continue        # if snapshots exist, offer early restore path
+early_restore_or_continue        # if snapshots exist, offer early restore
 
 load_env_defaults_from "${GITHUB_RAW}/env/.env.example"
 pick_and_merge_preset   "${GITHUB_RAW}"       # choose traefik/direct/custom (or URL/local)
-prompt_core_values                          # ask only for missing values (clear defaults)
+prompt_core_values                              # ask only for missing values
 
-prepare_dirs                               # create stack/data directories with proper owner
-write_env_file                             # write .env based on answers/preset
-fetch_compose_file   "${GITHUB_RAW}"       # fetch correct compose file (traefik/direct)
-install_ops_backup   "${GITHUB_RAW}"       # install ops/backup_to_pcloud.sh
-install_cron_job                            # add daily cron line if not present
-install_bulletproof_menu "${GITHUB_RAW}"    # install /usr/local/bin/bulletproof
+prepare_dirs                                   # create stack/data directories
+write_env_file                                  # write .env based on answers/preset
+fetch_compose_file   "${GITHUB_RAW}"           # fetch traefik/direct compose
+install_ops_backup   "${GITHUB_RAW}"           # install ops/backup_to_pcloud.sh
+install_cron_job                                    # add daily cron if not present
+install_bulletproof_menu "${GITHUB_RAW}"       # install /usr/local/bin/bulletproof
 
-maybe_offer_restore                         # optional late restore safety
-
-bring_up_stack                              # docker compose up -d
-final_summary                               # print URLs, next steps
+maybe_offer_restore                             # optional late restore
+bring_up_stack                                  # docker compose up -d
+final_summary                                   # print URLs, next steps
 
 ok "Done."
 cleanup
