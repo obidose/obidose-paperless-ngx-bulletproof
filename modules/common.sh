@@ -1,6 +1,3 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
-
 # modules/common.sh
 # Shared helpers + default config for the Paperless-ngx Bulletproof installer
 
@@ -45,12 +42,10 @@ preflight_ubuntu() {
 }
 
 # ---------- helpers ----------
-# IMPORTANT: avoid pipefail during generation, because this runs at source-time in defaults below.
+# NOTE: never call this during module source; only at runtime (e.g., when prompting)
 randpass() {
-  (
-    set +o pipefail
-    LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
-  )
+  # no pipefail here; generate when actually needed
+  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
 }
 
 prompt(){
@@ -98,10 +93,11 @@ LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@example.com}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-15}"
 POSTGRES_DB="${POSTGRES_DB:-paperless}"
 POSTGRES_USER="${POSTGRES_USER:-paperless}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(randpass)}"
 
+# IMPORTANT: leave passwords empty at source-time (no subshells/pipes now)
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
 PAPERLESS_ADMIN_USER="${PAPERLESS_ADMIN_USER:-admin}"
-PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-$(randpass)}"
+PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-}"
 
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -165,6 +161,12 @@ pick_and_merge_preset(){
   esac
 }
 
+# Fill runtime defaults (only now we may generate randoms)
+ensure_runtime_defaults(){
+  : "${PAPERLESS_ADMIN_PASSWORD:=$(randpass)}"
+  : "${POSTGRES_PASSWORD:=$(randpass)}"
+}
+
 prompt_core_values(){
   echo
   echo "Press Enter to accept the [default] value, or type a custom value."
@@ -173,9 +175,13 @@ prompt_core_values(){
   DATA_ROOT=$(prompt "Data root (persistent storage; Enter=default)" "${DATA_ROOT}")
   STACK_DIR=$(prompt "Stack dir (where docker-compose.yml lives; Enter=default)" "${STACK_DIR}")
 
+  # lazily generate defaults only at prompt time
+  local gen_admin="${PAPERLESS_ADMIN_PASSWORD:-$(randpass)}"
+  local gen_pg="${POSTGRES_PASSWORD:-$(randpass)}"
+
   PAPERLESS_ADMIN_USER=$(prompt "Paperless admin username (Enter=default)" "$PAPERLESS_ADMIN_USER")
-  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$PAPERLESS_ADMIN_PASSWORD")
-  POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$POSTGRES_PASSWORD")
+  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$gen_admin")
+  POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$gen_pg")
 
   ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")
   if [ "$ENABLE_TRAEFIK" = "yes" ] || [[ "$ENABLE_TRAEFIK" =~ ^[Yy](es)?$ ]]; then
