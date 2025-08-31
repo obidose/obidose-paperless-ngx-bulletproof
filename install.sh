@@ -45,7 +45,7 @@ install_docker
 install_rclone
 
 # Authenticate to pCloud first so we can offer early restore
-setup_pcloud_remote_interactive
+ensure_pcloud_remote_or_menu
 early_restore_or_continue
 
 # Fresh setup path
