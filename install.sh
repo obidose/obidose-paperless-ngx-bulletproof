@@ -92,11 +92,13 @@ else
   curl -fsSL ${CLI_URL} -o ${CLI_DST} && chmod +x ${CLI_DST}"
 fi
 
+# --- Install helper scripts into stack dir ---
 say "Installing backup helper into ${STACK_DIR}/backup.sh"
 install -d "${STACK_DIR}"
-# (Optional) keep a backup if it already exists
 [ -f "${STACK_DIR}/backup.sh" ] && cp -a "${STACK_DIR}/backup.sh" "${STACK_DIR}/backup.sh.bak.$(date +%s)" || true
 install -m 0755 "${TMP_DIR}/backup.sh" "${STACK_DIR}/backup.sh"
+curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/modules/restore.sh" \
+  -o "${STACK_DIR}/restore.sh" && chmod +x "${STACK_DIR}/restore.sh"
 
 echo
 ok "Setup complete."
