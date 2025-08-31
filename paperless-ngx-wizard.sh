@@ -28,16 +28,6 @@ prompt(){
   fi
 }
 
-prompt_secret(){
-  local msg="$1"; local out1 out2
-  while true; do
-    read -r -s -p "$msg: " out1 || true; echo
-    read -r -s -p "Confirm $msg: " out2 || true; echo
-    [ "$out1" = "$out2" ] && { echo "$out1"; return; }
-    warn "Entries didn't match. Try again."
-  done
-}
-
 confirm(){
   local msg="$1"; local def="${2:-Y}"; local ans
   case "$def" in
@@ -146,39 +136,57 @@ create_pcloud_remote(){
   local user="$1"; local pass_plain="$2"; local remote_name="$3"; local host="$4"
   local obscured; obscured=$(rclone obscure "$pass_plain")
   rclone config delete "$remote_name" >/dev/null 2>&1 || true
+  # Use vendor=other to avoid "unknown vendor" noise
   rclone config create "$remote_name" webdav vendor other url "$host" user "$user" pass "$obscured" >/dev/null
 }
 
+# Single-entry password; trims whitespace; verifies with curl first (EU, then Global)
 setup_pcloud(){
   log "Connect to pCloud via WebDAV (if 2FA is ON, use an App Password)."
-  local pc_user pc_pass host_global host_eu
-  while true; do
-    pc_user=$(prompt "pCloud login email")
-    [ -n "$pc_user" ] && break
-    warn "Email is required."
-  done
-  pc_pass=$(prompt_secret "pCloud password (or App Password)")
 
+  local pc_user pc_pass host_eu host_global code ok_host
   host_eu="https://ewebdav.pcloud.com"
   host_global="https://webdav.pcloud.com"
 
-  log "Trying EU WebDAV endpoint..."
-  create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$host_eu"
-  if rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1; then
-    log "Connected to pCloud at $host_eu"
-    return 0
-  fi
+  while true; do
+    pc_user=$(prompt "pCloud login email")
+    pc_user=$(printf '%s' "$pc_user" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -n "$pc_user" ] || { warn "Email is required."; continue; }
 
-  warn "EU endpoint failed. Trying Global endpoint..."
-  create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$host_global"
-  if rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1; then
-    log "Connected to pCloud at $host_global"
-    return 0
-  fi
+    read -r -s -p "pCloud password (or App Password): " pc_pass; echo
+    pc_pass=$(printf '%s' "$pc_pass" | tr -d '\r' | sed 's/[[:space:]]*$//')
+    [ -n "$pc_pass" ] || { warn "Password cannot be empty."; continue; }
 
-  warn "Both endpoints failed; running a verbose check:"
-  rclone -vv lsd "${RCLONE_REMOTE_NAME}:" || true
-  err "Could not authenticate to pCloud via WebDAV. Check email/password and 2FA (App Password if 2FA ON)."
+    code=$(curl -sS -u "$pc_user:$pc_pass" -X PROPFIND -H "Depth: 0" \
+             -o /dev/null -w "%{http_code}" \
+             --data '<propfind xmlns="DAV:"><allprop/></propfind>' "$host_eu/" || true)
+    if [ "$code" = "207" ]; then
+      ok_host="$host_eu"
+    else
+      warn "EU endpoint returned HTTP $code. Trying Global…"
+      code=$(curl -sS -u "$pc_user:$pc_pass" -X PROPFIND -H "Depth: 0" \
+               -o /dev/null -w "%{http_code}" \
+               --data '<propfind xmlns="DAV:"><allprop/></propfind>' "$host_global/" || true)
+      [ "$code" = "207" ] && ok_host="$host_global" || ok_host=""
+    fi
+
+    if [ -n "$ok_host" ]; then
+      log "Auth OK on $ok_host — creating rclone remote '${RCLONE_REMOTE_NAME}'"
+      create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$ok_host"
+      if rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1; then
+        log "rclone remote '${RCLONE_REMOTE_NAME}' ready."
+        return 0
+      fi
+      warn "rclone list failed even though curl auth succeeded. Retrying credentials…"
+    else
+      warn "Both endpoints rejected the credentials (HTTP $code)."
+      warn "If you use 2FA, create an App Password in pCloud → Settings → Security → App passwords."
+    fi
+
+    if ! confirm "Re-enter pCloud email/password?" Y; then
+      err "Could not authenticate to pCloud WebDAV."
+    fi
+  done
 }
 
 find_latest_snapshot(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true; }
@@ -239,9 +247,9 @@ services:
     image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     volumes:
       - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
@@ -264,21 +272,21 @@ services:
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
-      PUID: ${DOCKER_UID}
-      PGID: ${DOCKER_GID}
-      TZ: ${TIMEZONE}
-      PAPERLESS_REDIS: redis://redis:6379
-      PAPERLESS_DBHOST: db
-      PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${POSTGRES_DB}
-      PAPERLESS_DBUSER: ${POSTGRES_USER}
-      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
-      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
-      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
-      PAPERLESS_URL: ${PAPERLESS_URL}
+      PUID: "${DOCKER_UID}"
+      PGID: "${DOCKER_GID}"
+      TZ: "${TIMEZONE}"
+      PAPERLESS_REDIS: "redis://redis:6379"
+      PAPERLESS_DBHOST: "db"
+      PAPERLESS_DBPORT: "5432"
+      PAPERLESS_DBNAME: "${POSTGRES_DB}"
+      PAPERLESS_DBUSER: "${POSTGRES_USER}"
+      PAPERLESS_DBPASS: "${POSTGRES_PASSWORD}"
+      PAPERLESS_ADMIN_USER: "${PAPERLESS_ADMIN_USER}"
+      PAPERLESS_ADMIN_PASSWORD: "${PAPERLESS_ADMIN_PASSWORD}"
+      PAPERLESS_URL: "${PAPERLESS_URL}"
       PAPERLESS_TIKA_ENABLED: "1"
-      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
-      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: "http://gotenberg:3000"
+      PAPERLESS_TIKA_ENDPOINT: "http://tika:9998"
       PAPERLESS_CONSUMER_POLLING: "10"
     volumes:
       - ${DIR_DATA}:/usr/src/paperless/data
@@ -330,9 +338,9 @@ services:
     image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     volumes:
       - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
@@ -355,21 +363,21 @@ services:
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
-      PUID: ${DOCKER_UID}
-      PGID: ${DOCKER_GID}
-      TZ: ${TIMEZONE}
-      PAPERLESS_REDIS: redis://redis:6379
-      PAPERLESS_DBHOST: db
-      PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${POSTGRES_DB}
-      PAPERLESS_DBUSER: ${POSTGRES_USER}
-      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
-      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
-      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
-      PAPERLESS_URL: ${PAPERLESS_URL}
+      PUID: "${DOCKER_UID}"
+      PGID: "${DOCKER_GID}"
+      TZ: "${TIMEZONE}"
+      PAPERLESS_REDIS: "redis://redis:6379"
+      PAPERLESS_DBHOST: "db"
+      PAPERLESS_DBPORT: "5432"
+      PAPERLESS_DBNAME: "${POSTGRES_DB}"
+      PAPERLESS_DBUSER: "${POSTGRES_USER}"
+      PAPERLESS_DBPASS: "${POSTGRES_PASSWORD}"
+      PAPERLESS_ADMIN_USER: "${PAPERLESS_ADMIN_USER}"
+      PAPERLESS_ADMIN_PASSWORD: "${PAPERLESS_ADMIN_PASSWORD}"
+      PAPERLESS_URL: "${PAPERLESS_URL}"
       PAPERLESS_TIKA_ENABLED: "1"
-      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
-      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: "http://gotenberg:3000"
+      PAPERLESS_TIKA_ENDPOINT: "http://tika:9998"
       PAPERLESS_CONSUMER_POLLING: "10"
     volumes:
       - ${DIR_DATA}:/usr/src/paperless/data
