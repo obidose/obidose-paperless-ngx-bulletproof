@@ -1,7 +1,7 @@
 # modules/pcloud.sh
-# pCloud (WebDAV with robust args) + API (OAuth) fallback + early restore helpers
+# pCloud connection + early restore helpers (robust: API preferred, WebDAV guarded)
 
-# Defaults (allow env overrides)
+# -------- defaults (safe if not set yet) --------
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -11,6 +11,7 @@ DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
 
 COMPOSE_FILE="${COMPOSE_FILE:-${STACK_DIR}/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
+
 ENV_BACKUP_PASSPHRASE_FILE="${ENV_BACKUP_PASSPHRASE_FILE:-/root/.paperless_env_pass}"
 
 # Paperless data subdirs
@@ -21,145 +22,192 @@ DIR_CONSUME="${DATA_ROOT}/consume"
 DIR_DB="${DATA_ROOT}/db"
 DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
 
-# ---------- helpers ----------
-_pcloud_obscure() {  # stdin or arg
-  if [ -n "${1:-}" ]; then printf '%s' "$1" | rclone obscure -; else rclone obscure -; fi
+# -------- rclone wrappers with timeouts --------
+RCLONE_BIN="${RCLONE_BIN:-rclone}"
+RCLONE_BASE_OPTS=(--low-level-retries 1 --timeout 10s)
+
+run_rclone() {
+  # hard cap overall runtime so we never hang the wizard
+  timeout 12 "$RCLONE_BIN" "${RCLONE_BASE_OPTS[@]}" "$@"
 }
 
-_pcloud_sanitize_oneline(){
-  # strip CR/LF so rclone doesn’t see spurious newlines
-  tr -d '\r\n'
+has_working_remote() {
+  run_rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1
 }
 
-_pcloud_config_path(){
-  local conf="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
-  echo "$conf"
+# -------- network guard for WebDAV endpoints --------
+probe_https() {
+  # Fast IPv4 probe to avoid IPv6/MTU weirdness
+  curl -4 -sS -I --connect-timeout 4 --max-time 6 "$1" | head -n1 | grep -q '^HTTP/'
 }
 
-# ---------- WebDAV flow ----------
-_pcloud_create_webdav(){
-  # args: <email> <plain_password> <remote_name> <webdav_host>
-  local email pass_plain remote host
-  email="$(printf '%s' "$1" | _pcloud_sanitize_oneline)"
-  pass_plain="$(printf '%s' "$2" | _pcloud_sanitize_oneline)"
-  remote="$3"
-  host="$4"
+# -------- API (OAuth) helpers --------
+create_api_remote_with_token() {
+  # args: <token-json>
+  local token_json="$1"
+  [ -n "$token_json" ] || return 1
+  "$RCLONE_BIN" config delete "$RCLONE_REMOTE_NAME" >/dev/null 2>&1 || true
+  "$RCLONE_BIN" config create "$RCLONE_REMOTE_NAME" pcloud token "$token_json" --non-interactive --no-output
+}
+
+headless_oauth_walkthrough() {
+  say "Launching rclone's headless OAuth configurator. Steps:"
+  echo "  1) Select: n (New remote)"
+  echo "  2) name: ${RCLONE_REMOTE_NAME}"
+  echo "  3) Storage: pcloud"
+  echo "  4) Use auto config? n"
+  echo "  5) Follow the URL it prints in your local browser, Allow, then paste the code"
+  echo "  6) Finish and 'q' to quit"
+  "$RCLONE_BIN" config
+}
+
+# -------- WebDAV helpers (last resort) --------
+create_webdav_remote() {
+  # args: <email> <pass_plain> <url>
+  local email="$1" pass_plain="$2" url="$3"
   local obscured
-  obscured="$(_pcloud_obscure "$pass_plain")"
-
-  rclone config delete "$remote" >/dev/null 2>&1 || true
-
-  # Use `--` so values starting with '-' are not parsed as flags
-  rclone config create "$remote" webdav --non-interactive -- \
-    vendor other url "$host" user "$email" pass "$obscured" >/dev/null
+  obscured="$(printf '%s' "$pass_plain" | "$RCLONE_BIN" obscure -)"
+  "$RCLONE_BIN" config delete "$RCLONE_REMOTE_NAME" >/dev/null 2>&1 || true
+  # vendor=other is required for pCloud’s WebDAV quirks
+  run_rclone config create "$RCLONE_REMOTE_NAME" webdav --non-interactive --no-output -- \
+    vendor other url "$url" user "$email" pass "$obscured"
 }
 
-_pcloud_test_remote(){
-  local remote="$1"
-  rclone lsd "${remote}:" >/dev/null 2>&1
-}
+try_webdav_hosts_interactive() {
+  # single-pass WebDAV attempt with guards; returns 0 on success
+  say "Connect to pCloud via WebDAV (only if OAuth isn't possible)."
+  local email pass host_eu="https://ewebdav.pcloud.com" host_glob="https://webdav.pcloud.com"
 
-_pcloud_try_webdav(){
-  local email="$1" pass="$2" remote="$3"
-  local host_eu="https://ewebdav.pcloud.com"
-  local host_global="https://webdav.pcloud.com"
+  read -r -p "pCloud login email: " email
+  read -r -s -p "pCloud password (or App Password): " pass; echo
 
-  say "Trying EU WebDAV endpoint…"
-  _pcloud_create_webdav "$email" "$pass" "$remote" "$host_eu"
-  if _pcloud_test_remote "$remote"; then
-    ok "Connected to pCloud at ${host_eu}"
-    echo "$remote"
-    return 0
+  # EU first if reachable
+  if probe_https "$host_eu"; then
+    say "Trying EU WebDAV endpoint..."
+    create_webdav_remote "$email" "$pass" "$host_eu" || true
+    if has_working_remote; then
+      ok "Connected via EU WebDAV."
+      return 0
+    fi
+    warn "EU WebDAV failed (auth or other)."
+  else
+    warn "EU WebDAV host not reachable quickly; skipping."
   fi
 
-  warn "EU endpoint failed. Trying Global endpoint…"
-  _pcloud_create_webdav "$email" "$pass" "$remote" "$host_global"
-  if _pcloud_test_remote "$remote"; then
-    ok "Connected to pCloud at ${host_global}"
-    echo "$remote"
-    return 0
+  # Global if reachable
+  if probe_https "$host_glob"; then
+    say "Trying Global WebDAV endpoint..."
+    create_webdav_remote "$email" "$pass" "$host_glob" || true
+    if has_working_remote; then
+      ok "Connected via Global WebDAV."
+      return 0
+    fi
+    warn "Global WebDAV failed (auth or other)."
+  else
+    warn "Global WebDAV host not reachable quickly; skipping."
   fi
 
   return 1
 }
 
-# ---------- API (OAuth) flow ----------
-_pcloud_create_api(){
-  # args: <remote_name> <token_json>
-  local remote="$1" token_json="$2"
-  rclone config delete "$remote" >/dev/null 2>&1 || true
-  # Token must be a single argument; we ensure no CR/LF
-  token_json="$(printf '%s' "$token_json" | _pcloud_sanitize_oneline)"
-  rclone config create "$remote" pcloud --non-interactive -- token "$token_json" >/dev/null
-}
-
-_pcloud_try_api_interactive(){
-  local remote="pcloud_api" token
-  echo
-  say "Switching to pCloud API (OAuth) — most reliable. Steps:"
-  echo "  1) On any device with a browser, run:  rclone authorize \"pcloud\""
-  echo "  2) Approve in pCloud, copy the JSON token it prints."
-  echo "  3) Paste the token JSON (single line) here."
-  echo
-  read -r -p "Paste token JSON: " token
-  if [ -z "$token" ]; then
-    warn "No token provided."
-    return 1
-  fi
-  _pcloud_create_api "$remote" "$token"
-  if _pcloud_test_remote "$remote"; then
-    ok "Connected to pCloud via API."
-    # point the rest of the installer to the API remote
-    RCLONE_REMOTE_NAME="$remote"
-    export RCLONE_REMOTE_NAME
+# -------- top-level: ensure a working remote (API preferred) --------
+ensure_pcloud_remote_or_menu() {
+  # 0) If a working remote already exists, use it untouched
+  if has_working_remote; then
+    ok "Using existing rclone remote '${RCLONE_REMOTE_NAME}'."
     return 0
   fi
-  warn "API token didn’t work. (Check token copy/paste.)"
-  return 1
+
+  while true; do
+    echo
+    say "Choose how to connect to pCloud:"
+    echo "  1) Paste an OAuth token (recommended)"
+    echo "  2) Headless OAuth (rclone prints URL; paste the code)"
+    echo "  3) Try WebDAV (EU then Global) [may time out / fail]"
+    echo "  4) Skip for now"
+    local choice; choice=$(prompt "Choose [1-4]" "1")
+
+    case "$choice" in
+      1)
+        echo
+        echo "On a machine with a browser, run:  rclone authorize \"pcloud\""
+        echo "Copy the full JSON token it prints, then paste it below."
+        read -r -p "Paste token JSON here: " token
+        if create_api_remote_with_token "$token" && has_working_remote; then
+          ok "pCloud OAuth remote created."
+          return 0
+        fi
+        warn "Token invalid or creation failed. Try again."
+        ;;
+      2)
+        headless_oauth_walkthrough
+        if has_working_remote; then
+          ok "pCloud OAuth remote created."
+          return 0
+        fi
+        warn "Did not detect a working '${RCLONE_REMOTE_NAME}' remote. Try again."
+        ;;
+      3)
+        if try_webdav_hosts_interactive && has_working_remote; then
+          return 0
+        fi
+        warn "WebDAV attempt failed. Consider OAuth instead."
+        ;;
+      4)
+        die "pCloud remote is required for backups/restores. Aborting as requested."
+        ;;
+      *)
+        warn "Invalid choice."
+        ;;
+    esac
+  done
 }
 
-# ---------- snapshots ----------
-_pcloud_list_snapshots() {
-  rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null \
+# -------- snapshot helpers --------
+list_snapshots() {
+  run_rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null \
     | awk '{print $NF}' | sort
 }
 
-_pcloud_latest_snapshot() { _pcloud_list_snapshots | tail -n1; }
+latest_snapshot() {
+  list_snapshots | tail -n1
+}
 
-# ---------- early restore ----------
-_pcloud_restore_from_snapshot() {
+# -------- early restore path (unchanged in spirit, with guards) --------
+restore_from_snapshot() {
   local SNAP="$1"
   local base="${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
   local tmpdir="${STACK_DIR}/_restore/${SNAP}"
 
-  [ -z "$SNAP" ] && die "Internal error: empty snapshot name passed to restore."
+  [ -n "$SNAP" ] || die "Internal error: empty snapshot name."
 
-  mkdir -p "$STACK_DIR" "$DATA_ROOT" "$tmpdir" \
+  mkdir -p "$STACK_DIR" "$DATA_ROOT" \
            "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE"
 
   say "Fetching snapshot ${SNAP} to ${tmpdir}"
-  rclone copy "${base}/${SNAP}" "$tmpdir" --fast-list
+  mkdir -p "$tmpdir"
+  run_rclone copy "${base}/${SNAP}" "$tmpdir" --fast-list
 
-  # Restore .env if present (prefer encrypted)
+  # .env first (encrypted preferred)
   if [ -f "$tmpdir/.env.enc" ]; then
     say "Found encrypted .env.enc in snapshot."
     if [ -f "$ENV_BACKUP_PASSPHRASE_FILE" ]; then
-      say "Decrypting .env using passphrase file: ${ENV_BACKUP_PASSPHRASE_FILE}"
+      say "Decrypting using passphrase file: ${ENV_BACKUP_PASSPHRASE_FILE}"
       if ! openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
            -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
            -pass "file:${ENV_BACKUP_PASSPHRASE_FILE}"; then
-         warn "Decryption with passphrase file failed."
-         read -r -s -p "Enter passphrase to decrypt .env: " _pp; echo
-         openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
-           -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-           -pass "pass:${_pp}" || die "Failed to decrypt .env.enc with provided passphrase."
+        warn "Decryption with passphrase file failed."
+        read -r -s -p "Enter passphrase to decrypt .env: " _pp; echo
+        openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
+          -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
+          -pass "pass:${_pp}" || die "Failed to decrypt .env.enc."
       fi
     else
       warn "No passphrase file at ${ENV_BACKUP_PASSPHRASE_FILE}."
       read -r -s -p "Enter passphrase to decrypt .env: " _pp2; echo
       openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
         -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-        -pass "pass:${_pp2}" || die "Failed to decrypt .env.enc with provided passphrase."
+        -pass "pass:${_pp2}" || die "Failed to decrypt .env.enc."
     fi
     ok "Decrypted .env to ${ENV_FILE}"
   elif [ -f "$tmpdir/.env" ]; then
@@ -169,20 +217,25 @@ _pcloud_restore_from_snapshot() {
     warn "No .env found in snapshot; the wizard will prompt for missing values later."
   fi
 
-  # Restore compose if packaged
+  # Compose file
   if [ -f "$tmpdir/compose.snapshot.yml" ]; then
     say "Found compose.snapshot.yml; using it as docker-compose.yml"
     cp -f "$tmpdir/compose.snapshot.yml" "$COMPOSE_FILE"
   fi
 
-  # Stop stack (ignore errors)
+  # Stop running stack (ignore errors)
   (cd "$STACK_DIR" && docker compose down) >/dev/null 2>&1 || true
 
+  # Restore data archives
   say "Restoring media/data/export archives (if present)…"
   for a in media data export; do
-    [ -f "$tmpdir/${a}.tar.gz" ] && tar -C "${DATA_ROOT}" -xzf "$tmpdir/${a}.tar.gz" && ok "Restored ${a}.tar.gz"
+    if [ -f "$tmpdir/${a}.tar.gz" ]; then
+      tar -C "${DATA_ROOT}" -xzf "$tmpdir/${a}.tar.gz"
+      ok "Restored ${a}.tar.gz"
+    fi
   done
 
+  # DB
   if [ -f "$tmpdir/postgres.sql" ]; then
     say "Starting database to import SQL…"
     (cd "$STACK_DIR" && docker compose up -d db)
@@ -190,11 +243,13 @@ _pcloud_restore_from_snapshot() {
     local DBNAME DBUSER
     DBNAME="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo 'paperless')"
     DBUSER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo 'paperless')"
+
     say "Dropping & recreating database ${DBNAME}"
     docker compose -f "$COMPOSE_FILE" exec -T db \
       psql -U "$DBUSER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DBNAME}' AND pid <> pg_backend_pid();" || true
     docker compose -f "$COMPOSE_FILE" exec -T db \
       psql -U "$DBUSER" -c "DROP DATABASE IF EXISTS \"${DBNAME}\"; CREATE DATABASE \"${DBNAME}\";"
+
     say "Importing SQL dump…"
     cat "$tmpdir/postgres.sql" | docker compose -f "$COMPOSE_FILE" exec -T db psql -U "$DBUSER" "$DBNAME"
     ok "Database restored."
@@ -206,37 +261,9 @@ _pcloud_restore_from_snapshot() {
   exit 0
 }
 
-# ---------- public entry points used by install.sh ----------
-setup_pcloud_remote_interactive() {
-  say "Connect to pCloud via WebDAV (if 2FA is ON, use an App Password)."
-  local email pass conf
-  conf="$(_pcloud_config_path)"
-  while true; do
-    read -r -p "pCloud login email: " email
-    [ -z "$email" ] && { warn "Email is required."; continue; }
-    read -r -s -p "pCloud password (or App Password): " pass; echo
-
-    if _pcloud_try_webdav "$email" "$pass" "$RCLONE_REMOTE_NAME"; then
-      ok "rclone config path: $conf"
-      return 0
-    fi
-
-    warn "Authentication failed on both endpoints. If 2FA is ON, use an App Password."
-    ok "rclone config path: $conf"
-    if confirm "Use pCloud API (OAuth) instead? (recommended)" "Y"; then
-      if _pcloud_try_api_interactive; then
-        return 0
-      fi
-    fi
-    if ! confirm "Try again?" "Y"; then
-      die "Aborted."
-    fi
-  done
-}
-
 early_restore_or_continue() {
   local latest
-  latest="$(_pcloud_latest_snapshot || true)"
+  latest="$(latest_snapshot || true)"
   if [ -z "$latest" ]; then
     say "No existing snapshots at ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH} — proceeding with fresh setup."
     return 0
@@ -245,14 +272,23 @@ early_restore_or_continue() {
   echo
   say "Found snapshots at ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
   echo "Latest: ${latest}"
-  if confirm "Restore the latest snapshot now?" "Y"; then
-    _pcloud_restore_from_snapshot "$latest"
+  read -r -p "Restore the latest snapshot now? [Y/n]: " _ans
+  _ans="${_ans:-Y}"
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    restore_from_snapshot "$latest"
     return 0
   fi
-  if confirm "List and choose a different snapshot?" "N"; then
-    _pcloud_list_snapshots || true
-    local choice; choice=$(prompt "Enter snapshot name exactly (or blank to skip)")
-    [ -n "$choice" ] && _pcloud_restore_from_snapshot "$choice"
+
+  read -r -p "List and choose a different snapshot? [y/N]: " _ans2
+  _ans2="${_ans2:-N}"
+  if [[ "$_ans2" =~ ^[Yy]$ ]]; then
+    list_snapshots || true
+    local choice
+    read -r -p "Enter snapshot name exactly (or blank to skip): " choice
+    if [ -n "$choice" ]; then
+      restore_from_snapshot "$choice"
+      return 0
+    fi
   fi
 
   say "Skipping early restore — continuing with fresh setup."
