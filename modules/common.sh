@@ -42,18 +42,23 @@ preflight_ubuntu() {
 }
 
 # ---------- helpers ----------
-# Pipefail-safe random password generator (no pipelines or SIGPIPE)
+# Pipeline-free random password generator (play nice with `set -o pipefail`)
 randpass() {
   local chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#%+=?'
-  local len=22 pass='' idx n chars_len=${#chars}
-  for _ in $(seq 1 "$len"); do
-    # 16-bit random number from /dev/urandom
-    n="$(od -An -N2 -tu2 < /dev/urandom 2>/dev/null | tr -d ' ')"
-    # Fallback if od fails for some reason
+  local chars_len=${#chars}
+  local len=22 pass='' n idx i
+
+  for ((i=0; i<len; i++)); do
+    # Read a 16-bit unsigned int from /dev/urandom (no pipes)
+    n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null)"
+    # Keep only digits via parameter expansion (no pipes)
+    n="${n//[^0-9]/}"
+    # Fallback to $RANDOM if od fails for some reason
     [ -z "$n" ] && n=$RANDOM
     idx=$(( n % chars_len ))
     pass="${pass}${chars:idx:1}"
   done
+
   printf '%s' "$pass"
 }
 
