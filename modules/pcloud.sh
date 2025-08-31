@@ -45,18 +45,44 @@ _pcloud_remote_exists(){
 }
 
 _pcloud_remote_ok(){
-  # quick check; do not call API if remote obviously absent
   _pcloud_remote_exists || return 1
   _timeout 10 rclone about "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1
 }
 
-_pcloud_set_oauth_token(){
-  # arg: token JSON string
-  local token_json="$1"
+# Create a pcloud remote with token + explicit hostname, replacing any existing
+_pcloud_create_oauth_remote(){
+  # args: token_json, hostname (api.pcloud.com | eapi.pcloud.com)
+  local token_json="$1" host="$2"
   rclone config delete "${RCLONE_REMOTE_NAME}" >/dev/null 2>&1 || true
-  rclone config create "${RCLONE_REMOTE_NAME}" pcloud token "$token_json" --non-interactive >/dev/null
+  # rclone’s pcloud backend supports the advanced option "hostname"
+  rclone config create "${RCLONE_REMOTE_NAME}" pcloud \
+    token "$token_json" hostname "$host" --non-interactive >/dev/null
 }
 
+# Auto-probe API region for the pasted token
+_pcloud_set_oauth_token_autoregion(){
+  # arg: token_json
+  local token_json="$1"
+
+  # 1) Try Global
+  _pcloud_create_oauth_remote "$token_json" "api.pcloud.com"
+  if _pcloud_remote_ok; then
+    ok "pCloud remote '${RCLONE_REMOTE_NAME}:' configured for api.pcloud.com."
+    return 0
+  fi
+
+  # 2) Try EU
+  _pcloud_create_oauth_remote "$token_json" "eapi.pcloud.com"
+  if _pcloud_remote_ok; then
+    ok "pCloud remote '${RCLONE_REMOTE_NAME}:' configured for eapi.pcloud.com."
+    return 0
+  fi
+
+  # 3) Fail
+  return 1
+}
+
+# WebDAV path
 _pcloud_webdav_create(){
   # args: email, plain_pass, host_url
   local email="$1" pass_plain="$2" host="$3"
@@ -85,7 +111,7 @@ _pcloud_webdav_try_both(){
 
 # ---- interactive connection menu (exported) ----
 ensure_pcloud_remote_or_menu(){
-  # Fast path: already good
+  # Fast path
   if _pcloud_remote_ok; then
     ok "pCloud remote '${RCLONE_REMOTE_NAME}:' is ready."
     return 0
@@ -112,10 +138,11 @@ ensure_pcloud_remote_or_menu(){
         if _has jq && ! printf '%s' "$_tok" | jq -e '.access_token' >/dev/null 2>&1; then
           warn "Token does not look like JSON with access_token."; continue
         fi
-        if _pcloud_set_oauth_token "$_tok"; then
-          if _pcloud_remote_ok; then ok "pCloud remote configured."; return 0; fi
+        if _pcloud_set_oauth_token_autoregion "$_tok"; then
+          ok "pCloud remote configured."
+          return 0
         fi
-        warn "Token invalid or creation failed. Try again."
+        warn "Token invalid or not valid for either region. Try again."
         ;;
 
       2)
@@ -127,10 +154,11 @@ ensure_pcloud_remote_or_menu(){
         read -r -p "Paste token JSON here: " _tok2_raw || true
         _tok2="$(printf '%s' "$_tok2_raw" | _sanitize_oneline)"
         if [ -z "$_tok2" ]; then warn "Empty token."; continue; fi
-        if _pcloud_set_oauth_token "$_tok2"; then
-          if _pcloud_remote_ok; then ok "pCloud remote configured."; return 0; fi
+        if _pcloud_set_oauth_token_autoregion "$_tok2"; then
+          ok "pCloud remote configured."
+          return 0
         fi
-        warn "Token invalid or creation failed. Try again."
+        warn "Token invalid or not valid for either region. Try again."
         ;;
 
       3)
