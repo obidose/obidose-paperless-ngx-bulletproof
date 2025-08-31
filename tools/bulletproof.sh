@@ -111,15 +111,17 @@ do_list(){
 
 do_restore(){
   need_cmds; check_stack; check_remote_exists
+  local snap="${1:-}"
   if [ -x "$RESTORE_SH" ]; then
-    do_list
-    read -r -p "Enter snapshot name to restore: " snap
-    [ -n "$snap" ] || die "No snapshot specified."
+    if [ -z "$snap" ]; then
+      do_list
+      read -r -p "Enter snapshot name to restore: " snap
+      [ -n "$snap" ] || die "No snapshot specified."
+    fi
     ( cd "$STACK_DIR" && \
       RCLONE_REMOTE_NAME="$RCLONE_REMOTE_NAME" \
       RCLONE_REMOTE_PATH="$RCLONE_REMOTE_PATH" \
-      SNAPSHOT="$snap" \
-      bash "$RESTORE_SH" )
+      bash "$RESTORE_SH" "$snap" )
     ok "Restore invoked."
   else
     warn "No ${RESTORE_SH} found."
@@ -253,4 +255,4 @@ main(){
   esac
 }
 
-main "$@"
+main "$@" 
