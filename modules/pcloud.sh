@@ -2,16 +2,7 @@
 set -Eeuo pipefail
 # modules/pcloud.sh
 # pCloud (WebDAV) + early restore helpers
-# Assumes: say/ok/warn/die/prompt/prompt_secret/confirm exist (from common.sh), rclone installed (deps.sh).
-# Reads these vars if already exported by common.sh/install.sh (fallbacks here are conservative):
-#   RCLONE_REMOTE_NAME (default: pcloud)
-#   INSTANCE_NAME      (default: paperless)
-#   RCLONE_REMOTE_PATH (default: backups/paperless/${INSTANCE_NAME})
-#   STACK_DIR          (default: /home/docker/paperless-setup)
-#   DATA_ROOT          (default: /home/docker/paperless)
-#   COMPOSE_FILE       (default: ${STACK_DIR}/docker-compose.yml)
-#   ENV_FILE           (default: ${STACK_DIR}/.env)
-#   ENV_BACKUP_PASSPHRASE_FILE (default: /root/.paperless_env_pass)
+# Requires: say/ok/warn/die/prompt/prompt_secret/confirm (from common.sh), rclone installed (deps.sh).
 
 # ---------- defaults (only used if not set earlier) ----------
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
@@ -34,36 +25,80 @@ DIR_CONSUME="${DATA_ROOT}/consume"
 DIR_DB="${DATA_ROOT}/db"
 DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
 
-# ---------- low-level helpers ----------
+# ---------- rclone config helpers (safe, no CLI kv parsing) ----------
 
-# args: <email> <plain_password> <remote_name> <webdav_host>
-pcloud__create_remote() {
-  local email_raw="$1" pass_raw="$2" remote="$3" host="$4"
-
-  # Clean up any stray CR/LF that can appear from clipboard pastes
-  local email pass clean_email clean_pass obscured
-  email="$email_raw"
-  pass="$pass_raw"
-  clean_email="$(printf '%s' "$email" | tr -d '\r\n')"
-  clean_pass="$(printf  '%s' "$pass"  | tr -d '\r\n')"
-
-  # Start from a clean config
-  rclone config delete "$remote" >/dev/null 2>&1 || true
-
-  # Pre-obscure so we can safely pass after `--` (nothing gets parsed as a flag)
-  obscured="$(rclone obscure "$clean_pass")"
-
-  # IMPORTANT: flags first, then `--`, then key/value pairs
-  rclone config create "$remote" webdav \
-    --non-interactive \
-    -- \
-    vendor other \
-    url "$host" \
-    user "$clean_email" \
-    pass "$obscured" >/dev/null
+pcloud__conf_path() {
+  if [ -n "${RCLONE_CONFIG:-}" ]; then
+    printf '%s\n' "$RCLONE_CONFIG"
+  else
+    printf '%s\n' "${HOME}/.config/rclone/rclone.conf"
+  fi
 }
 
-# args: <remote_name>
+# remove existing [remote] block from a config file
+# args: <conf> <remote>
+pcloud__strip_remote_from_conf() {
+  local conf="$1" remote="$2" sect="[$remote]"
+  awk -v RS='' -v ORS='' -v S="$sect" '
+    {
+      out=""
+      start=0
+      while (match($0, /\n\[[^]]+\]/)) {
+        hdr=substr($0, RSTART+1, RLENGTH-1)
+        blk=substr($0, 1, RSTART)
+        $0=substr($0, RSTART+1)
+        if (start==0) { out=out blk; start=1; next }
+        # hdr now like "[name]"
+        if (hdr==S) {
+          # skip this block (don’t append)
+        } else {
+          out=out "[" hdr
+        }
+      }
+      if (start==0) { out=$0 } else { out=out $0 }
+      printf "%s", out
+    }' "$conf" 2>/dev/null || true
+}
+
+# write/replace the remote in the rclone config
+# args: <remote> <host> <email> <plain_password>
+pcloud__write_remote_conf() {
+  local remote="$1" host="$2" email_raw="$3" pass_raw="$4"
+  local conf confdir email pass obscured tmp
+
+  # sanitize inputs (remove CR/LF to avoid rclone complaints)
+  email="$(printf '%s' "$email_raw" | tr -d '\r\n')"
+  pass="$(printf  '%s' "$pass_raw"  | tr -d '\r\n')"
+
+  obscured="$(rclone obscure "$pass" | tr -d '\r\n')"
+
+  conf="$(pcloud__conf_path)"
+  confdir="$(dirname "$conf")"
+  mkdir -p "$confdir"
+
+  # build a new config with the remote removed, then append our block
+  tmp="$(mktemp)"
+  if [ -f "$conf" ]; then
+    pcloud__strip_remote_from_conf "$conf" "$remote" > "$tmp" || : 
+  else
+    : > "$tmp"
+  fi
+
+  {
+    printf '\n[%s]\n' "$remote"
+    printf 'type = webdav\n'
+    printf 'url = %s\n' "$host"
+    printf 'vendor = other\n'
+    printf 'user = %s\n' "$email"
+    printf 'pass = %s\n' "$obscured"
+  } >> "$tmp"
+
+  mv -f "$tmp" "$conf"
+  chmod 600 "$conf" || true
+}
+
+# test remote access
+# args: <remote>
 pcloud__test_remote() {
   rclone lsd "$1:" >/dev/null 2>&1
 }
@@ -76,14 +111,14 @@ pcloud__try_hosts() {
   local host_global="https://webdav.pcloud.com"
 
   say "Trying EU WebDAV endpoint…"
-  pcloud__create_remote "$email" "$pass_plain" "$remote" "$host_eu"
+  pcloud__write_remote_conf "$remote" "$host_eu" "$email" "$pass_plain"
   if pcloud__test_remote "$remote"; then
     ok "Connected to pCloud at ${host_eu}"
     return 0
   fi
 
   warn "EU endpoint failed. Trying Global endpoint…"
-  pcloud__create_remote "$email" "$pass_plain" "$remote" "$host_global"
+  pcloud__write_remote_conf "$remote" "$host_global" "$email" "$pass_plain"
   if pcloud__test_remote "$remote"; then
     ok "Connected to pCloud at ${host_global}"
     return 0
@@ -121,7 +156,7 @@ setup_pcloud_remote_interactive() {
       break
     fi
 
-    warn "Both endpoints failed; running a verbose check:"
+    warn "Both endpoints failed; running a verbose check (credentials not echoed):"
     rclone -vv lsd "${RCLONE_REMOTE_NAME}:" || true
     warn "Authentication failed. Re-check email/password. If 2FA is ON, use an App Password."
     # loop and re-prompt
@@ -202,7 +237,6 @@ pcloud__restore_from_snapshot() {
     (cd "$STACK_DIR" && docker compose up -d db)
     sleep 8
 
-    # Pull DB vars from .env if present, else defaults
     local DBNAME DBUSER
     DBNAME="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
     DBUSER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
@@ -223,8 +257,6 @@ pcloud__restore_from_snapshot() {
   say "Bringing full stack up…"
   (cd "$STACK_DIR" && docker compose up -d)
   ok "Restore complete."
-
-  # Successful early restore: stop installer so we don’t run fresh-setup path.
   exit 0
 }
 
