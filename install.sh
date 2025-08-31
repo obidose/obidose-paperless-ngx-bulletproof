@@ -44,6 +44,12 @@ ensure_user
 install_docker
 install_rclone
 
+# Configure/auto-fix pCloud remote (OAuth preferred; auto region)
+pcloud_auto_region_or_setup
+
+# If remote now works, offer early restore before fresh setup
+pcloud_early_restore_or_continue
+
 # Authenticate to pCloud first so we can offer early restore
 ensure_pcloud_remote_or_menu
 early_restore_or_continue
