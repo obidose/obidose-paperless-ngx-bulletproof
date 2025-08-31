@@ -92,6 +92,12 @@ else
   curl -fsSL ${CLI_URL} -o ${CLI_DST} && chmod +x ${CLI_DST}"
 fi
 
+say "Installing backup helper into ${STACK_DIR}/backup.sh"
+install -d "${STACK_DIR}"
+# (Optional) keep a backup if it already exists
+[ -f "${STACK_DIR}/backup.sh" ] && cp -a "${STACK_DIR}/backup.sh" "${STACK_DIR}/backup.sh.bak.$(date +%s)" || true
+install -m 0755 "${TMP_DIR}/backup.sh" "${STACK_DIR}/backup.sh"
+
 echo
 ok "Setup complete."
 echo "Next steps:"
