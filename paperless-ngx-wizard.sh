@@ -6,13 +6,9 @@ trap 'echo -e "\e[1;31m[x]\e[0m Error at ${BASH_SOURCE}:${LINENO}: ${BASH_COMMAN
 # ======================================================================
 # Paperless-ngx • Bulletproof One-Stop Wizard
 # - Installs Docker + Compose, rclone, cron
-# - Sets up Paperless-ngx stack (Redis, Postgres, Tika, Gotenberg)
-# - Configures pCloud backups via rclone (WebDAV)
-# - Detects existing backups on pCloud and optionally restores
-# - NO secrets in repo; wizard asks interactively and stores safely
-#
-# Tested on: Ubuntu 22.04 / 24.04 minimal VPS
-# Author: obidose
+# - Deploys Paperless (Redis, Postgres, Tika, Gotenberg)
+# - Sets up pCloud backups via WebDAV (rclone)
+# - Detects backups and optionally restores
 # ======================================================================
 
 # --------------------------- helpers ----------------------------------
@@ -52,7 +48,11 @@ confirm(){
   [[ "$ans" =~ ^[Yy]$ ]]
 }
 
-randpass(){ tr -dc 'A-Za-z0-9!@#%+=?' < /dev/urandom | head -c 22; }
+randpass(){
+  set +o pipefail
+  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' < /dev/urandom | head -c 22; echo
+  set -o pipefail
+}
 
 ubuntu_version_ok(){
   . /etc/os-release
@@ -63,7 +63,7 @@ ubuntu_version_ok(){
 INSTANCE_NAME="paperless"
 STACK_DIR="/home/docker/paperless-setup"
 DATA_ROOT="/home/docker/paperless"
-TIMEZONE_DEFAULT=$(cat /etc/timezone 2>/dev/null || echo "Pacific/Auckland")
+TIMEZONE_DEFAULT=$(cat /etc/timezone 2>/dev/null || echo "Etc/UTC")
 
 DOCKER_USER="docker"
 DOCKER_UID=1001
@@ -84,14 +84,7 @@ PAPERLESS_ADMIN_PASSWORD="$(randpass)"
 RCLONE_REMOTE_NAME="pcloud"
 RCLONE_REMOTE_PATH_TEMPLATE="backups/paperless/${INSTANCE_NAME}"
 RETENTION_DAYS=30
-CRON_TIME="30 3 * * *" # daily
-
-IMG_PAPERLESS="ghcr.io/paperless-ngx/paperless-ngx:latest"
-IMG_REDIS="redis:7-alpine"
-IMG_POSTGRES="postgres:${POSTGRES_VERSION}-alpine"
-IMG_TIKA="ghcr.io/paperless-ngx/tika:latest"
-IMG_GOTENBERG="gotenberg/gotenberg:8"
-IMG_TRAEFIK="traefik:v3.0"
+CRON_TIME="30 3 * * *" # daily at 03:30
 
 COMPOSE_FILE="${STACK_DIR}/docker-compose.yml"
 ENV_FILE="${STACK_DIR}/.env"
@@ -110,7 +103,7 @@ install_prereqs(){
   apt-get update -y
   apt-get install -y ca-certificates curl gnupg lsb-release unzip tar cron \
                      software-properties-common
-  if grep -q "^#\?user_allow_other" /etc/fuse.conf 2>/dev/null; then
+  if [ -f /etc/fuse.conf ] && grep -q "^#\?user_allow_other" /etc/fuse.conf; then
     sed -i 's/^#\?user_allow_other/user_allow_other/' /etc/fuse.conf || true
   fi
 }
@@ -129,10 +122,7 @@ install_docker(){
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-      > /etc/apt/sources.list.d/docker.list
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     apt-get update -y
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     systemctl enable --now docker
@@ -154,45 +144,45 @@ install_rclone(){
 # --------------------------- rclone/pcloud -----------------------------
 create_pcloud_remote(){
   local user="$1"; local pass_plain="$2"; local remote_name="$3"; local host="$4"
-  local obscured
-  obscured=$(rclone obscure "$pass_plain")
+  local obscured; obscured=$(rclone obscure "$pass_plain")
   rclone config delete "$remote_name" >/dev/null 2>&1 || true
-  rclone config create "$remote_name" webdav vendor pcloud \
-    url "$host" user "$user" pass "$obscured" >/dev/null
+  rclone config create "$remote_name" webdav vendor other url "$host" user "$user" pass "$obscured" >/dev/null
 }
 
-test_pcloud_remote(){ local rn="$1"; rclone lsd "$rn:" >/dev/null 2>&1; }
-
 setup_pcloud(){
-  log "Connect to pCloud via WebDAV (2FA must be OFF)."
+  log "Connect to pCloud via WebDAV (if 2FA is ON, use an App Password)."
   local pc_user pc_pass host_global host_eu
   while true; do
     pc_user=$(prompt "pCloud login email")
     [ -n "$pc_user" ] && break
     warn "Email is required."
   done
-  pc_pass=$(prompt_secret "pCloud password")
+  pc_pass=$(prompt_secret "pCloud password (or App Password)")
 
-  host_global="https://webdav.pcloud.com"
   host_eu="https://ewebdav.pcloud.com"
+  host_global="https://webdav.pcloud.com"
 
-  log "Trying global WebDAV endpoint..."
-  create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$host_global"
-  if test_pcloud_remote "$RCLONE_REMOTE_NAME"; then
-    log "Connected to pCloud at $host_global"
-    return 0
-  fi
-  warn "Global endpoint failed. Trying EU endpoint..."
+  log "Trying EU WebDAV endpoint..."
   create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$host_eu"
-  if test_pcloud_remote "$RCLONE_REMOTE_NAME"; then
+  if rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1; then
     log "Connected to pCloud at $host_eu"
     return 0
   fi
-  err "Could not authenticate to pCloud via WebDAV. Ensure 2FA is OFF and credentials are correct."
+
+  warn "EU endpoint failed. Trying Global endpoint..."
+  create_pcloud_remote "$pc_user" "$pc_pass" "$RCLONE_REMOTE_NAME" "$host_global"
+  if rclone lsd "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1; then
+    log "Connected to pCloud at $host_global"
+    return 0
+  fi
+
+  warn "Both endpoints failed; running a verbose check:"
+  rclone -vv lsd "${RCLONE_REMOTE_NAME}:" || true
+  err "Could not authenticate to pCloud via WebDAV. Check email/password and 2FA (App Password if 2FA ON)."
 }
 
-find_latest_snapshot(){ local base_path="$1"; rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true; }
-list_snapshots(){ local base_path="$1"; rclone lsd "${RCLONE_REMOTE_NAME}:${base_path}" 2>/dev/null | awk '{print $NF}' | sort || true; }
+find_latest_snapshot(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true; }
+list_snapshots(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort || true; }
 
 # --------------------------- compose/env -------------------------------
 prepare_dirs(){
@@ -227,6 +217,10 @@ LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
 RCLONE_REMOTE_NAME=${RCLONE_REMOTE_NAME}
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH}
 RETENTION_DAYS=${RETENTION_DAYS}
+
+# Paths
+DATA_ROOT=${DATA_ROOT}
+STACK_DIR=${STACK_DIR}
 EOF
 }
 
@@ -236,13 +230,13 @@ write_compose(){
     cat > "$COMPOSE_FILE" <<YAML
 services:
   redis:
-    image: ${IMG_REDIS}
+    image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     networks: [paperless]
 
   db:
-    image: ${IMG_POSTGRES}
+    image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -253,20 +247,20 @@ services:
     networks: [paperless]
 
   gotenberg:
-    image: ${IMG_GOTENBERG}
+    image: gotenberg/gotenberg:8
     restart: unless-stopped
     command: ["gotenberg", "--chromium-disable-javascript=true"]
     networks: [paperless]
 
   tika:
-    image: ${IMG_TIKA}
+    image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
       - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
 
   paperless:
-    image: ${IMG_PAPERLESS}
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
@@ -300,7 +294,7 @@ services:
     networks: [paperless]
 
   traefik:
-    image: ${IMG_TRAEFIK}
+    image: traefik:v3.0
     restart: unless-stopped
     command:
       - --providers.docker=true
@@ -327,13 +321,13 @@ YAML
     cat > "$COMPOSE_FILE" <<YAML
 services:
   redis:
-    image: ${IMG_REDIS}
+    image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     networks: [paperless]
 
   db:
-    image: ${IMG_POSTGRES}
+    image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -344,20 +338,20 @@ services:
     networks: [paperless]
 
   gotenberg:
-    image: ${IMG_GOTENBERG}
+    image: gotenberg/gotenberg:8
     restart: unless-stopped
     command: ["gotenberg", "--chromium-disable-javascript=true"]
     networks: [paperless]
 
   tika:
-    image: ${IMG_TIKA}
+    image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
       - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
 
   paperless:
-    image: ${IMG_PAPERLESS}
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
@@ -462,12 +456,7 @@ install_cron(){
   fi
 }
 
-bring_up(){
-  log "Starting stack..."
-  (cd "$STACK_DIR" && docker compose --env-file "$ENV_FILE" up -d)
-}
-
-latest_backup(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1; }
+bring_up(){ log "Starting stack..."; (cd "$STACK_DIR" && docker compose --env-file "$ENV_FILE" up -d); }
 
 restore_from_remote(){
   local SNAP="$1"
@@ -477,107 +466,90 @@ restore_from_remote(){
   log "Fetching snapshot $SNAP to $tmpdir"
   rclone copy "$base/$SNAP" "$tmpdir" --fast-list
 
-  log "Stopping stack (if running)"
-  (cd "$STACK_DIR" && docker compose down) || true
-
+  log "Stopping stack (if running)"; (cd "$STACK_DIR" && docker compose down) || true
   log "Restoring media/data/export"
   for a in media data export; do
     [ -f "$tmpdir/${a}.tar.gz" ] && tar -C "${DATA_ROOT}" -xzf "$tmpdir/${a}.tar.gz" || warn "No archive for $a"
   done
 
   if [ -f "$tmpdir/postgres.sql" ]; then
-    log "Starting db only to import SQL"
-    (cd "$STACK_DIR" && docker compose up -d db)
+    log "Starting db only to import SQL"; (cd "$STACK_DIR" && docker compose up -d db)
     sleep 8
     log "Dropping & recreating database ${POSTGRES_DB}"
-    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db \
-      psql -U "$POSTGRES_USER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${POSTGRES_DB}' AND pid <> pg_backend_pid();" || true
-    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db \
-      psql -U "$POSTGRES_USER" -c "DROP DATABASE IF EXISTS \"${POSTGRES_DB}\"; CREATE DATABASE \"${POSTGRES_DB}\";"
+    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db psql -U "$POSTGRES_USER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${POSTGRES_DB}' AND pid <> pg_backend_pid();" || true
+    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db psql -U "$POSTGRES_USER" -c "DROP DATABASE IF EXISTS \"${POSTGRES_DB}\"; CREATE DATABASE \"${POSTGRES_DB}\";"
     log "Importing SQL dump"
     cat "$tmpdir/postgres.sql" | docker compose -f "$STACK_DIR"/docker-compose.yml exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
   else
     warn "No postgres.sql found in snapshot"
   fi
 
-  log "Bringing full stack up"
-  (cd "$STACK_DIR" && docker compose up -d)
+  log "Bringing full stack up"; (cd "$STACK_DIR" && docker compose up -d)
   log "Restore complete"
 }
 
 # --------------------------- wizard -----------------------------------
 wizard(){
-  echo
-  log "Starting Paperless-ngx setup wizard…"
+  echo; log "Starting Paperless-ngx setup wizard…"
   need_root
   ubuntu_version_ok || warn "Ubuntu $(. /etc/os-release; echo $VERSION_ID) detected; tested on 22.04/24.04"
+  install_prereqs; ensure_user; install_docker; install_rclone
 
-  install_prereqs
-  ensure_user
-  install_docker
-  install_rclone
-
-  TIMEZONE=$(prompt "Timezone" "$TIMEZONE_DEFAULT")
-  INSTANCE_NAME=$(prompt "Instance name" "$INSTANCE_NAME")
+  echo; log "Press Enter to accept the [default] value, or type a custom value."
+  TIMEZONE=$(prompt "Timezone (IANA, e.g., Pacific/Auckland; Enter=default)" "$TIMEZONE_DEFAULT")
+  INSTANCE_NAME=$(prompt "Instance name (Enter=default)" "$INSTANCE_NAME")
   RCLONE_REMOTE_PATH_TEMPLATE="backups/paperless/${INSTANCE_NAME}"
 
-  DATA_ROOT=$(prompt "Data root" "$DATA_ROOT")
-  STACK_DIR=$(prompt "Stack dir" "$STACK_DIR")
+  DATA_ROOT=$(prompt "Data root (persistent storage; Enter=default)" "$DATA_ROOT")
+  STACK_DIR=$(prompt "Stack dir (where docker-compose.yml lives; Enter=default)" "$STACK_DIR")
 
-  PAPERLESS_ADMIN_USER=$(prompt "Paperless admin username" "$PAPERLESS_ADMIN_USER")
+  PAPERLESS_ADMIN_USER=$(prompt "Paperless admin username (Enter=default)" "$PAPERLESS_ADMIN_USER")
   local gen1="$PAPERLESS_ADMIN_PASSWORD"; local gen2="$POSTGRES_PASSWORD"
-  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password" "$gen1")
-  POSTGRES_PASSWORD=$(prompt "Postgres password" "$gen2")
+  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$gen1")
+  POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$gen2")
 
-  ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no)" "$ENABLE_TRAEFIK")
+  ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")
   if [ "$ENABLE_TRAEFIK" = "yes" ]; then
-    DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here)" "$DOMAIN")
-    LETSENCRYPT_EMAIL=$(prompt "Let's Encrypt email" "$LETSENCRYPT_EMAIL")
+    DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here; Enter=default)" "$DOMAIN")
+    LETSENCRYPT_EMAIL=$(prompt "Let's Encrypt email (Enter=default)" "$LETSENCRYPT_EMAIL")
     PAPERLESS_URL="https://$DOMAIN"
   else
-    HTTP_PORT=$(prompt "Bind Paperless on host port" "$HTTP_PORT")
+    HTTP_PORT=$(prompt "Bind Paperless on host port (Enter=default)" "$HTTP_PORT")
     PAPERLESS_URL="http://localhost:${HTTP_PORT}"
   fi
 
-  RCLONE_REMOTE_NAME=$(prompt "rclone remote name" "$RCLONE_REMOTE_NAME")
-  RCLONE_REMOTE_PATH=$(prompt "Remote path for backups" "$RCLONE_REMOTE_PATH_TEMPLATE")
-  RETENTION_DAYS=$(prompt "Retention days" "$RETENTION_DAYS")
-  CRON_TIME=$(prompt "Backup cron (m h dom mon dow)" "$CRON_TIME")
+  RCLONE_REMOTE_NAME=$(prompt "rclone remote name (Enter=default)" "$RCLONE_REMOTE_NAME")
+  RCLONE_REMOTE_PATH=$(prompt "Remote path for backups (Enter=default)" "$RCLONE_REMOTE_PATH_TEMPLATE")
+  RETENTION_DAYS=$(prompt "Retention days (Enter=default)" "$RETENTION_DAYS")
+  CRON_TIME=$(prompt "Backup cron (m h dom mon dow; Enter=default)" "$CRON_TIME")
 
   setup_pcloud
-
   prepare_dirs
   write_env
   write_compose
   write_backup_script
   install_cron
 
-  local latest
-  latest=$(latest_backup || true)
+  local latest; latest=$(find_latest_snapshot || true)
   if [ -n "$latest" ]; then
-    echo
-    log "Found snapshot(s) under ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
+    echo; log "Found snapshot(s) under ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
     echo "Latest: $latest"
     if confirm "Restore latest now?" Y; then
-      RESTORE_SNAP="$latest"
+      restore_from_remote "$latest"
     else
-      if confirm "List and choose another snapshot?" N; then
+      if confirm "List and choose a different snapshot?" N; then
         list_snapshots "$RCLONE_REMOTE_PATH" || true
-        local choice
-        choice=$(prompt "Enter snapshot name exactly")
-        [ -n "$choice" ] && RESTORE_SNAP="$choice" || RESTORE_SNAP=""
+        local choice; choice=$(prompt "Enter snapshot name exactly")
+        [ -n "$choice" ] && restore_from_remote "$choice" || bring_up
+      else
+        bring_up
       fi
     fi
-  fi
-
-  if [ -n "${RESTORE_SNAP:-}" ]; then
-    restore_from_remote "$RESTORE_SNAP"
   else
     bring_up
   fi
 
-  echo
-  log "All set! Access Paperless at: ${PAPERLESS_URL}"
+  echo; log "All set! Access Paperless at: ${PAPERLESS_URL}"
 }
 
 # --------------------------- entrypoint -------------------------------
