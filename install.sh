@@ -18,83 +18,81 @@ DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
 COMPOSE_FILE="${STACK_DIR}/docker-compose.yml"
 ENV_FILE="${STACK_DIR}/.env"
 
-# Temp dir for fetched modules
+# Modules temp dir
 TMP_DIR="/tmp/paperless-wiz.$$"
 mkdir -p "$TMP_DIR"
 
+fetch() { curl -fsSL "$1" -o "$2"; }
+
+# Basic UI helpers (modules will reuse if not already defined)
 say(){  echo -e "\e[1;34m[•]\e[0m $*"; }
 ok(){   echo -e "\e[1;32m[✓]\e[0m $*"; }
 warn(){ echo -e "\e[1;33m[!]\e[0m $*"; }
 die(){  echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
+
+# Error reporting: try to surface the module + line that failed
+trap 'code=$?; line=${BASH_LINENO[0]:-0}; src=${BASH_SOURCE[1]:-$0}; die "Installer failed at ${src}:${line} (exit ${code})"' ERR
+
 need_root(){ [ "$(id -u)" -eq 0 ] || die "Run as root (sudo -i)."; }
-
-fetch_or_die() {
-  local url="$1" dest="$2"
-  curl -fsSL "$url" -o "$dest" || die "Fetch failed: $url"
-}
-
-cleanup() { rm -rf "$TMP_DIR" 2>/dev/null || true; }
-
-trap 'die "Installer failed at ${BASH_SOURCE[0]}:${LINENO} (exit $?)"' ERR
 need_root
 
 say "Fetching modules…"
-for f in common deps pcloud files; do
-  fetch_or_die "${GITHUB_RAW}/modules/${f}.sh" "${TMP_DIR}/${f}.sh"
+fetch "${GITHUB_RAW}/modules/common.sh"  "${TMP_DIR}/common.sh"
+fetch "${GITHUB_RAW}/modules/deps.sh"    "${TMP_DIR}/deps.sh"
+fetch "${GITHUB_RAW}/modules/pcloud.sh"  "${TMP_DIR}/pcloud.sh"
+fetch "${GITHUB_RAW}/modules/files.sh"   "${TMP_DIR}/files.sh"
+
+# Ensure modules exist & are non-empty
+for m in common deps pcloud files; do
+  [ -s "${TMP_DIR}/${m}.sh" ] || die "Failed to fetch modules/${m}.sh"
 done
 
-# Normalize CRLF if present (no-op if dos2unix not installed)
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix "${TMP_DIR}"/*.sh >/dev/null 2>&1 || true
-fi
-
-# Syntax check each module; show context on error
-for m in "${TMP_DIR}"/*.sh; do
-  if ! bash -n "$m" 2>/dev/null; then
-    warn "Syntax error in $(basename "$m"); context:"
-    nl -ba "$m" | sed -n '1,200p'
-    die "Aborting due to syntax error in $(basename "$m")."
-  fi
-done
-
-# Export a few vars some modules may expect
-export GITHUB_RAW INSTANCE_NAME STACK_DIR DATA_ROOT COMPOSE_FILE ENV_FILE
-
-# Some modules may reference variables not yet defined; relax nounset while sourcing
-set +u
 # shellcheck disable=SC1090
 source "${TMP_DIR}/common.sh"
 source "${TMP_DIR}/deps.sh"
 source "${TMP_DIR}/pcloud.sh"
 source "${TMP_DIR}/files.sh"
-set -u
+
+# >>> Important fix: generate any missing secrets AFTER sourcing modules <<<
+# (avoids subshells during source-time under 'set -Eeuo pipefail')
+ensure_runtime_defaults
 
 say "Starting Paperless-ngx setup wizard…"
 
-# --- main flow ---
-preflight_ubuntu                 # distro sanity
-install_prereqs                  # apt update/upgrade + basics
-ensure_user                      # creates 'docker' user if missing
-install_docker                   # Docker Engine + Compose plugin
-install_rclone                   # rclone for pCloud
+# 0) Basic OS sanity + deps
+preflight_ubuntu
+install_prereqs                # apt update/upgrade + basics
+ensure_user                    # creates 'docker' user if missing
+install_docker                 # installs docker engine + compose plugin
+install_rclone                 # rclone for pCloud backups
 
-setup_pcloud_remote_interactive  # login to pCloud first (EU→Global), creates remote
-early_restore_or_continue        # if snapshots exist, offer early restore
+# 1) Authenticate to pCloud first, so we can branch to restore immediately
+setup_pcloud_remote_interactive
 
-load_env_defaults_from "${GITHUB_RAW}/env/.env.example"
-pick_and_merge_preset   "${GITHUB_RAW}"       # choose traefik/direct/custom (or URL/local)
-prompt_core_values                              # ask only for missing values
+# 2) If backups exist, offer an early restore before any other prompts
+#    (Will bring up stack after restore; otherwise returns to continue fresh install)
+early_restore_or_continue
 
-prepare_dirs                                   # create stack/data directories
-write_env_file                                  # write .env based on answers/preset
-fetch_compose_file   "${GITHUB_RAW}"           # fetch traefik/direct compose
-install_ops_backup   "${GITHUB_RAW}"           # install ops/backup_to_pcloud.sh
-install_cron_job                                    # add daily cron if not present
-install_bulletproof_menu "${GITHUB_RAW}"       # install /usr/local/bin/bulletproof
+# 3) Optional presets to pre-fill defaults (from repo/local/URL)
+pick_and_merge_preset "$GITHUB_RAW"
 
-maybe_offer_restore                             # optional late restore
-bring_up_stack                                  # docker compose up -d
-final_summary                                   # print URLs, next steps
+# 4) Ask for core values (accept Enter for defaults)
+prompt_core_values
 
-ok "Done."
-cleanup
+# 5) Recompute derived paths & ensure dir tree
+compute_paths
+ensure_dir_tree
+
+# 6) Write config & helper files
+write_env_file
+write_compose_file
+write_backup_script
+install_backup_cron
+
+# 7) Start stack (if not already running from a restore)
+bring_up_stack
+
+# 8) Final status
+show_status
+
+ok "All done! Visit your Paperless-ngx at the URL shown above."
