@@ -1,254 +1,58 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
-# modules/pcloud.sh
-# pCloud (WebDAV) + early restore helpers
-# Assumes: say/ok/warn/die/prompt/prompt_secret/confirm exist (from common.sh), rclone installed (deps.sh).
-# Reads these vars if already exported by common.sh/install.sh (fallbacks here are conservative):
-#   RCLONE_REMOTE_NAME (default: pcloud)
-#   INSTANCE_NAME      (default: paperless)
-#   RCLONE_REMOTE_PATH (default: backups/paperless/${INSTANCE_NAME})
-#   STACK_DIR          (default: /home/docker/paperless-setup)
-#   DATA_ROOT          (default: /home/docker/paperless)
-#   COMPOSE_FILE       (default: ${STACK_DIR}/docker-compose.yml)
-#   ENV_FILE           (default: ${STACK_DIR}/.env)
-#   ENV_BACKUP_PASSPHRASE_FILE (default: /root/.paperless_env_pass)
 
-# ---------- defaults (only used if not set earlier) ----------
-RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
-INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
-RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
+root@ubuntu:~# bash -c "$(curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.sh)"
+[•] Fetching modules…
+[•] Starting Paperless-ngx setup wizard…
+[•] Installing prerequisites…
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 https://download.docker.com/linux/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Reading package lists... Done
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+Calculating upgrade... Done
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+ca-certificates is already the newest version (20240203).
+curl is already the newest version (8.5.0-2ubuntu10.6).
+gnupg is already the newest version (2.4.4-2ubuntu17.3).
+lsb-release is already the newest version (12.0-2).
+unzip is already the newest version (6.0-28ubuntu4.1).
+tar is already the newest version (1.35+dfsg-3build1).
+cron is already the newest version (3.0pl1-184ubuntu2).
+software-properties-common is already the newest version (0.99.49.3).
+dos2unix is already the newest version (7.5.1-1).
+jq is already the newest version (1.7.1-3ubuntu0.24.04.1).
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+[•] Docker already installed.
+[•] rclone already installed.
+[•] Connect to pCloud via WebDAV (if 2FA is ON, use an App Password).
+pCloud login email: mikedromey@gmail.com
+pCloud password (or App Password): [•] Trying EU WebDAV endpoint…
+Error: update remote: invalid key or value contains \n or \r
+Usage:
+  rclone config create name type [key value]* [flags]
 
-STACK_DIR="${STACK_DIR:-/home/docker/paperless-setup}"
-DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
+Flags:
+      --all               Ask the full set of config questions
+      --continue          Continue the configuration process with an answer
+  -h, --help              help for create
+      --no-obscure        Force any passwords not to be obscured
+      --no-output         Don't provide any output
+      --non-interactive   Don't interact with user and return questions
+      --obscure           Force any passwords to be obscured
+      --result string     Result - use with --continue
+      --state string      State - use with --continue
 
-COMPOSE_FILE="${COMPOSE_FILE:-${STACK_DIR}/docker-compose.yml}"
-ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
+Use "rclone [command] --help" for more information about a command.
+Use "rclone help flags" for to see the global flags.
+Use "rclone help backends" for a list of supported services.
 
-ENV_BACKUP_PASSPHRASE_FILE="${ENV_BACKUP_PASSPHRASE_FILE:-/root/.paperless_env_pass}"
+2025/08/31 05:59:10 NOTICE: Fatal error: update remote: invalid key or value contains \n or \r
 
-# Paperless data subdirs (derived)
-DIR_EXPORT="${DATA_ROOT}/export"
-DIR_MEDIA="${DATA_ROOT}/media"
-DIR_DATA="${DATA_ROOT}/data"
-DIR_CONSUME="${DATA_ROOT}/consume"
-DIR_DB="${DATA_ROOT}/db"
-DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
-
-# ---------- low-level helpers ----------
-
-# args: <email> <plain_password> <remote_name> <webdav_host>
-pcloud__create_remote() {
-  local email="$1" pass_plain="$2" remote="$3" host="$4"
-
-  # Clean slate
-  rclone config delete "$remote" >/dev/null 2>&1 || true
-
-  # Use vendor=other for pCloud; --obscure handles values that start with '-'
-  # key=value form avoids CLI flag confusion on earlier rclone versions.
-  rclone config create "$remote" webdav \
-    vendor=other \
-    url="$host" \
-    user="$email" \
-    pass="$pass_plain" \
-    --obscure --non-interactive >/dev/null
-}
-
-# args: <remote_name>
-pcloud__test_remote() {
-  rclone lsd "$1:" >/dev/null 2>&1
-}
-
-# Try EU first, then Global
-# args: <email> <plain_password> <remote_name>
-pcloud__try_hosts() {
-  local email="$1" pass_plain="$2" remote="$3"
-  local host_eu="https://ewebdav.pcloud.com"
-  local host_global="https://webdav.pcloud.com"
-
-  say "Trying EU WebDAV endpoint…"
-  pcloud__create_remote "$email" "$pass_plain" "$remote" "$host_eu"
-  if pcloud__test_remote "$remote"; then
-    ok "Connected to pCloud at ${host_eu}"
-    return 0
-  fi
-
-  warn "EU endpoint failed. Trying Global endpoint…"
-  pcloud__create_remote "$email" "$pass_plain" "$remote" "$host_global"
-  if pcloud__test_remote "$remote"; then
-    ok "Connected to pCloud at ${host_global}"
-    return 0
-  fi
-
-  return 1
-}
-
-# list snapshot folder names sorted (timestamp-friendly)
-pcloud__list_snapshots() {
-  rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null \
-    | awk '{print $NF}' | sort
-}
-
-# latest snapshot name (or empty)
-pcloud__latest_snapshot() {
-  pcloud__list_snapshots | tail -n1
-}
-
-# ---------- interactive login ----------
-
-setup_pcloud_remote_interactive() {
-  say "Connect to pCloud via WebDAV (if 2FA is ON, use an App Password)."
-  local email pass
-  while true; do
-    email="$(prompt "pCloud login email")"
-    if [ -z "$email" ]; then
-      warn "Email is required."
-      continue
-    fi
-    pass="$(prompt_secret "pCloud password (or App Password)")"
-
-    if pcloud__try_hosts "$email" "$pass" "$RCLONE_REMOTE_NAME"; then
-      export PCLOUD_EMAIL="$email"  # optional, for this session
-      break
-    fi
-
-    warn "Both endpoints failed; running a verbose check:"
-    rclone -vv lsd "${RCLONE_REMOTE_NAME}:" || true
-    warn "Authentication failed. Re-check email/password. If 2FA is ON, use an App Password."
-    # loop and re-prompt
-  done
-}
-
-# ---------- restore helpers ----------
-
-pcloud__ensure_dirs() {
-  mkdir -p "$STACK_DIR" "$DATA_ROOT" \
-           "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE"
-}
-
-# args: <snapshot_name>
-pcloud__restore_from_snapshot() {
-  local SNAP="$1"
-  local base="${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
-  local tmpdir="${STACK_DIR}/_restore/${SNAP}"
-
-  [ -z "$SNAP" ] && die "Internal error: empty snapshot name passed to restore."
-
-  pcloud__ensure_dirs
-
-  say "Fetching snapshot ${SNAP} to ${tmpdir}"
-  mkdir -p "$tmpdir"
-  rclone copy "${base}/${SNAP}" "$tmpdir" --fast-list
-
-  # Restore .env (prefer encrypted)
-  if [ -f "$tmpdir/.env.enc" ]; then
-    say "Found encrypted .env.enc in snapshot."
-    if [ -f "$ENV_BACKUP_PASSPHRASE_FILE" ]; then
-      say "Decrypting .env using passphrase file: ${ENV_BACKUP_PASSPHRASE_FILE}"
-      if ! openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
-           -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-           -pass "file:${ENV_BACKUP_PASSPHRASE_FILE}"; then
-        warn "Decryption with passphrase file failed."
-        read -r -s -p "Enter passphrase to decrypt .env: " _pp; echo
-        openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
-          -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-          -pass "pass:${_pp}" || die "Failed to decrypt .env.enc with provided passphrase."
-      fi
-    else
-      warn "No passphrase file at ${ENV_BACKUP_PASSPHRASE_FILE}."
-      read -r -s -p "Enter passphrase to decrypt .env: " _pp2; echo
-      openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
-        -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-        -pass "pass:${_pp2}" || die "Failed to decrypt .env.enc with provided passphrase."
-    fi
-    ok "Decrypted .env to ${ENV_FILE}"
-  elif [ -f "$tmpdir/.env" ]; then
-    say "Found plain .env in snapshot; restoring."
-    cp -f "$tmpdir/.env" "$ENV_FILE"
-  else
-    warn "No .env found in snapshot; the wizard will prompt for missing values later."
-  fi
-
-  # Restore compose file if snapshot included it
-  if [ -f "$tmpdir/compose.snapshot.yml" ]; then
-    say "Found compose.snapshot.yml; using it as docker-compose.yml"
-    cp -f "$tmpdir/compose.snapshot.yml" "$COMPOSE_FILE"
-  fi
-
-  # Stop stack if running
-  (cd "$STACK_DIR" && docker compose down) >/dev/null 2>&1 || true
-
-  # Restore data archives
-  say "Restoring media/data/export archives (if present)…"
-  for a in media data export; do
-    if [ -f "$tmpdir/${a}.tar.gz" ]; then
-      tar -C "${DATA_ROOT}" -xzf "$tmpdir/${a}.tar.gz"
-      ok "Restored ${a}.tar.gz"
-    fi
-  done
-
-  # Restore database if dump present
-  if [ -f "$tmpdir/postgres.sql" ]; then
-    say "Starting database to import SQL…"
-    (cd "$STACK_DIR" && docker compose up -d db)
-    sleep 8
-
-    # Pull DB vars from .env if present, else defaults
-    local DBNAME DBUSER
-    DBNAME="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-    DBUSER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-    DBNAME="${DBNAME:-paperless}"
-    DBUSER="${DBUSER:-paperless}"
-
-    say "Dropping & recreating database ${DBNAME}"
-    docker compose -f "$COMPOSE_FILE" exec -T db \
-      psql -U "$DBUSER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DBNAME}' AND pid <> pg_backend_pid();" || true
-    docker compose -f "$COMPOSE_FILE" exec -T db \
-      psql -U "$DBUSER" -c "DROP DATABASE IF EXISTS \"${DBNAME}\"; CREATE DATABASE \"${DBNAME}\";"
-
-    say "Importing SQL dump…"
-    cat "$tmpdir/postgres.sql" | docker compose -f "$COMPOSE_FILE" exec -T db psql -U "$DBUSER" "$DBNAME"
-    ok "Database restored."
-  fi
-
-  say "Bringing full stack up…"
-  (cd "$STACK_DIR" && docker compose up -d)
-  ok "Restore complete."
-
-  # Successful early restore: stop installer so we don’t run fresh-setup path.
-  exit 0
-}
-
-# Offer early restore if backups exist
-early_restore_or_continue() {
-  local latest
-  latest="$(pcloud__latest_snapshot || true)"
-
-  if [ -z "$latest" ]; then
-    say "No existing snapshots at ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH} — proceeding with fresh setup."
-    return 0
-  fi
-
-  echo
-  say "Found snapshots at ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
-  echo "Latest: ${latest}"
-  read -r -p "Restore the latest snapshot now? [Y/n]: " _ans
-  _ans="${_ans:-Y}"
-  if [[ "$_ans" =~ ^[Yy]$ ]]; then
-    pcloud__restore_from_snapshot "$latest"
-    return 0
-  fi
-
-  read -r -p "List and choose a different snapshot? [y/N]: " _ans2
-  _ans2="${_ans2:-N}"
-  if [[ "$_ans2" =~ ^[Yy]$ ]]; then
-    pcloud__list_snapshots || true
-    local choice
-    read -r -p "Enter snapshot name exactly (or blank to skip): " choice
-    if [ -n "$choice" ]; then
-      pcloud__restore_from_snapshot "$choice"
-      return 0
-    fi
-  fi
-
-  say "Skipping early restore — continuing with fresh setup."
-}
+^C
+root@ubuntu:~#
