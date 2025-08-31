@@ -2,9 +2,8 @@
 set -Eeuo pipefail
 # modules/pcloud.sh
 # pCloud (WebDAV) + early restore helpers
-# Requires: say/ok/warn/die/prompt/prompt_secret/confirm (from common.sh), rclone installed (deps.sh).
 
-# ---------- defaults (only used if not set earlier) ----------
+# ---------- defaults (used only if not already set) ----------
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -14,10 +13,9 @@ DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
 
 COMPOSE_FILE="${COMPOSE_FILE:-${STACK_DIR}/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
-
 ENV_BACKUP_PASSPHRASE_FILE="${ENV_BACKUP_PASSPHRASE_FILE:-/root/.paperless_env_pass}"
 
-# Paperless data subdirs (derived)
+# Paperless data subdirs
 DIR_EXPORT="${DATA_ROOT}/export"
 DIR_MEDIA="${DATA_ROOT}/media"
 DIR_DATA="${DATA_ROOT}/data"
@@ -25,7 +23,16 @@ DIR_CONSUME="${DATA_ROOT}/consume"
 DIR_DB="${DATA_ROOT}/db"
 DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
 
-# ---------- rclone config helpers (safe, no CLI kv parsing) ----------
+# rclone timeout knobs to prevent hangs
+_RTIME_FLAGS=(--timeout=12s --contimeout=6s --low-level-retries=1 --retries=1)
+
+# ---------- tiny helpers ----------
+
+_trim_crlf_spaces() {
+  # strip CR/LF and leading/trailing whitespace
+  # usage: _trim_crlf_spaces "string"
+  printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//'
+}
 
 pcloud__conf_path() {
   if [ -n "${RCLONE_CONFIG:-}" ]; then
@@ -35,51 +42,37 @@ pcloud__conf_path() {
   fi
 }
 
-# remove existing [remote] block from a config file
+# Remove an existing remote block from a config file
 # args: <conf> <remote>
 pcloud__strip_remote_from_conf() {
-  local conf="$1" remote="$2" sect="[$remote]"
-  awk -v RS='' -v ORS='' -v S="$sect" '
-    {
-      out=""
-      start=0
-      while (match($0, /\n\[[^]]+\]/)) {
-        hdr=substr($0, RSTART+1, RLENGTH-1)
-        blk=substr($0, 1, RSTART)
-        $0=substr($0, RSTART+1)
-        if (start==0) { out=out blk; start=1; next }
-        # hdr now like "[name]"
-        if (hdr==S) {
-          # skip this block (don’t append)
-        } else {
-          out=out "[" hdr
-        }
-      }
-      if (start==0) { out=$0 } else { out=out $0 }
-      printf "%s", out
-    }' "$conf" 2>/dev/null || true
+  local conf="$1" remote="$2"
+  # awk approach: keep everything except the [remote] block
+  awk -v r="[$remote]" '
+    BEGIN{inblk=0}
+    /^\[.*\]$/{
+      inblk=($0==r)
+    }
+    { if(!inblk) print $0 }
+  ' "$conf" 2>/dev/null || true
 }
 
-# write/replace the remote in the rclone config
+# Write/replace the remote in rclone.conf
 # args: <remote> <host> <email> <plain_password>
 pcloud__write_remote_conf() {
   local remote="$1" host="$2" email_raw="$3" pass_raw="$4"
   local conf confdir email pass obscured tmp
 
-  # sanitize inputs (remove CR/LF to avoid rclone complaints)
-  email="$(printf '%s' "$email_raw" | tr -d '\r\n')"
-  pass="$(printf  '%s' "$pass_raw"  | tr -d '\r\n')"
-
+  email="$(_trim_crlf_spaces "$email_raw")"
+  pass="$(_trim_crlf_spaces "$pass_raw")"
   obscured="$(rclone obscure "$pass" | tr -d '\r\n')"
 
   conf="$(pcloud__conf_path)"
   confdir="$(dirname "$conf")"
   mkdir -p "$confdir"
 
-  # build a new config with the remote removed, then append our block
   tmp="$(mktemp)"
   if [ -f "$conf" ]; then
-    pcloud__strip_remote_from_conf "$conf" "$remote" > "$tmp" || : 
+    pcloud__strip_remote_from_conf "$conf" "$remote" > "$tmp" || :
   else
     : > "$tmp"
   fi
@@ -97,29 +90,42 @@ pcloud__write_remote_conf() {
   chmod 600 "$conf" || true
 }
 
-# test remote access
-# args: <remote>
-pcloud__test_remote() {
-  rclone lsd "$1:" >/dev/null 2>&1
+# Fast auth probe with curl PROPFIND (Depth:0). Returns 0 on 207.
+# args: <host> <email> <pass>
+pcloud__http_auth_ok() {
+  local host="$1" email="$2" pass="$3"
+  local code
+  code="$(
+    curl -sS -u "${email}:${pass}" \
+      --connect-timeout 8 --max-time 12 \
+      -X PROPFIND -H "Depth: 0" \
+      -o /dev/null -w "%{http_code}" \
+      --data '<propfind xmlns="DAV:"><allprop/></propfind>' \
+      "${host}/" || echo "000"
+  )"
+  [ "$code" = "207" ]
 }
 
-# Try EU first, then Global
-# args: <email> <plain_password> <remote_name>
+# Try EU first, then Global. If curl probe succeeds, write config and (optionally) quick rclone check.
+# args: <email> <plain_password> <remote>
 pcloud__try_hosts() {
   local email="$1" pass_plain="$2" remote="$3"
   local host_eu="https://ewebdav.pcloud.com"
   local host_global="https://webdav.pcloud.com"
 
   say "Trying EU WebDAV endpoint…"
-  pcloud__write_remote_conf "$remote" "$host_eu" "$email" "$pass_plain"
-  if pcloud__test_remote "$remote"; then
+  if pcloud__http_auth_ok "$host_eu" "$email" "$pass_plain"; then
+    pcloud__write_remote_conf "$remote" "$host_eu" "$email" "$pass_plain"
+    # quick non-blocking check; ignore failure to avoid hangs
+    rclone "${_RTIME_FLAGS[@]}" -q lsd "${remote}:" >/dev/null 2>&1 || true
     ok "Connected to pCloud at ${host_eu}"
     return 0
   fi
 
   warn "EU endpoint failed. Trying Global endpoint…"
-  pcloud__write_remote_conf "$remote" "$host_global" "$email" "$pass_plain"
-  if pcloud__test_remote "$remote"; then
+  if pcloud__http_auth_ok "$host_global" "$email" "$pass_plain"; then
+    pcloud__write_remote_conf "$remote" "$host_global" "$email" "$pass_plain"
+    rclone "${_RTIME_FLAGS[@]}" -q lsd "${remote}:" >/dev/null 2>&1 || true
     ok "Connected to pCloud at ${host_global}"
     return 0
   fi
@@ -127,13 +133,12 @@ pcloud__try_hosts() {
   return 1
 }
 
-# list snapshot folder names sorted (timestamp-friendly)
+# list snapshot folder names with timeouts (won’t hang)
 pcloud__list_snapshots() {
-  rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null \
+  rclone "${_RTIME_FLAGS[@]}" lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null \
     | awk '{print $NF}' | sort
 }
 
-# latest snapshot name (or empty)
 pcloud__latest_snapshot() {
   pcloud__list_snapshots | tail -n1
 }
@@ -145,21 +150,20 @@ setup_pcloud_remote_interactive() {
   local email pass
   while true; do
     email="$(prompt "pCloud login email")"
-    if [ -z "$email" ]; then
-      warn "Email is required."
-      continue
-    fi
+    [ -n "$email" ] || { warn "Email is required."; continue; }
     pass="$(prompt_secret "pCloud password (or App Password)")"
 
     if pcloud__try_hosts "$email" "$pass" "$RCLONE_REMOTE_NAME"; then
-      export PCLOUD_EMAIL="$email"  # optional, for this session
+      export PCLOUD_EMAIL="$email"  # optional
       break
     fi
 
-    warn "Both endpoints failed; running a verbose check (credentials not echoed):"
-    rclone -vv lsd "${RCLONE_REMOTE_NAME}:" || true
-    warn "Authentication failed. Re-check email/password. If 2FA is ON, use an App Password."
-    # loop and re-prompt
+    warn "Authentication failed on both endpoints."
+    warn "Tip: If 2FA is ON, create an App Password in pCloud and use it here."
+    # Show where config is written for inspection
+    say "rclone config: $(pcloud__conf_path)"
+    read -r -p "Try again? [Y/n]: " a; a="${a:-Y}"
+    [[ "$a" =~ ^[Yy]$ ]] || die "Aborted."
   done
 }
 
@@ -175,14 +179,13 @@ pcloud__restore_from_snapshot() {
   local SNAP="$1"
   local base="${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
   local tmpdir="${STACK_DIR}/_restore/${SNAP}"
-
-  [ -z "$SNAP" ] && die "Internal error: empty snapshot name passed to restore."
+  [ -n "$SNAP" ] || die "Internal error: empty snapshot name."
 
   pcloud__ensure_dirs
 
   say "Fetching snapshot ${SNAP} to ${tmpdir}"
   mkdir -p "$tmpdir"
-  rclone copy "${base}/${SNAP}" "$tmpdir" --fast-list
+  rclone "${_RTIME_FLAGS[@]}" copy "${base}/${SNAP}" "$tmpdir" --fast-list
 
   # Restore .env (prefer encrypted)
   if [ -f "$tmpdir/.env.enc" ]; then
@@ -196,14 +199,14 @@ pcloud__restore_from_snapshot() {
         read -r -s -p "Enter passphrase to decrypt .env: " _pp; echo
         openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
           -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-          -pass "pass:${_pp}" || die "Failed to decrypt .env.enc with provided passphrase."
+          -pass "pass:${_pp}" || die "Failed to decrypt .env.enc."
       fi
     else
       warn "No passphrase file at ${ENV_BACKUP_PASSPHRASE_FILE}."
       read -r -s -p "Enter passphrase to decrypt .env: " _pp2; echo
       openssl enc -d -aes-256-cbc -md sha256 -pbkdf2 -salt \
         -in "$tmpdir/.env.enc" -out "$ENV_FILE" \
-        -pass "pass:${_pp2}" || die "Failed to decrypt .env.enc with provided passphrase."
+        -pass "pass:${_pp2}" || die "Failed to decrypt .env.enc."
     fi
     ok "Decrypted .env to ${ENV_FILE}"
   elif [ -f "$tmpdir/.env" ]; then
@@ -213,7 +216,7 @@ pcloud__restore_from_snapshot() {
     warn "No .env found in snapshot; the wizard will prompt for missing values later."
   fi
 
-  # Restore compose file if snapshot included it
+  # Restore compose file if present
   if [ -f "$tmpdir/compose.snapshot.yml" ]; then
     say "Found compose.snapshot.yml; using it as docker-compose.yml"
     cp -f "$tmpdir/compose.snapshot.yml" "$COMPOSE_FILE"
@@ -260,7 +263,7 @@ pcloud__restore_from_snapshot() {
   exit 0
 }
 
-# Offer early restore if backups exist
+# Offer early restore if backups exist (with timeouts)
 early_restore_or_continue() {
   local latest
   latest="$(pcloud__latest_snapshot || true)"
