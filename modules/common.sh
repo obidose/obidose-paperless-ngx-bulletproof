@@ -5,7 +5,7 @@
 [ -n "${__COMMON_SH__:-}" ] && return 0
 __COMMON_SH__=1
 
-# ---------- color + messaging fallbacks ----------
+# ---------- color + messaging fallbacks (install.sh defines these; we provide safe defaults) ----------
 COLOR_BLUE=${COLOR_BLUE:-"\e[1;34m"}
 COLOR_GREEN=${COLOR_GREEN:-"\e[1;32m"}
 COLOR_YELLOW=${COLOR_YELLOW:-"\e[1;33m"}
@@ -23,6 +23,10 @@ if ! command -v warn >/dev/null 2>&1; then
 fi
 if ! command -v die >/dev/null 2>&1; then
   die(){  echo -e "${COLOR_RED}[x]${COLOR_OFF} $*"; exit 1; }
+fi
+# Back-compat shim: some modules call `log`; map it to `say` if missing
+if ! command -v log >/dev/null 2>&1; then
+  log(){ say "$@"; }
 fi
 
 # ---------- basic sanity ----------
@@ -89,10 +93,10 @@ LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@example.com}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-15}"
 POSTGRES_DB="${POSTGRES_DB:-paperless}"
 POSTGRES_USER="${POSTGRES_USER:-paperless}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"          # filled later
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"                # filled later at runtime
 
 PAPERLESS_ADMIN_USER="${PAPERLESS_ADMIN_USER:-admin}"
-PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-}"  # filled later
+PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-}"  # filled later at runtime
 
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -114,7 +118,7 @@ DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
 COMPOSE_FILE="${COMPOSE_FILE:-${STACK_DIR}/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
 
-# ---------- tiny utilities ----------
+# ---------- tiny utilities used by other modules ----------
 ensure_dir_tree() {
   mkdir -p "$STACK_DIR" "$DATA_ROOT" \
            "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE"
@@ -130,6 +134,7 @@ load_env_file() {
 }
 
 merge_env_into() {
+  # Append/replace KEY=VALUE pairs from src into dst
   local src="$1" dst="$2"
   [ -f "$src" ] || return 0
   touch "$dst"
@@ -165,6 +170,7 @@ load_env_defaults_from(){
 }
 
 merge_env_file(){
+  # Load a local or remote .env fragment into the current shell env
   local src="$1"
   local tmp="/tmp/env.merge.$$"
   if [[ "$src" =~ ^https?:// ]]; then
@@ -222,7 +228,7 @@ compute_paths(){
   DIR_TIKA_CACHE="${DATA_ROOT}/tika-cache"
 }
 
-# Fill any unset secrets AFTER sourcing (avoids set -e exits)
+# Fill any unset secrets AFTER sourcing (avoids set -e exits during module load)
 ensure_runtime_defaults(){
   if [ -z "${PAPERLESS_ADMIN_PASSWORD:-}" ]; then
     PAPERLESS_ADMIN_PASSWORD="$(randpass 2>/dev/null || echo "Admin$(date +%s)")"
