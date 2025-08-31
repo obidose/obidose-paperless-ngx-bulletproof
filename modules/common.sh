@@ -6,23 +6,23 @@
 __COMMON_SH__=1
 
 # ---------- color + messaging fallbacks (install.sh defines these; we provide safe defaults) ----------
-COLOR_BLUE=${COLOR_BLUE:-"\e[1;34m"}
-COLOR_GREEN=${COLOR_GREEN:-"\e[1;32m"}
-COLOR_YELLOW=${COLOR_YELLOW:-"\e[1;33m"}
-COLOR_RED=${COLOR_RED:-"\e[1;31m"}
-COLOR_OFF=${COLOR_OFF:-"\e[0m"}
+COLOR_BLUE=${COLOR_BLUE:-""}
+COLOR_GREEN=${COLOR_GREEN:-""}
+COLOR_YELLOW=${COLOR_YELLOW:-""}
+COLOR_RED=${COLOR_RED:-""}
+COLOR_OFF=${COLOR_OFF:-""}
 
 if ! command -v say >/dev/null 2>&1; then
-  say(){  echo -e "${COLOR_BLUE}[•]${COLOR_OFF} $*"; }
+  say(){  echo -e "[*] $*"; }
 fi
 if ! command -v ok >/dev/null 2>&1; then
-  ok(){   echo -e "${COLOR_GREEN}[✓]${COLOR_OFF} $*"; }
+  ok(){   echo -e "[OK] $*"; }
 fi
 if ! command -v warn >/dev/null 2>&1; then
-  warn(){ echo -e "${COLOR_YELLOW}[!]${COLOR_OFF} $*"; }
+  warn(){ echo -e "[!] $*"; }
 fi
 if ! command -v die >/dev/null 2>&1; then
-  die(){  echo -e "${COLOR_RED}[x]${COLOR_OFF} $*"; exit 1; }
+  die(){  echo -e "[x] $*"; exit 1; }
 fi
 if ! command -v log >/dev/null 2>&1; then
   log(){  say "$@"; }
@@ -42,24 +42,29 @@ preflight_ubuntu() {
 }
 
 # ---------- helpers ----------
-# Pipeline-free random password generator (play nice with `set -o pipefail`)
 randpass() {
-  local chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#%+=?'
-  local chars_len=${#chars}
-  local len=22 pass='' n idx i
+  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
+}
 
-  for ((i=0; i<len; i++)); do
-    # Read a 16-bit unsigned int from /dev/urandom (no pipes)
-    n="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null)"
-    # Keep only digits via parameter expansion (no pipes)
-    n="${n//[^0-9]/}"
-    # Fallback to $RANDOM if od fails for some reason
-    [ -z "$n" ] && n=$RANDOM
-    idx=$(( n % chars_len ))
-    pass="${pass}${chars:idx:1}"
-  done
+trim(){
+  # trim leading/trailing whitespace
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
 
-  printf '%s' "$pass"
+to_lower(){ printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+is_yes(){
+  case "$(to_lower "$(trim "$1")")" in
+    y|yes|true|1) return 0 ;;
+    *)            return 1 ;;
+  esac
+}
+
+normalize_yesno(){
+  if is_yes "$1"; then echo yes; else echo no; fi
 }
 
 prompt(){
@@ -86,7 +91,7 @@ confirm(){
     N|n) read -r -p "$msg [y/N]: " ans || true; ans=${ans:-N} ;;
     *)   read -r -p "$msg [y/n]: " ans || true ;;
   esac
-  [[ "$ans" =~ ^[Yy]$ ]]
+  [[ "$(to_lower "$(trim "$ans")")" =~ ^y(es)?$ ]]
 }
 
 # ---------- default instance paths (installer may export these earlier) ----------
@@ -147,7 +152,7 @@ merge_env_file(){
     [ -f "$src" ] || die "Preset file not found: $src"
     cp "$src" "$tmp"
   fi
-  dos2unix "$tmp" >/dev/null 2>&1 || true
+  command -v dos2unix >/dev/null 2>&1 && dos2unix "$tmp" >/dev/null 2>&1 || true
   set -a
   # shellcheck disable=SC1090
   source "$tmp"
@@ -186,8 +191,9 @@ prompt_core_values(){
   PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$PAPERLESS_ADMIN_PASSWORD")
   POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$POSTGRES_PASSWORD")
 
-  ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")
-  if [ "$ENABLE_TRAEFIK" = "yes" ]; then
+  # Normalize various forms of yes/no to "yes" or "no"
+  ENABLE_TRAEFIK=$(normalize_yesno "$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")")
+  if is_yes "$ENABLE_TRAEFIK"; then
     DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here; Enter=default)" "$DOMAIN")
     LETSENCRYPT_EMAIL=$(prompt "Let's Encrypt email (Enter=default)" "$LETSENCRYPT_EMAIL")
     PAPERLESS_URL="https://${DOMAIN}"
