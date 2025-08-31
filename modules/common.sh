@@ -5,7 +5,7 @@
 [ -n "${__COMMON_SH__:-}" ] && return 0
 __COMMON_SH__=1
 
-# ---------- color + messaging fallbacks (install.sh may define these) ----------
+# ---------- color + messaging fallbacks (install.sh defines these; we provide safe defaults) ----------
 COLOR_BLUE=${COLOR_BLUE:-"\e[1;34m"}
 COLOR_GREEN=${COLOR_GREEN:-"\e[1;32m"}
 COLOR_YELLOW=${COLOR_YELLOW:-"\e[1;33m"}
@@ -13,10 +13,10 @@ COLOR_RED=${COLOR_RED:-"\e[1;31m"}
 COLOR_OFF=${COLOR_OFF:-"\e[0m"}
 
 if ! command -v say >/dev/null 2>&1; then
-  say(){  echo -e "${COLOR_BLUE}[*]${COLOR_OFF} $*"; }
+  say(){  echo -e "${COLOR_BLUE}[•]${COLOR_OFF} $*"; }
 fi
 if ! command -v ok >/dev/null 2>&1; then
-  ok(){   echo -e "${COLOR_GREEN}[OK]${COLOR_OFF} $*"; }
+  ok(){   echo -e "${COLOR_GREEN}[✓]${COLOR_OFF} $*"; }
 fi
 if ! command -v warn >/dev/null 2>&1; then
   warn(){ echo -e "${COLOR_YELLOW}[!]${COLOR_OFF} $*"; }
@@ -42,10 +42,10 @@ preflight_ubuntu() {
 }
 
 # ---------- helpers ----------
-# NOTE: never call this during module source; only at runtime (e.g., when prompting)
+# SIGPIPE-safe random password generator under set -o pipefail
 randpass() {
-  # no pipefail here; generate when actually needed
-  LC_ALL=C tr -dc 'A-Za-z0-9!@#%+=?' </dev/urandom | head -c 22
+  # Read a fixed chunk then trim with cut (avoids early-close head that triggers SIGPIPE)
+  LC_ALL=C head -c 1024 /dev/urandom | tr -dc 'A-Za-z0-9!@#%+=?' | cut -c1-22
 }
 
 prompt(){
@@ -93,11 +93,10 @@ LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@example.com}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-15}"
 POSTGRES_DB="${POSTGRES_DB:-paperless}"
 POSTGRES_USER="${POSTGRES_USER:-paperless}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(randpass)}"
 
-# IMPORTANT: leave passwords empty at source-time (no subshells/pipes now)
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
 PAPERLESS_ADMIN_USER="${PAPERLESS_ADMIN_USER:-admin}"
-PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-}"
+PAPERLESS_ADMIN_PASSWORD="${PAPERLESS_ADMIN_PASSWORD:-$(randpass)}"
 
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
@@ -161,12 +160,6 @@ pick_and_merge_preset(){
   esac
 }
 
-# Fill runtime defaults (only now we may generate randoms)
-ensure_runtime_defaults(){
-  : "${PAPERLESS_ADMIN_PASSWORD:=$(randpass)}"
-  : "${POSTGRES_PASSWORD:=$(randpass)}"
-}
-
 prompt_core_values(){
   echo
   echo "Press Enter to accept the [default] value, or type a custom value."
@@ -175,16 +168,18 @@ prompt_core_values(){
   DATA_ROOT=$(prompt "Data root (persistent storage; Enter=default)" "${DATA_ROOT}")
   STACK_DIR=$(prompt "Stack dir (where docker-compose.yml lives; Enter=default)" "${STACK_DIR}")
 
-  # lazily generate defaults only at prompt time
-  local gen_admin="${PAPERLESS_ADMIN_PASSWORD:-$(randpass)}"
-  local gen_pg="${POSTGRES_PASSWORD:-$(randpass)}"
-
   PAPERLESS_ADMIN_USER=$(prompt "Paperless admin username (Enter=default)" "$PAPERLESS_ADMIN_USER")
-  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$gen_admin")
-  POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$gen_pg")
+  PAPERLESS_ADMIN_PASSWORD=$(prompt "Paperless admin password (Enter=default)" "$PAPERLESS_ADMIN_PASSWORD")
+  POSTGRES_PASSWORD=$(prompt "Postgres password (Enter=default)" "$POSTGRES_PASSWORD")
 
+  # Normalize yes/y/true/1 to "yes"
   ENABLE_TRAEFIK=$(prompt "Enable Traefik with HTTPS? (yes/no; Enter=default)" "$ENABLE_TRAEFIK")
-  if [ "$ENABLE_TRAEFIK" = "yes" ] || [[ "$ENABLE_TRAEFIK" =~ ^[Yy](es)?$ ]]; then
+  case "${ENABLE_TRAEFIK,,}" in
+    y|yes|true|1) ENABLE_TRAEFIK="yes" ;;
+    *)            ENABLE_TRAEFIK="no"  ;;
+  esac
+
+  if [ "$ENABLE_TRAEFIK" = "yes" ]; then
     DOMAIN=$(prompt "Domain for Paperless (DNS A/AAAA must point here; Enter=default)" "$DOMAIN")
     LETSENCRYPT_EMAIL=$(prompt "Let's Encrypt email (Enter=default)" "$LETSENCRYPT_EMAIL")
     PAPERLESS_URL="https://${DOMAIN}"
