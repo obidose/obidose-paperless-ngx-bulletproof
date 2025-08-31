@@ -29,8 +29,10 @@ say(){  echo -e "\e[1;34m[•]\e[0m $*"; }
 ok(){   echo -e "\e[1;32m[✓]\e[0m $*"; }
 warn(){ echo -e "\e[1;33m[!]\e[0m $*"; }
 die(){  echo -e "\e[1;31m[x]\e[0m $*"; exit 1; }
+# >>> ensure log() exists for modules that use it
+log(){ say "$@"; }
 
-# Error reporting: try to surface the module + line that failed
+# Error reporting: surface module + line that failed
 trap 'code=$?; line=${BASH_LINENO[0]:-0}; src=${BASH_SOURCE[1]:-$0}; die "Installer failed at ${src}:${line} (exit ${code})"' ERR
 
 need_root(){ [ "$(id -u)" -eq 0 ] || die "Run as root (sudo -i)."; }
@@ -53,8 +55,7 @@ source "${TMP_DIR}/deps.sh"
 source "${TMP_DIR}/pcloud.sh"
 source "${TMP_DIR}/files.sh"
 
-# >>> Important fix: generate any missing secrets AFTER sourcing modules <<<
-# (avoids subshells during source-time under 'set -Eeuo pipefail')
+# Generate any missing secrets AFTER sourcing modules
 ensure_runtime_defaults
 
 say "Starting Paperless-ngx setup wizard…"
@@ -69,8 +70,7 @@ install_rclone                 # rclone for pCloud backups
 # 1) Authenticate to pCloud first, so we can branch to restore immediately
 setup_pcloud_remote_interactive
 
-# 2) If backups exist, offer an early restore before any other prompts
-#    (Will bring up stack after restore; otherwise returns to continue fresh install)
+# 2) If backups exist, offer an early restore
 early_restore_or_continue
 
 # 3) Optional presets to pre-fill defaults (from repo/local/URL)
