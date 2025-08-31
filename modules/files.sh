@@ -1,63 +1,77 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-prepare_dirs(){
-  log "Creating directories at ${STACK_DIR} and ${DATA_ROOT}"
-  mkdir -p "$STACK_DIR" "$BACKUP_DIR_LOCAL" "$DIR_EXPORT" "$DIR_MEDIA" "$DIR_DATA" "$DIR_CONSUME" "$DIR_DB" "$DIR_TIKA_CACHE" "$STACK_DIR/letsencrypt"
-  chown -R "$DOCKER_USER:$DOCKER_USER" "$DATA_ROOT" "$STACK_DIR"
-}
+# This module writes the .env and docker-compose.yml, installs the backup
+# script + cron, and controls bringing the stack up / showing status.
 
-write_env(){
+# ---------- write .env ----------
+write_env_file() {
   log "Writing ${ENV_FILE}"
+  # Decide PUBLIC URL
+  if [ "${ENABLE_TRAEFIK:-yes}" = "yes" ]; then
+    PAPERLESS_URL="https://${DOMAIN}"
+  else
+    PAPERLESS_URL="http://localhost:${HTTP_PORT}"
+  fi
+
+  mkdir -p "$(dirname "$ENV_FILE")"
   cat > "$ENV_FILE" <<EOF
 # Generated: $(date -Is)
-PUID=${DOCKER_UID}
-PGID=${DOCKER_GID}
-TZ=${TIMEZONE}
+# Instance
+INSTANCE_NAME=${INSTANCE_NAME}
+STACK_DIR=${STACK_DIR}
+DATA_ROOT=${DATA_ROOT}
 
-POSTGRES_DB=${POSTGRES_DB}
-POSTGRES_USER=${POSTGRES_USER}
-POSTGRES_PASSWORD='${POSTGRES_PASSWORD}'
+# IDs & timezone
+PUID=${PUID}
+PGID=${PGID}
+TZ=${TZ}
 
-# Paperless
+# Paperless admin
 PAPERLESS_ADMIN_USER=${PAPERLESS_ADMIN_USER}
-PAPERLESS_ADMIN_PASSWORD='${PAPERLESS_ADMIN_PASSWORD}'
+PAPERLESS_ADMIN_PASSWORD=${PAPERLESS_ADMIN_PASSWORD}
 PAPERLESS_URL=${PAPERLESS_URL}
 
-# Services
-HTTP_PORT=${HTTP_PORT}
+# Postgres
+POSTGRES_VERSION=${POSTGRES_VERSION}
+POSTGRES_DB=${POSTGRES_DB}
+POSTGRES_USER=${POSTGRES_USER}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+# Exposure
+ENABLE_TRAEFIK=${ENABLE_TRAEFIK}
 DOMAIN=${DOMAIN}
 LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
+HTTP_PORT=${HTTP_PORT}
 
-# Backups
+# Backups (rclone)
 RCLONE_REMOTE_NAME=${RCLONE_REMOTE_NAME}
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH}
 RETENTION_DAYS=${RETENTION_DAYS}
-
-# Paths
-DATA_ROOT=${DATA_ROOT}
-STACK_DIR=${STACK_DIR}
 EOF
 }
 
-write_compose(){
+# ---------- write docker-compose.yml ----------
+write_compose_file() {
   log "Writing ${COMPOSE_FILE} (Traefik=${ENABLE_TRAEFIK})"
-  if [ "$ENABLE_TRAEFIK" = "yes" ]; then
+  mkdir -p "$(dirname "$COMPOSE_FILE")"
+
+  if [ "${ENABLE_TRAEFIK}" = "yes" ]; then
     cat > "$COMPOSE_FILE" <<YAML
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: ["redis-server","--save","60","1","--loglevel","warning"]
     networks: [paperless]
 
   db:
     image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
@@ -65,7 +79,7 @@ services:
   gotenberg:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
-    command: ["gotenberg", "--chromium-disable-javascript=true"]
+    command: ["gotenberg","--chromium-disable-javascript=true"]
     networks: [paperless]
 
   tika:
@@ -80,21 +94,21 @@ services:
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
-      PUID: "${DOCKER_UID}"
-      PGID: "${DOCKER_GID}"
-      TZ: "${TIMEZONE}"
-      PAPERLESS_REDIS: "redis://redis:6379"
-      PAPERLESS_DBHOST: "db"
-      PAPERLESS_DBPORT: "5432"
-      PAPERLESS_DBNAME: "${POSTGRES_DB}"
-      PAPERLESS_DBUSER: "${POSTGRES_USER}"
-      PAPERLESS_DBPASS: "${POSTGRES_PASSWORD}"
-      PAPERLESS_ADMIN_USER: "${PAPERLESS_ADMIN_USER}"
-      PAPERLESS_ADMIN_PASSWORD: "${PAPERLESS_ADMIN_PASSWORD}"
-      PAPERLESS_URL: "${PAPERLESS_URL}"
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: ${POSTGRES_DB}
+      PAPERLESS_DBUSER: ${POSTGRES_USER}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: \${PAPERLESS_URL}
       PAPERLESS_TIKA_ENABLED: "1"
-      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: "http://gotenberg:3000"
-      PAPERLESS_TIKA_ENDPOINT: "http://tika:9998"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       PAPERLESS_CONSUMER_POLLING: "10"
     volumes:
       - ${DIR_DATA}:/usr/src/paperless/data
@@ -133,22 +147,25 @@ networks:
   paperless:
     name: paperless_net
 YAML
+    mkdir -p "${STACK_DIR}/letsencrypt"
+    touch "${STACK_DIR}/letsencrypt/acme.json"
+    chmod 600 "${STACK_DIR}/letsencrypt/acme.json"
   else
     cat > "$COMPOSE_FILE" <<YAML
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: ["redis-server","--save","60","1","--loglevel","warning"]
     networks: [paperless]
 
   db:
     image: postgres:${POSTGRES_VERSION}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
@@ -156,7 +173,7 @@ services:
   gotenberg:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
-    command: ["gotenberg", "--chromium-disable-javascript=true"]
+    command: ["gotenberg","--chromium-disable-javascript=true"]
     networks: [paperless]
 
   tika:
@@ -171,21 +188,21 @@ services:
     depends_on: [db, redis, gotenberg, tika]
     restart: unless-stopped
     environment:
-      PUID: "${DOCKER_UID}"
-      PGID: "${DOCKER_GID}"
-      TZ: "${TIMEZONE}"
-      PAPERLESS_REDIS: "redis://redis:6379"
-      PAPERLESS_DBHOST: "db"
-      PAPERLESS_DBPORT: "5432"
-      PAPERLESS_DBNAME: "${POSTGRES_DB}"
-      PAPERLESS_DBUSER: "${POSTGRES_USER}"
-      PAPERLESS_DBPASS: "${POSTGRES_PASSWORD}"
-      PAPERLESS_ADMIN_USER: "${PAPERLESS_ADMIN_USER}"
-      PAPERLESS_ADMIN_PASSWORD: "${PAPERLESS_ADMIN_PASSWORD}"
-      PAPERLESS_URL: "${PAPERLESS_URL}"
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: ${POSTGRES_DB}
+      PAPERLESS_DBUSER: ${POSTGRES_USER}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: \${PAPERLESS_URL}
       PAPERLESS_TIKA_ENABLED: "1"
-      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: "http://gotenberg:3000"
-      PAPERLESS_TIKA_ENDPOINT: "http://tika:9998"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       PAPERLESS_CONSUMER_POLLING: "10"
     volumes:
       - ${DIR_DATA}:/usr/src/paperless/data
@@ -203,7 +220,8 @@ YAML
   fi
 }
 
-write_backup_script(){
+# ---------- backup script ----------
+write_backup_script() {
   local bscript="${STACK_DIR}/backup_to_pcloud.sh"
   log "Writing backup script ${bscript}"
   cat > "$bscript" <<'BASH'
@@ -261,7 +279,8 @@ BASH
   chmod +x "$bscript"
 }
 
-install_cron(){
+# ---------- cron ----------
+install_backup_cron() {
   log "Installing daily cron for backups (${CRON_TIME})"
   local cronline="${CRON_TIME} root ${STACK_DIR}/backup_to_pcloud.sh >> ${STACK_DIR}/backup.log 2>&1"
   if ! grep -Fq "backup_to_pcloud.sh" /etc/crontab; then
@@ -272,43 +291,21 @@ install_cron(){
   fi
 }
 
-bring_up(){ log "Starting stack..."; (cd "$STACK_DIR" && docker compose --env-file "$ENV_FILE" up -d); }
+# ---------- stack control ----------
+bring_up_stack() {
+  log "Starting containers…"
+  (cd "$STACK_DIR" && docker compose --env-file "$ENV_FILE" up -d)
+}
 
-find_latest_snapshot(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort | tail -n1 || true; }
-list_snapshots(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort || true; }
-
-restore_from_remote(){
-  local SNAP="$1"
-  local base="${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
-  local tmpdir="${STACK_DIR}/restore_$SNAP"
-  mkdir -p "$tmpdir"
-  log "Fetching snapshot $SNAP to $tmpdir"
-  rclone copy "$base/$SNAP" "$tmpdir" --fast-list
-
-  log "Stopping stack (if running)"
-  (cd "$STACK_DIR" && docker compose down) || true
-
-  log "Restoring media/data/export"
-  for a in media data export; do
-    [ -f "$tmpdir/${a}.tar.gz" ] && tar -C "${DATA_ROOT}" -xzf "$tmpdir/${a}.tar.gz" || warn "No archive for $a"
-  done
-
-  if [ -f "$tmpdir/postgres.sql" ]; then
-    log "Starting db only to import SQL"
-    (cd "$STACK_DIR" && docker compose up -d db)
-    sleep 8
-    log "Dropping & recreating database ${POSTGRES_DB}"
-    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db \
-      psql -U "$POSTGRES_USER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${POSTGRES_DB}' AND pid <> pg_backend_pid();" || true
-    docker compose -f "$STACK_DIR/docker-compose.yml" exec -T db \
-      psql -U "$POSTGRES_USER" -c "DROP DATABASE IF EXISTS \"${POSTGRES_DB}\"; CREATE DATABASE \"${POSTGRES_DB}\";"
-    log "Importing SQL dump"
-    cat "$tmpdir/postgres.sql" | docker compose -f "$STACK_DIR"/docker-compose.yml exec -T db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
+show_status() {
+  # Load values in case we’re in a fresh shell
+  [ -f "$ENV_FILE" ] && set -a && . "$ENV_FILE" && set +a || true
+  local url
+  if [ "${ENABLE_TRAEFIK:-yes}" = "yes" ]; then
+    url="https://${DOMAIN}"
   else
-    warn "No postgres.sql found in snapshot"
+    url="http://localhost:${HTTP_PORT}"
   fi
-
-  log "Bringing full stack up"
-  (cd "$STACK_DIR" && docker compose up -d)
-  log "Restore complete"
+  echo
+  ok "Paperless-ngx should be reachable at: ${url}"
 }
