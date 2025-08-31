@@ -1,129 +1,297 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-STACK_DIR_DEFAULT="/home/docker/paperless-setup"
-ENV_FILE="${STACK_DIR_DEFAULT}/.env"
-[ -f "$ENV_FILE" ] || ENV_FILE="$(pwd)/.env"
-[ -f "$ENV_FILE" ] || { echo "[x] .env not found. Set STACK_DIR in this script or cd to your stack dir."; exit 1; }
+# ===== Pretty output (ASCII only) =====
+BLUE="\e[34m"; GREEN="\e[32m"; YEL="\e[33m"; RED="\e[31m"; OFF="\e[0m"
+say(){  echo -e "${BLUE}[*]${OFF} $*"; }
+ok(){   echo -e "${GREEN}[ok]${OFF} $*"; }
+warn(){ echo -e "${YEL}[!]${OFF} $*"; }
+die(){  echo -e "${RED}[x]${OFF} $*"; exit 1; }
 
-set -a; source "$ENV_FILE"; set +a
+# ===== Locations (same defaults as installer) =====
+STACK_DIR="${STACK_DIR:-/home/docker/paperless-setup}"
+DATA_ROOT="${DATA_ROOT:-/home/docker/paperless}"
+COMPOSE_FILE="${COMPOSE_FILE:-${STACK_DIR}/docker-compose.yml}"
+ENV_FILE="${ENV_FILE:-${STACK_DIR}/.env}"
+
+# Reasonable defaults if .env missing
+INSTANCE_NAME="${INSTANCE_NAME:-paperless}"
+ENABLE_TRAEFIK="${ENABLE_TRAEFIK:-yes}"
+DOMAIN="${DOMAIN:-paperless.example.com}"
+HTTP_PORT="${HTTP_PORT:-8000}"
+RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-pcloud}"
+RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
+
+# ===== Helpers =====
+need(){ command -v "$1" >/dev/null 2>&1 || die "Missing dependency: $1"; }
+have(){ command -v "$1" >/dev/null 2>&1; }
+
+load_env(){
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a; source "$ENV_FILE"; set +a
+    # Re-apply common vars if provided by .env
+    ENABLE_TRAEFIK="${ENABLE_TRAEFIK:-$ENABLE_TRAEFIK}"
+    DOMAIN="${DOMAIN:-$DOMAIN}"
+    HTTP_PORT="${HTTP_PORT:-$HTTP_PORT}"
+    INSTANCE_NAME="${INSTANCE_NAME:-$INSTANCE_NAME}"
+    RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-$RCLONE_REMOTE_NAME}"
+    RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-$RCLONE_REMOTE_PATH}"
+  fi
+}
+
+dc(){ docker compose -f "$COMPOSE_FILE" "$@"; }
+
+# Health string for containers
+health_of(){
+  local id="$1"
+  docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || echo "unknown"
+}
+
+# ===== Existing actions (pass-through if your backup script exists) =====
+backup_now(){
+  if [[ -x "${STACK_DIR}/backup.sh" ]]; then
+    "${STACK_DIR}/backup.sh"
+  else
+    warn "No ${STACK_DIR}/backup.sh found. Skipping."
+    return 1
+  fi
+}
+
+list_snapshots(){
+  need rclone
+  rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | awk '{print $NF}' | sort
+}
+
+restore_snapshot(){
+  local snap="${1:-}"
+  if [[ -z "$snap" ]]; then
+    say "Available snapshots:"
+    list_snapshots || true
+    read -r -p "Enter snapshot name to restore: " snap
+  fi
+  if [[ -x "${STACK_DIR}/restore.sh" ]]; then
+    "${STACK_DIR}/restore.sh" "$snap"
+  else
+    warn "No ${STACK_DIR}/restore.sh found. Use the installer’s restore flow for now."
+    return 1
+  fi
+}
+
+# ===== New: STATUS =====
+cmd_status(){
+  need docker
+  [[ -f "$COMPOSE_FILE" ]] || die "Compose file not found: $COMPOSE_FILE"
+  say "Compose file: $COMPOSE_FILE"
+  echo
+
+  say "Containers:"
+  dc ps || true
+  echo
+
+  say "Health summary:"
+  local ids; ids="$(dc ps -q || true)"
+  if [[ -n "$ids" ]]; then
+    while read -r id; do
+      [[ -z "$id" ]] && continue
+      local name; name="$(docker inspect --format='{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')"
+      local h; h="$(health_of "$id")"
+      printf "  %-30s  %s\n" "$name" "$h"
+    done <<< "$ids"
+  else
+    echo "  (no containers reported)"
+  fi
+  echo
+
+  say "Ports (host -> container):"
+  dc ps --format '{{.Service}} {{.Publishers}}' 2>/dev/null || echo "  (compose format not supported; shown above)"
+  echo
+}
+
+# ===== New: LOGS =====
+cmd_logs(){
+  need docker
+  local svc="" lines=200
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n) shift; lines="${1:-200}"; shift || true ;;
+      -n*) lines="${1#-n}"; shift ;;
+      *) svc="$1"; shift ;;
+    esac
+  done
+  if [[ -n "$svc" ]]; then
+    say "Last ${lines} lines for service '${svc}'"
+    dc logs --no-color --tail "${lines}" "$svc"
+  else
+    say "Last ${lines} lines for all services"
+    dc logs --no-color --tail "${lines}"
+  fi
+}
+
+# ===== New: DOCTOR =====
+cmd_doctor(){
+  load_env
+  say "System checks"
+  echo "  Kernel: $(uname -srmo)" || true
+  echo "  Uptime: $(uptime -p 2>/dev/null || true)"
+  echo
+
+  say "Disk space"
+  df -h / "$DATA_ROOT" 2>/dev/null || df -h /
+  echo
+
+  say "Docker"
+  need docker
+  docker --version || true
+  systemctl is-active docker >/dev/null 2>&1 && echo "  Docker service: active" || echo "  Docker service: unknown or inactive"
+  echo
+
+  say "Compose file"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    echo "  Found: $COMPOSE_FILE"
+  else
+    warn "Compose file missing: $COMPOSE_FILE"
+  fi
+  echo
+
+  say "Containers & health"
+  dc ps || true
+  local unhealthy=0
+  while read -r id; do
+    [[ -z "$id" ]] && continue
+    h="$(health_of "$id")"
+    if [[ "$h" != "healthy" && "$h" != "running" ]]; then unhealthy=$((unhealthy+1)); fi
+  done < <(dc ps -q || true)
+  [[ $unhealthy -gt 0 ]] && warn "Unhealthy/not running containers detected: $unhealthy" || ok "All containers healthy/running"
+  echo
+
+  say "Paperless HTTP probe"
+  local url
+  if [[ "${ENABLE_TRAEFIK,,}" == "yes" ]]; then
+    url="https://${DOMAIN}"
+  else
+    url="http://127.0.0.1:${HTTP_PORT}"
+  fi
+  if have curl; then
+    code="$(curl -k -sS -o /dev/null -m 8 -w '%{http_code}' "$url" || echo 000)"
+    echo "  GET $url -> $code"
+    [[ "$code" =~ ^2|3 ]] && ok "Paperless responds" || warn "Unexpected HTTP code"
+  else
+    warn "curl not installed; skipping HTTP probe."
+  fi
+  echo
+
+  say "Database probe"
+  if dc ps db >/dev/null 2>&1; then
+    if dc exec -T db pg_isready -U "${POSTGRES_USER:-paperless}" -d "${POSTGRES_DB:-paperless}" >/dev/null 2>&1; then
+      ok "Postgres is ready"
+    else
+      warn "pg_isready failed"
+    fi
+  else
+    warn "db service not found in compose"
+  fi
+  echo
+
+  say "rclone remote"
+  if have rclone; then
+    if rclone listremotes | grep -qx "${RCLONE_REMOTE_NAME}:"; then
+      rclone about "${RCLONE_REMOTE_NAME}:" >/dev/null 2>&1 && ok "rclone remote works" || warn "rclone about failed"
+      echo "  Remote path: ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
+      # Show top-level of backup path (non-fatal)
+      rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" 2>/dev/null | tail -n5 | sed 's/^/    /' || true
+    else
+      warn "Remote '${RCLONE_REMOTE_NAME}:' not defined"
+    fi
+  else
+    warn "rclone not installed"
+  fi
+  echo
+
+  say "Cron"
+  if crontab -l >/dev/null 2>&1; then
+    crontab -l | sed 's/^/  /' | grep -E "paperless|backup|rclone|tar" || echo "  (no matching backup cron lines found)"
+  else
+    warn "No crontab for current user"
+  fi
+  echo
+
+  say "Traefik (if enabled)"
+  if [[ "${ENABLE_TRAEFIK,,}" == "yes" ]]; then
+    if dc ps traefik >/dev/null 2>&1; then
+      dc ps traefik || true
+      # Last cert events (non-fatal)
+      dc logs --tail 50 traefik 2>/dev/null | grep -i -E "acme|certificate|tls" | tail -n 10 | sed 's/^/  /' || true
+    else
+      warn "traefik service not found in compose"
+    fi
+  else
+    echo "  Traefik disabled."
+  fi
+  echo
+
+  ok "Doctor finished."
+}
+
+# ===== Menu =====
+usage(){
+  cat <<EOF
+Usage: $(basename "$0") [command]
+
+Commands:
+  menu              Interactive menu
+  backup            Run backup now (calls ${STACK_DIR}/backup.sh if present)
+  list              List available snapshots (rclone)
+  restore [SNAP]    Restore a snapshot (calls ${STACK_DIR}/restore.sh if present)
+
+  status            Show container status, health, and ports
+  logs [svc] [-n N] Show recent logs for stack or a specific service
+  doctor            Run diagnostics (disk, Docker, HTTP, DB, rclone, cron, Traefik)
+
+Examples:
+  $(basename "$0") status
+  $(basename "$0") logs web -n 200
+  $(basename "$0") doctor
+EOF
+}
 
 menu(){
-  clear
-  cat <<TXT
-Paperless-ngx • Bulletproof Menu
-================================
-Stack dir:  $STACK_DIR
-Data root:  $DATA_ROOT
-Remote:     ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}
-Env mode:   ${ENV_BACKUP_MODE} (passfile: ${ENV_BACKUP_PASSPHRASE_FILE})
-
-1) Status
-2) Backup now
-3) List backups
-4) Restore from backup
-5) Toggle env backup mode (none/plain/openssl)
-6) Set/change env passphrase file
-7) Update stack (pull + up -d)
-8) Restart paperless service
-9) Logs (paperless)
-0) Exit
-TXT
-  read -r -p "Choose: " CH
+  load_env
+  while true; do
+    echo
+    say "Bulletproof menu"
+    echo "  1) Backup now"
+    echo "  2) List snapshots"
+    echo "  3) Restore snapshot"
+    echo "  4) Status"
+    echo "  5) Logs"
+    echo "  6) Doctor"
+    echo "  0) Quit"
+    read -r -p "Choose: " ans
+    case "$ans" in
+      1) backup_now ;;
+      2) list_snapshots || true ;;
+      3) restore_snapshot ;;
+      4) cmd_status ;;
+      5) read -r -p "Service (blank=all): " svc; read -r -p "Lines [200]: " n; n="${n:-200}"; cmd_logs ${svc:+$svc} -n "$n" ;;
+      6) cmd_doctor ;;
+      0) exit 0 ;;
+      *) echo "Unknown choice";;
+    esac
+  done
 }
 
-status(){
-  echo; docker compose -f "$STACK_DIR/docker-compose.yml" ps; echo
-  if [ "$ENABLE_TRAEFIK" = "yes" ]; then
-    echo "URL: https://${DOMAIN}"
-  else
-    echo "URL: http://<server-ip>:${HTTP_PORT}"
-  fi
-}
+# ===== Dispatch =====
+load_env
 
-backup_now(){ "${STACK_DIR}/backup_to_pcloud.sh"; }
-
-list_backups(){ rclone lsd "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}" | sort -k2; }
-
-restore(){
-  list_backups
-  read -r -p "Enter snapshot name: " SNAP
-  [ -z "$SNAP" ] && return
-  bash -lc "
-    set -Eeuo pipefail
-    set -a; source '$ENV_FILE'; set +a
-    TMP=\$(mktemp -d)
-    rclone copy '${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}/$SNAP' \"\$TMP\" --fast-list
-    cd '$STACK_DIR'
-    docker compose down || true
-    for a in media data export; do
-      [ -f \"\$TMP/\${a}.tar.gz\" ] && tar -C '$DATA_ROOT' -xzf \"\$TMP/\${a}.tar.gz\";
-    done
-    if [ -f \"\$TMP/env.snapshot\" ] || [ -f \"\$TMP/env.snapshot.enc\" ]; then
-      read -r -p 'Use snapshot .env? [Y/n]: ' ANS; ANS=\${ANS:-Y}
-      if [[ \$ANS =~ ^[Yy]\$ ]]; then
-        if [ -f \"\$TMP/env.snapshot.enc\" ]; then
-          if [ -f \"$ENV_BACKUP_PASSPHRASE_FILE\" ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass file:\"$ENV_BACKUP_PASSPHRASE_FILE\" -in \"\$TMP/env.snapshot.enc\" -out '$ENV_FILE'
-          else
-            read -r -s -p 'Passphrase: ' P; echo
-            openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass pass:\"\$P\" -in \"\$TMP/env.snapshot.enc\" -out '$ENV_FILE'
-          fi
-        else
-          cp \"\$TMP/env.snapshot\" '$ENV_FILE'
-        fi
-      fi
-    fi
-    if [ -f \"\$TMP/compose.snapshot.yml\" ]; then
-      cp \"\$TMP/compose.snapshot.yml\" '$STACK_DIR/docker-compose.yml'
-    fi
-    docker compose up -d
-    rm -rf \"\$TMP\"
-  "
-}
-
-toggle_env_mode(){
-  echo "Current: ${ENV_BACKUP_MODE}"
-  read -r -p "Enter new mode (none/plain/openssl): " M
-  [ -z "$M" ] && return
-  sed -i "s/^ENV_BACKUP_MODE=.*/ENV_BACKUP_MODE=${M}/" "$ENV_FILE"
-  echo "Updated. (Will apply to next backup.)"
-}
-
-set_passfile(){
-  echo "Current: ${ENV_BACKUP_PASSPHRASE_FILE}"
-  read -r -p "Enter passphrase file path: " PF
-  [ -z "$PF" ] && return
-  sed -i "s|^ENV_BACKUP_PASSPHRASE_FILE=.*|ENV_BACKUP_PASSPHRASE_FILE=${PF}|" "$ENV_FILE"
-  if [ ! -f "$PF" ]; then
-    read -r -s -p "Create file now (enter passphrase): " P; echo
-    printf "%s" "$P" > "$PF"
-    chmod 600 "$PF"
-  fi
-  echo "Set to: $PF"
-}
-
-update_stack(){
-  (cd "$STACK_DIR" && docker compose pull && docker compose up -d)
-}
-
-logs(){
-  (cd "$STACK_DIR" && docker compose logs -f --tail=200 paperless)
-}
-
-while true; do
-  menu
-  case "$CH" in
-    1) status; read -r -p "Enter to continue…" _ ;;
-    2) backup_now; read -r -p "Enter to continue…" _ ;;
-    3) list_backups; read -r -p "Enter to continue…" _ ;;
-    4) restore; read -r -p "Enter to continue…" _ ;;
-    5) toggle_env_mode; read -r -p "Enter to continue…" _ ;;
-    6) set_passfile; read -r -p "Enter to continue…" _ ;;
-    7) update_stack; read -r -p "Enter to continue…" _ ;;
-    8) (cd "$STACK_DIR" && docker compose restart paperless); read -r -p "Enter to continue…" _ ;;
-    9) logs ;;
-    0) exit 0 ;;
-    *) : ;;
-  esac
-done
+case "${1:-menu}" in
+  menu)    menu ;;
+  backup)  backup_now ;;
+  list)    list_snapshots ;;
+  restore) shift; restore_snapshot "${1:-}" ;;
+  status)  cmd_status ;;
+  logs)    shift; cmd_logs "$@" ;;
+  doctor)  cmd_doctor ;;
+  -h|--help|help) usage ;;
+  *)        usage; exit 1 ;;
+esac
