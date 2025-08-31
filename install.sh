@@ -30,6 +30,7 @@ fetch "${GITHUB_RAW}/modules/common.sh"  "${TMP_DIR}/common.sh"
 fetch "${GITHUB_RAW}/modules/deps.sh"    "${TMP_DIR}/deps.sh"
 fetch "${GITHUB_RAW}/modules/pcloud.sh"  "${TMP_DIR}/pcloud.sh"
 fetch "${GITHUB_RAW}/modules/files.sh"   "${TMP_DIR}/files.sh"
+fetch "${GITHUB_RAW}/modules/backup.sh"  "${TMP_DIR}/backup.sh"
 
 # Normalize line endings if available (no-op if dos2unix missing)
 command -v dos2unix >/dev/null 2>&1 && dos2unix "${TMP_DIR}/"*.sh >/dev/null 2>&1 || true
@@ -40,6 +41,7 @@ source "${TMP_DIR}/common.sh"
 source "${TMP_DIR}/deps.sh"
 source "${TMP_DIR}/pcloud.sh"
 source "${TMP_DIR}/files.sh"
+source "${TMP_DIR}/backup.sh"
 
 # Helper: check function existence
 fn_exists(){ declare -F "$1" >/dev/null 2>&1; }
