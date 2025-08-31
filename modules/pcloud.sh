@@ -56,7 +56,7 @@ _pcloud_detect_host_from_token() {
 _pcloud_get_existing_token_json() {
   # Reads token string (JSON) for remote named $RCLONE_REMOTE_NAME
   # Returns empty if not found
-  rclone config dump --all \
+  rclone config dump \
     | jq -r --arg name "$RCLONE_REMOTE_NAME" '
         to_entries[]
         | select(.key==$name)
@@ -65,7 +65,7 @@ _pcloud_get_existing_token_json() {
 }
 
 _pcloud_remote_type() {
-  rclone config dump --all \
+  rclone config dump \
     | jq -r --arg name "$RCLONE_REMOTE_NAME" '
         to_entries[]
         | select(.key==$name)
@@ -74,7 +74,7 @@ _pcloud_remote_type() {
 }
 
 _pcloud_remote_has_hostname() {
-  rclone config dump --all \
+  rclone config dump \
     | jq -r --arg name "$RCLONE_REMOTE_NAME" '
         to_entries[]
         | select(.key==$name)
@@ -199,7 +199,6 @@ _flow_webdav_legacy() {
     die "WebDAV unavailable; use OAuth method instead."
   fi
 
-  # Create a WebDAV remote named like the OAuth one, for uniformity.
   rclone config delete "$RCLONE_REMOTE_NAME" >/dev/null 2>&1 || true
   rclone config create "$RCLONE_REMOTE_NAME" webdav \
     vendor other url "$host" \
