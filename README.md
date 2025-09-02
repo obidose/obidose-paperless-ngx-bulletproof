@@ -4,7 +4,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 - Docker + Docker Compose
 - Optional **Traefik** reverse proxy + Let’s Encrypt (HTTPS)
 - **pCloud** off‑site backups via **rclone** (OAuth, region auto‑detect)
-- Easy **backup / restore / status** via the `bulletproof` CLI
+- Easy **backup / restore / safe upgrades / status** via the `bulletproof` CLI
 - Cron‑based nightly snapshots with retention
 
 > Designed for minimal input: you provide a couple of answers, the script handles the rest.
@@ -37,7 +37,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
 - `backup.sh` and `restore.sh` scripts placed into the stack dir
 -  Cron job for nightly snapshots with retention
-- `bulletproof` command for backups, listing snapshots, restores, health, and logs
+- `bulletproof` command for backups, safe upgrades, listing snapshots, restores, health, and logs
 
 ---
 
@@ -134,15 +134,18 @@ Then it runs: `docker compose up -d`
 
 ## Backup & snapshots
 
-Nightly cron (configurable) uploads a snapshot to pCloud:
+Nightly cron (configurable) runs `backup.sh auto` and uploads incrementals to pCloud:
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
 - Snapshot naming: `YYYYMMDD-HHMMSS`
+- Monthly snapshots are **full**; weekly/daily contain only changed files and point to their parent in `manifest.yaml`
 - Includes:
   - Encrypted `.env` (if enabled) or plain `.env`
-  - Optional `compose.snapshot.yml`
-  - Tarballs of `media`, `data`, `export`
+  - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
+  - Tarballs of `media`, `data`, `export` (incremental)
   - Postgres SQL dump
-- Retention: keep last **N** days (configurable)
+  - Paperless-NGX version
+  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, retention class, mode & parent
+- Retention: keep last **N** days (configurable) and tag snapshots as **daily**, **weekly**, or **monthly** (auto by date)
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
@@ -161,6 +164,11 @@ Use **Bulletproof** to pick a snapshot and restore it at any time.
 
 > Restores will stop the stack as needed and bring it back after import.
 
+The restore process walks any incremental chain automatically, applies the
+snapshot's `docker-compose.yml` by default (`USE_COMPOSE_SNAPSHOT=no` skips it)
+and lets you choose between the snapshot's Paperless‑NGX version or the latest
+image.
+
 ---
 
 ## Bulletproof CLI
@@ -169,13 +177,17 @@ A tiny helper wrapped around the installed scripts.
 
 ```bash
 bulletproof          # interactive menu
-bulletproof backup   # run a snapshot now
+bulletproof backup [class]   # run a snapshot now (daily|weekly|monthly|auto|full)
 bulletproof list     # list snapshot folders on pCloud
+bulletproof manifest # show manifest for a snapshot
 bulletproof restore  # guided restore (choose snapshot)
+bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
 ```
+
+**Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
 
 **Status** shows:
 - `docker compose ps` (state/ports)

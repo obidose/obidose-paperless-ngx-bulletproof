@@ -36,6 +36,7 @@ fi
 : "${ENV_BACKUP_PASSPHRASE_FILE:=/root/.paperless_env_pass}"
 : "${INCLUDE_COMPOSE_IN_BACKUP:=yes}"               # yes|no
 : "${RETENTION_DAYS:=30}"                           # 0 = no pruning
+: "${RETENTION_CLASS:=auto}"                        # auto|daily|weekly|monthly
 
 REMOTE="${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}"
 
@@ -66,6 +67,34 @@ SNAP="$(date +%Y-%m-%d_%H-%M-%S)"
 WORK="/tmp/paperless-backup.${SNAP}"
 mkdir -p "$WORK"
 
+START_TIME="$(date --iso-8601=seconds)"
+
+if [ "${RETENTION_CLASS}" = "auto" ]; then
+  if [ "$(date +%d)" = "01" ]; then
+    RETENTION_CLASS="monthly"
+  elif [ "$(date +%u)" = "7" ]; then
+    RETENTION_CLASS="weekly"
+  else
+    RETENTION_CLASS="daily"
+  fi
+fi
+
+say "Retention class: ${RETENTION_CLASS}"
+
+# -------- incremental state --------
+STATE_DIR="${STACK_DIR}/.backup_state"
+mkdir -p "$STATE_DIR"
+SNAR_DATA="${STATE_DIR}/data.snar"
+SNAR_MEDIA="${STATE_DIR}/media.snar"
+SNAR_EXPORT="${STATE_DIR}/export.snar"
+LAST_SNAP_FILE="${STATE_DIR}/last"
+PARENT=""
+if [ "$RETENTION_CLASS" = "monthly" ]; then
+  rm -f "$SNAR_DATA" "$SNAR_MEDIA" "$SNAR_EXPORT"
+else
+  PARENT="$(cat "$LAST_SNAP_FILE" 2>/dev/null || echo '')"
+fi
+
 say "Creating snapshot: $SNAP"
 
 # -------- dump Postgres --------
@@ -86,10 +115,15 @@ dump_db
 
 # -------- tar data --------
 tar_dir(){
-  local src="$1" name="$2"
+  local src="$1" name="$2" snar=""
+  case "$name" in
+    media)  snar="$SNAR_MEDIA" ;;
+    data)   snar="$SNAR_DATA" ;;
+    export) snar="$SNAR_EXPORT" ;;
+  esac
   if [ -d "$src" ]; then
     say "Archiving ${name}…"
-    tar -C "$(dirname "$src")" -czf "${WORK}/${name}.tar.gz" "$(basename "$src")"
+    tar --listed-incremental="$snar" -C "$(dirname "$src")" -czf "${WORK}/${name}.tar.gz" "$(basename "$src")"
   else
     warn "Skip ${name}: directory not found at ${src}"
   fi
@@ -132,6 +166,90 @@ if [ "${INCLUDE_COMPOSE_IN_BACKUP,,}" = "yes" ]; then
   cp -a "$COMPOSE_FILE" "${WORK}/compose.snapshot.yml" || true
 fi
 
+# -------- capture Paperless-NGX version --------
+if VERSION=$(cd "$STACK_DIR" && docker compose ps -q paperless \
+  | xargs -r docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null); then
+  if [ -n "$VERSION" ]; then
+    say "Recording Paperless-NGX version ${VERSION}"
+    echo "$VERSION" > "${WORK}/paperless.version"
+  else
+    warn "Paperless-NGX version not found."
+  fi
+else
+  warn "Failed to determine Paperless-NGX version."
+fi
+
+# Capture Postgres version (if label present)
+if DB_VERSION=$(cd "$STACK_DIR" && docker compose ps -q db \
+  | xargs -r docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null); then
+  if [ -n "$DB_VERSION" ]; then
+    say "Recording Postgres version ${DB_VERSION}"
+  else
+    warn "Postgres version not found."
+  fi
+else
+  warn "Failed to determine Postgres version."
+fi
+
+# Image digests
+APP_DIGEST=""
+if APP_CONT=$(cd "$STACK_DIR" && docker compose ps -q paperless 2>/dev/null); then
+  APP_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$APP_CONT" 2>/dev/null || docker inspect --format '{{.Image}}' "$APP_CONT" 2>/dev/null || true)
+fi
+DB_DIGEST=""
+if DB_CONT=$(cd "$STACK_DIR" && docker compose ps -q db 2>/dev/null); then
+  DB_DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$DB_CONT" 2>/dev/null || docker inspect --format '{{.Image}}' "$DB_CONT" 2>/dev/null || true)
+fi
+
+# Compose digest (if snapshot exists)
+COMPOSE_DIGEST=""
+if [ -f "${WORK}/compose.snapshot.yml" ]; then
+  COMPOSE_DIGEST="$(sha256sum "${WORK}/compose.snapshot.yml" | awk '{print $1}')"
+fi
+
+# -------- manifest --------
+generate_manifest(){
+  local manifest="${WORK}/manifest.yaml"
+  local end_time="$(date --iso-8601=seconds)"
+  {
+    echo "started: ${START_TIME}"
+    echo "ended: ${end_time}"
+    echo "retention: ${RETENTION_CLASS}"
+    if [ "$RETENTION_CLASS" = "monthly" ]; then
+      echo "mode: full"
+    else
+      echo "mode: incremental"
+      [ -n "$PARENT" ] && echo "parent: ${PARENT}"
+    fi
+    echo "host:"
+    echo "  name: $(hostname)"
+    echo "  kernel: $(uname -srm)"
+    echo "versions:"
+    echo "  paperless:"
+    [ -n "$VERSION" ] && echo "    version: ${VERSION}"
+    [ -n "$APP_DIGEST" ] && echo "    digest: ${APP_DIGEST}"
+    echo "  postgres:"
+    [ -n "$DB_VERSION" ] && echo "    version: ${DB_VERSION}"
+    [ -n "$DB_DIGEST" ] && echo "    digest: ${DB_DIGEST}"
+    [ -n "$COMPOSE_DIGEST" ] && {
+      echo "  compose:"
+      echo "    digest: ${COMPOSE_DIGEST}"
+    }
+    echo "files:"
+    for f in "${WORK}"/*; do
+      [ -f "$f" ] || continue
+      local base="$(basename "$f")"
+      [[ "$base" == "manifest.yaml" ]] && continue
+      local size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+      local sha="$(sha256sum "$f" | awk '{print $1}')"
+      echo "  ${base}:"
+      echo "    size: ${size}"
+      echo "    sha256: ${sha}"
+    done
+  } > "$manifest"
+}
+generate_manifest
+
 # -------- push to remote --------
 DEST="${REMOTE}/${SNAP}"
 say "Uploading snapshot to ${DEST}"
@@ -142,6 +260,9 @@ if ! rclone lsf "${DEST}" --files-only >/dev/null 2>&1; then
   die "Upload verification failed."
 fi
 ok "Snapshot uploaded: ${DEST}"
+
+# remember snapshot for incremental chain
+echo "$SNAP" > "$LAST_SNAP_FILE"
 
 # -------- retention (prune old snapshots) --------
 if [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] && [ "$RETENTION_DAYS" -gt 0 ]; then
