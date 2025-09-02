@@ -2,8 +2,19 @@ import subprocess
 from .common import say, ok, warn
 
 
-def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
+def run(cmd: list[str], **kwargs) -> None:
+    """Run a subprocess command with error checking.
+
+    This helper is a thin wrapper around :func:`subprocess.run` that always
+    enables ``check=True`` and forwards any additional keyword arguments such
+    as ``input`` or ``env``. The previous implementation only accepted the
+    command list, which meant callers passing extra options (for example the
+    ``input`` used when importing Docker's GPG key) would raise ``TypeError``.
+    Allowing arbitrary kwargs keeps the convenience wrapper while supporting
+    these advanced usages.
+    """
+
+    subprocess.run(cmd, check=True, **kwargs)
 
 
 def install_prereqs() -> None:
