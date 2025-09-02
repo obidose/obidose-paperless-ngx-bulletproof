@@ -4,7 +4,14 @@ import json
 import os
 import subprocess
 
-from .common import say, warn, ok
+from .common import say, warn, ok, TTY
+
+
+def _prompt(text: str) -> str:
+    if TTY is None:
+        return ""
+    print(text, end="", flush=True)
+    return TTY.readline().strip()
 
 try:
     TTY = open("/dev/tty")
