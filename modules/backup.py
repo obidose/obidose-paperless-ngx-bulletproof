@@ -9,8 +9,17 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from utils.env import load_env
+
+def load_env(path: Path) -> None:
+    """Load environment variables from a .env file if present."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k, v)
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
