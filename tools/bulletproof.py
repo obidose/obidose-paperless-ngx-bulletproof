@@ -3,11 +3,20 @@
 import argparse
 import os
 import subprocess
-from pathlib import Path
 import sys
+from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from utils.env import load_env
+
+def load_env(path: Path) -> None:
+    """Load environment variables from a .env file if present."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k, v)
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -130,6 +139,46 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     subprocess.run(["docker", "info"], check=False)
 
 
+def menu() -> None:
+    """Interactive menu for easier use."""
+    while True:
+        print("Bulletproof helper")
+        print("1) Backup")
+        print("2) List snapshots")
+        print("3) Restore snapshot")
+        print("4) Show manifest")
+        print("5) Upgrade")
+        print("6) Status")
+        print("7) Logs")
+        print("8) Doctor")
+        print("9) Quit")
+        choice = input("Choose [1-9]: ").strip()
+        if choice == "1":
+            ret = input("Retention (daily|weekly|monthly|auto) [auto]: ").strip() or "auto"
+            cmd_backup(argparse.Namespace(retention=ret))
+        elif choice == "2":
+            cmd_list(argparse.Namespace())
+        elif choice == "3":
+            snap = input("Snapshot (blank=latest): ").strip() or None
+            cmd_restore(argparse.Namespace(snapshot=snap))
+        elif choice == "4":
+            snap = input("Snapshot (blank=latest): ").strip() or None
+            cmd_manifest(argparse.Namespace(snapshot=snap))
+        elif choice == "5":
+            cmd_upgrade(argparse.Namespace())
+        elif choice == "6":
+            cmd_status(argparse.Namespace())
+        elif choice == "7":
+            svc = input("Service (blank=all): ").strip() or None
+            cmd_logs(argparse.Namespace(service=svc))
+        elif choice == "8":
+            cmd_doctor(argparse.Namespace())
+        elif choice == "9":
+            break
+        else:
+            print("Invalid choice")
+
+
 parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")
 sub = parser.add_subparsers(dest="command")
 
@@ -165,6 +214,9 @@ p.set_defaults(func=cmd_doctor)
 if __name__ == "__main__":
     args = parser.parse_args()
     if not hasattr(args, "func"):
-        parser.print_help()
+        if sys.stdin.isatty():
+            menu()
+        else:
+            parser.print_help()
     else:
         args.func(args)

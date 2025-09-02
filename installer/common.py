@@ -5,6 +5,11 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    TTY = open("/dev/tty")
+except OSError:
+    TTY = None
+
 # ----- Pretty output -----
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -52,23 +57,34 @@ def randpass(length: int = 22) -> str:
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _read(prompt: str) -> str:
+    if TTY is None:
+        return ""
+    print(prompt, end="", flush=True)
+    return TTY.readline().strip()
+
+
 def prompt(msg: str, default: str | None = None) -> str:
     if default:
-        ans = input(f"{msg} [{default}]: ") or default
+        ans = _read(f"{msg} [{default}]: ") or default
     else:
-        ans = input(f"{msg}: ")
+        ans = _read(f"{msg}: ")
     return ans.strip()
 
 
 def prompt_secret(msg: str) -> str:
     import getpass
 
-    return getpass.getpass(f"{msg}: ")
+    if TTY is None:
+        return ""
+    return getpass.getpass(f"{msg}: ", stream=TTY)
 
 
 def confirm(msg: str, default: bool = True) -> bool:
+    if TTY is None:
+        return default
     opts = "Y/n" if default else "y/N"
-    ans = input(f"{msg} [{opts}]: ").strip().lower()
+    ans = _read(f"{msg} [{opts}]: ").lower()
     if not ans:
         return default
     return ans.startswith("y")
@@ -167,7 +183,7 @@ def pick_and_merge_preset(base: str) -> None:
     for key, (name, desc) in options.items():
         label = f"{name} - {desc}" if name else desc
         print(f"  {key}) {label}")
-    choice = input("Choose [1-3] [3]: ").strip() or "3"
+    choice = _read("Choose [1-3] [3]: ") or "3"
     name = options.get(choice, (None,))[0]
     if not name:
         return
