@@ -13,18 +13,6 @@ def _prompt(text: str) -> str:
     print(text, end="", flush=True)
     return TTY.readline().strip()
 
-try:
-    TTY = open("/dev/tty")
-except OSError:
-    TTY = None
-
-
-def _prompt(text: str) -> str:
-    if TTY is None:
-        return ""
-    print(text, end="", flush=True)
-    return TTY.readline().strip()
-
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 
 
