@@ -3,11 +3,20 @@
 import argparse
 import os
 import subprocess
-from pathlib import Path
 import sys
+from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from utils.env import load_env
+
+def load_env(path: Path) -> None:
+    """Load environment variables from a .env file if present."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k, v)
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -52,6 +61,49 @@ def dc(*args: str) -> list[str]:
     return ["docker", "compose", "-f", str(COMPOSE_FILE), *args]
 
 
+def fetch_snapshots() -> list[tuple[str, str, str]]:
+    """Return a list of available snapshots with basic metadata.
+
+    Each entry is a tuple ``(name, mode, retention)`` where ``mode`` is the
+    backup type (e.g. ``full`` or ``incr``) and ``retention`` is the retention
+    class recorded in the snapshot's ``manifest.yaml``. If the manifest is
+    missing or cannot be read the fields default to ``?``.
+    """
+
+    try:
+        res = subprocess.run(
+            ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:
+        warn("rclone not installed")
+        return []
+    snaps: list[tuple[str, str, str]] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        name = parts[-1]
+        mode = retention = "?"
+        cat = subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cat.returncode == 0:
+            for mline in cat.stdout.splitlines():
+                if ":" in mline:
+                    k, v = mline.split(":", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k == "mode":
+                        mode = v
+                    elif k == "retention":
+                        retention = v
+        snaps.append((name, mode, retention))
+    return sorted(snaps, key=lambda x: x[0])
+
+
 def cmd_backup(args: argparse.Namespace) -> None:
     script = STACK_DIR / "backup.py"
     if not script.exists():
@@ -63,7 +115,12 @@ def cmd_backup(args: argparse.Namespace) -> None:
 
 
 def cmd_list(_: argparse.Namespace) -> None:
-    subprocess.run(["rclone", "lsd", REMOTE], check=True)
+    snaps = fetch_snapshots()
+    if not snaps:
+        warn("No snapshots found")
+        return
+    for name, mode, retention in snaps:
+        print(f"{name}\t{mode}\t{retention}")
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
@@ -71,8 +128,15 @@ def cmd_restore(args: argparse.Namespace) -> None:
     if not script.exists():
         die(f"Restore script not found at {script}")
     run = [str(script)]
-    if args.snapshot:
-        run.append(args.snapshot)
+    snap = args.snapshot
+    if not snap:
+        snaps = fetch_snapshots()
+        if snaps:
+            print("Available snapshots:")
+            for name, mode, retention in snaps:
+                print(f"- {name} ({mode}, {retention})")
+    else:
+        run.append(snap)
     subprocess.run(run, check=True)
 
 
@@ -130,6 +194,54 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     subprocess.run(["docker", "info"], check=False)
 
 
+def menu() -> None:
+    """Interactive menu for easier use."""
+    while True:
+        print("Bulletproof helper")
+        print("1) Backup")
+        print("2) List snapshots")
+        print("3) Restore snapshot")
+        print("4) Show manifest")
+        print("5) Upgrade")
+        print("6) Status")
+        print("7) Logs")
+        print("8) Doctor")
+        print("9) Quit")
+        choice = input("Choose [1-9]: ").strip()
+        if choice == "1":
+            ret = input("Retention (daily|weekly|monthly|auto) [auto]: ").strip() or "auto"
+            cmd_backup(argparse.Namespace(retention=ret))
+        elif choice == "2":
+            cmd_list(argparse.Namespace())
+        elif choice == "3":
+            snaps = fetch_snapshots()
+            for idx, (name, mode, retention) in enumerate(snaps, 1):
+                print(f"{idx}) {name} ({mode}, {retention})")
+            choice_snap = input("Snapshot number or name (blank=latest): ").strip()
+            if choice_snap.isdigit():
+                idx = int(choice_snap)
+                snap = snaps[idx - 1][0] if 1 <= idx <= len(snaps) else None
+            else:
+                snap = choice_snap or None
+            cmd_restore(argparse.Namespace(snapshot=snap))
+        elif choice == "4":
+            snap = input("Snapshot (blank=latest): ").strip() or None
+            cmd_manifest(argparse.Namespace(snapshot=snap))
+        elif choice == "5":
+            cmd_upgrade(argparse.Namespace())
+        elif choice == "6":
+            cmd_status(argparse.Namespace())
+        elif choice == "7":
+            svc = input("Service (blank=all): ").strip() or None
+            cmd_logs(argparse.Namespace(service=svc))
+        elif choice == "8":
+            cmd_doctor(argparse.Namespace())
+        elif choice == "9":
+            break
+        else:
+            print("Invalid choice")
+
+
 parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")
 sub = parser.add_subparsers(dest="command")
 
@@ -165,6 +277,9 @@ p.set_defaults(func=cmd_doctor)
 if __name__ == "__main__":
     args = parser.parse_args()
     if not hasattr(args, "func"):
-        parser.print_help()
+        if sys.stdin.isatty():
+            menu()
+        else:
+            parser.print_help()
     else:
         args.func(args)

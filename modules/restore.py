@@ -8,9 +8,57 @@ import subprocess
 import time
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from utils.env import load_env
-from utils.selftest import run_stack_tests
+
+def load_env(path: Path) -> None:
+    """Load environment variables from a .env file if present."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k, v)
+
+
+def run_stack_tests(compose_file: Path, env_file: Path) -> bool:
+    ok = True
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(env_file),
+                "-f",
+                str(compose_file),
+                "ps",
+            ],
+            check=True,
+        )
+    except Exception:
+        ok = False
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(env_file),
+                "-f",
+                str(compose_file),
+                "exec",
+                "-T",
+                "paperless",
+                "python",
+                "manage.py",
+                "check",
+            ],
+            check=True,
+        )
+    except Exception:
+        ok = False
+    return ok
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -77,6 +125,27 @@ def restore_db(dump: Path) -> None:
         check=True,
     )
     time.sleep(5)
+    # Clear existing schema to avoid duplicate key errors when restoring over an
+    # existing database volume.
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(COMPOSE_FILE),
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            POSTGRES_USER,
+            "-d",
+            POSTGRES_DB,
+            "-c",
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        ],
+        check=False,
+    )
     if dump.suffix == ".gz":
         proc = subprocess.Popen(["gunzip", "-c", str(dump)], stdout=subprocess.PIPE)
         subprocess.run(
