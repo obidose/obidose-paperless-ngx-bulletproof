@@ -4,7 +4,14 @@ import json
 import os
 import subprocess
 
-from .common import say, warn, ok
+from .common import say, warn, ok, TTY
+
+
+def _prompt(text: str) -> str:
+    if TTY is None:
+        return ""
+    print(text, end="", flush=True)
+    return TTY.readline().strip()
 
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 
@@ -111,6 +118,10 @@ def ensure_pcloud_remote_or_menu() -> None:
         ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' is ready.")
         return
 
+    if TTY is None:
+        warn("No interactive TTY; skipping pCloud configuration for now.")
+        return
+
     while True:
         print()
         say("Choose how to connect to pCloud:")
@@ -118,11 +129,11 @@ def ensure_pcloud_remote_or_menu() -> None:
         print("  2) Headless OAuth helper")
         print("  3) Try legacy WebDAV")
         print("  4) Skip")
-        choice = input("Choose [1-4] [1]: ").strip() or "1"
+        choice = _prompt("Choose [1-4] [1]: ") or "1"
 
         if choice in {"1", "2"}:
             say('On any machine with a browser, run:  rclone authorize "pcloud"')
-            token = _sanitize_oneline(input("Paste token JSON here: "))
+            token = _sanitize_oneline(_prompt("Paste token JSON here: "))
             if not token:
                 warn("Empty token.")
                 continue
@@ -136,13 +147,13 @@ def ensure_pcloud_remote_or_menu() -> None:
             warn("Token invalid or not valid for either region. Try again.")
 
         elif choice == "3":
-            email = input("pCloud login email: ").strip()
+            email = _prompt("pCloud login email: ").strip()
             if not email:
                 warn("Email required.")
                 continue
             import getpass
 
-            password = getpass.getpass("pCloud password (or App Password): ")
+            password = getpass.getpass("pCloud password (or App Password): ", stream=TTY)
             if not password:
                 warn("Password required.")
                 continue

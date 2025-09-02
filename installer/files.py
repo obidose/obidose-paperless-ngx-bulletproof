@@ -113,7 +113,7 @@ def write_compose_file() -> None:
                   PAPERLESS_DBPASS: {cfg.postgres_password}
                   PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
                   PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
-                  PAPERLESS_URL: ${PAPERLESS_URL}
+                  PAPERLESS_URL: ${{PAPERLESS_URL}}
                   PAPERLESS_TIKA_ENABLED: "1"
                   PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
                   PAPERLESS_TIKA_ENDPOINT: http://tika:9998
@@ -209,7 +209,7 @@ def write_compose_file() -> None:
                   PAPERLESS_DBPASS: {cfg.postgres_password}
                   PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
                   PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
-                  PAPERLESS_URL: ${PAPERLESS_URL}
+                  PAPERLESS_URL: ${{PAPERLESS_URL}}
                   PAPERLESS_TIKA_ENABLED: "1"
                   PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
                   PAPERLESS_TIKA_ENDPOINT: http://tika:9998
