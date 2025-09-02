@@ -7,8 +7,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def copy_helper_scripts() -> None:
-    """Copy backup and restore helpers into the stack directory."""
-    log("Copying backup and restore helpers")
+    """Copy helper scripts and install bulletproof CLI."""
+    log("Copying helper scripts and installing CLI")
     for name in ("backup.py", "restore.py"):
         src = BASE_DIR / "modules" / name
         dst = Path(cfg.stack_dir) / name
@@ -17,6 +17,14 @@ def copy_helper_scripts() -> None:
             dst.chmod(0o755)
         else:
             warn(f"Missing helper script: {src}")
+
+    bp_src = BASE_DIR / "tools" / "bulletproof.py"
+    bp_dst = Path("/usr/local/bin/bulletproof")
+    if bp_src.exists():
+        bp_dst.write_text(bp_src.read_text())
+        bp_dst.chmod(0o755)
+    else:
+        warn(f"Missing bulletproof CLI: {bp_src}")
 
 
 def write_env_file() -> None:
