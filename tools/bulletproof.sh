@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # bulletproof.sh — Paperless-ngx “bulletproof” helper
 # - Backup/List/Restore snapshots via rclone (pCloud remote by default)
-# - Safe upgrade with automatic rollback
 # - Status/Logs/Doctor utilities
 # Respects:
 #   STACK_DIR (default: /home/docker/paperless-setup)
@@ -77,35 +76,16 @@ check_remote_reachable(){
   return 1
 }
 
-wait_for_healthy(){
-  local tries=30
-  local status
-  for ((i=1; i<=tries; i++)); do
-    status=$(docker ps --format '{{.Names}} {{.Status}}' | grep -E 'unhealthy|exited' || true)
-    [ -z "$status" ] && return 0
-    sleep 5
-  done
-  return 1
-}
-
 # ---------- actions ----------
 do_backup(){
   need_cmds; check_stack; check_remote_exists
-  local class="${1:-}"
-  if [[ "$class" == "full" || "$class" == "--full" ]]; then
-    class="monthly"
-  fi
-  if [ -z "$class" ]; then
-    read -r -p "Retention class [daily|weekly|monthly|auto|full]: " class
-  fi
-  class="${class:-auto}"
   if [ ! -x "$BACKUP_SH" ]; then
     if [ -f "$BACKUP_SH" ]; then
       chmod +x "$BACKUP_SH" || true
     else
       warn "No ${BACKUP_SH} found."
       echo "Install it with:"
-      echo "  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/modules/backup.sh \\""
+      echo "  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/modules/backup.sh \\"
       echo "    -o ${BACKUP_SH} && chmod +x ${BACKUP_SH}"
       exit 1
     fi
@@ -117,7 +97,6 @@ do_backup(){
   ( cd "$STACK_DIR" && \
     RCLONE_REMOTE_NAME="$RCLONE_REMOTE_NAME" \
     RCLONE_REMOTE_PATH="$RCLONE_REMOTE_PATH" \
-    RETENTION_CLASS="$class" \
     bash "$BACKUP_SH" )
   ok "Backup completed (remote: ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH})."
 }
@@ -148,51 +127,6 @@ do_restore(){
     warn "No ${RESTORE_SH} found."
     warn "Use the installer's restore flow (it guides through pCloud + snapshot selection)."
     exit 1
-  fi
-}
-
-do_upgrade(){
-  need_cmds; check_stack
-  say "Starting safe upgrade"
-  do_backup auto
-  local compose_backup="${COMPOSE_FILE}.preupgrade"
-  cp "$COMPOSE_FILE" "$compose_backup" || true
-  local digest_file
-  digest_file=$(mktemp)
-  dc images --format '{{.Repository}}:{{.Tag}} {{.Digest}}' > "$digest_file" || true
-  say "Pulling latest images"
-  dc pull
-  say "Recreating containers"
-  dc up -d
-  say "Waiting for health checks"
-  if wait_for_healthy; then
-    ok "Upgrade successful"
-    rm -f "$digest_file" "$compose_backup"
-  else
-    warn "Health check failed; rolling back"
-    while read -r img digest; do
-      [ "$digest" = "<none>" ] && continue
-      docker pull "${img}@${digest}" || true
-      docker tag "${img}@${digest}" "$img" || true
-    done < "$digest_file"
-    cp "$compose_backup" "$COMPOSE_FILE" || true
-    dc up -d
-    rm -f "$digest_file" "$compose_backup"
-    die "Upgrade rolled back due to failed health check"
-  fi
-}
-
-do_manifest(){
-  need_cmds; check_remote_exists
-  local snap="${1:-}"
-  if [ -z "$snap" ]; then
-    do_list
-    read -r -p "Enter snapshot name for manifest: " snap
-    [ -n "$snap" ] || die "No snapshot specified."
-  fi
-  say "Manifest for ${snap}:"
-  if ! rclone cat "${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}/${snap}/manifest.yaml" 2>/dev/null; then
-    warn "manifest.yaml not found for snapshot ${snap}"
   fi
 }
 
@@ -270,11 +204,9 @@ usage(){
 Usage: bulletproof [command] [args]
 
 Commands:
-  backup [class]     Run ${BACKUP_SH} (daily|weekly|monthly|auto|full)
+  backup             Run ${BACKUP_SH} if present
   list               List pCloud snapshots at ${RCLONE_REMOTE_NAME}:${RCLONE_REMOTE_PATH}
   restore            Run ${RESTORE_SH} if present
-  manifest [snap]    Show manifest.yaml for snapshot
-  upgrade            Backup, pull images, up -d with health check & rollback
   status             Show docker status, ports, disk usage
   logs [service]     Tail last 200 lines (optionally for a specific service)
   doctor             Quick health checks
@@ -294,8 +226,6 @@ menu(){
     echo "  4) Status"
     echo "  5) Logs"
     echo "  6) Doctor"
-    echo "  7) Show manifest"
-    echo "  8) Safe upgrade"
     echo "  0) Quit"
     read -r -p "Choose: " c
     case "${c:-}" in
@@ -305,8 +235,6 @@ menu(){
       4) do_status ;;
       5) do_logs ;;
       6) do_doctor ;;
-      7) do_manifest ;;
-      8) do_upgrade ;;
       0) exit 0 ;;
       *) echo "Invalid option" ;;
     esac
@@ -318,8 +246,6 @@ main(){
     backup)  shift; do_backup "$@";;
     list)    shift; do_list "$@";;
     restore) shift; do_restore "$@";;
-    manifest) shift; do_manifest "$@";;
-    upgrade) shift; do_upgrade "$@";;
     status)  shift; do_status "$@";;
     logs)    shift; do_logs "$@";;
     doctor)  shift; do_doctor "$@";;

@@ -24,10 +24,8 @@ RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-backups/paperless/${INSTANCE_NAME}}"
 ENV_BACKUP_MODE="${ENV_BACKUP_MODE:-openssl}"   # openssl|plain|none
 ENV_BACKUP_PASSPHRASE_FILE="${ENV_BACKUP_PASSPHRASE_FILE:-/root/.paperless_env_pass}"
 
-# Compose snapshot handling
-# By default, replace docker-compose.yml with compose.snapshot.yml if it exists
-# Set USE_COMPOSE_SNAPSHOT=no to keep the current docker-compose.yml
-USE_COMPOSE_SNAPSHOT="${USE_COMPOSE_SNAPSHOT:-yes}"
+# Optional compose handling
+USE_COMPOSE_SNAPSHOT="${USE_COMPOSE_SNAPSHOT:-no}"   # yes to replace docker-compose.yml when present
 
 # DB vars (fall back to common defaults if not in .env)
 POSTGRES_USER="${POSTGRES_USER:-paperless}"
@@ -44,9 +42,9 @@ extract_tar() {
   local src="$1" dest="$2"
   mkdir -p "$dest"
   case "$src" in
-    *.tar.zst|*.tzst)  tar --listed-incremental=/dev/null --zstd -xf "$src" -C "$dest" ;;
-    *.tar.gz|*.tgz)    tar --listed-incremental=/dev/null -xzf "$src" -C "$dest" ;;
-    *.tar)             tar --listed-incremental=/dev/null -xf "$src" -C "$dest" ;;
+    *.tar.zst|*.tzst)  tar --zstd -xf "$src" -C "$dest" ;;
+    *.tar.gz|*.tgz)    tar -xzf "$src" -C "$dest" ;;
+    *.tar)             tar -xf "$src" -C "$dest" ;;
     *)                 die "Unknown archive format: $src" ;;
   esac
 }
@@ -108,52 +106,25 @@ fi
 SNAP_REMOTE="${REMOTE}/${SNAPSHOT%/}"
 info "Restoring snapshot: ${SNAP_REMOTE}"
 
-declare -A SNAP_DIRS=()
-CHAIN=()
-TMP_DIRS=()
+WORKDIR="$(mktemp -d /tmp/paperless-restore.XXXXXX)"
+trap 'rm -rf "$WORKDIR"' EXIT
 
-CUR="$SNAPSHOT"
-while :; do
-  DIR="$(mktemp -d /tmp/paperless-restore.XXXXXX)"
-  TMP_DIRS+=("$DIR")
-  info "Syncing snapshot ${CUR} ..."
-  rclone sync "${REMOTE}/${CUR}" "$DIR"
-  CHAIN+=("$CUR")
-  SNAP_DIRS["$CUR"]="$DIR"
-  MODE=$(awk -F': ' '/^mode:/ {print $2}' "$DIR/manifest.yaml" 2>/dev/null || echo "full")
-  PARENT=$(awk -F': ' '/^parent:/ {print $2}' "$DIR/manifest.yaml" 2>/dev/null || echo "")
-  if [ "$MODE" = "incremental" ] && [ -n "$PARENT" ]; then
-    CUR="$PARENT"
-  else
-    break
-  fi
-done
+info "Syncing snapshot locally ..."
+rclone sync "$SNAP_REMOTE" "$WORKDIR"
 
-trap 'for d in "${TMP_DIRS[@]}"; do rm -rf "$d"; done' EXIT
-
-TARGET_VERSION=""
-
-FINAL_DIR="${SNAP_DIRS[$SNAPSHOT]}"
-if [[ -f "$FINAL_DIR/paperless.version" ]]; then
-  BACKUP_VERSION="$(tr -d '\r\n' < "$FINAL_DIR/paperless.version")"
-  info "Snapshot Paperless-NGX version: $BACKUP_VERSION"
-  read -r -p "Use same version as backup? [y/N]: " USE_SAME_VER
-  if [[ "$USE_SAME_VER" =~ ^[Yy]$ ]]; then
-    TARGET_VERSION="$BACKUP_VERSION"
-  else
-    TARGET_VERSION="latest"
-  fi
-fi
-
-DB_DUMP="$(ls -1 "$FINAL_DIR"/*.sql* 2>/dev/null | head -n1 || true)"
-COMPOSE_SNAP="$FINAL_DIR/compose.snapshot.yml"
+# Expected contents
+DATA_TAR="$(ls -1 "$WORKDIR"/data*.tar* 2>/dev/null | head -n1 || true)"
+MEDIA_TAR="$(ls -1 "$WORKDIR"/media*.tar* 2>/dev/null | head -n1 || true)"
+EXPORT_TAR="$(ls -1 "$WORKDIR"/export*.tar* 2>/dev/null | head -n1 || true)"
+DB_DUMP="$(ls -1 "$WORKDIR"/*.sql* 2>/dev/null | head -n1 || true)"
+COMPOSE_SNAP="$WORKDIR/compose.snapshot.yml"
 
 # --- Stop stack ---
 info "Stopping stack ..."
 $COMPOSE down || true
 
 # --- Restore .env (if present in snapshot) ---
-if restore_env_from_snapshot "$FINAL_DIR"; then
+if restore_env_from_snapshot "$WORKDIR"; then
   ok ".env ready"
 else
   info "Proceeding with existing ${STACK_DIR}/.env (no .env in snapshot or decryption skipped)."
@@ -162,30 +133,15 @@ fi
 # Reload any new .env values
 if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
 
-# --- Restore data trees (apply chain) ---
-rm -rf "${DATA_ROOT}/data" "${DATA_ROOT}/media" "${DATA_ROOT}/export"
-mkdir -p "${DATA_ROOT}"
-for (( idx=${#CHAIN[@]}-1 ; idx>=0 ; idx-- )); do
-  dir="${SNAP_DIRS[${CHAIN[$idx]}]}"
-  DATA_TAR="$(ls -1 "$dir"/data*.tar* 2>/dev/null | head -n1 || true)"
-  MEDIA_TAR="$(ls -1 "$dir"/media*.tar* 2>/dev/null | head -n1 || true)"
-  EXPORT_TAR="$(ls -1 "$dir"/export*.tar* 2>/dev/null | head -n1 || true)"
-  [[ -n "$DATA_TAR"   ]] && { info "Applying data from ${CHAIN[$idx]}"   ; extract_tar "$DATA_TAR"   "${DATA_ROOT}"; }
-  [[ -n "$MEDIA_TAR"  ]] && { info "Applying media from ${CHAIN[$idx]}"  ; extract_tar "$MEDIA_TAR"  "${DATA_ROOT}"; }
-  [[ -n "$EXPORT_TAR" ]] && { info "Applying export from ${CHAIN[$idx]}" ; extract_tar "$EXPORT_TAR" "${DATA_ROOT}"; }
-done
+# --- Restore data trees ---
+[[ -n "$DATA_TAR"   ]] && { info "Restoring data/"   ; rm -rf "${DATA_ROOT}/data"   ; mkdir -p "${DATA_ROOT}/data"   ; extract_tar "$DATA_TAR"   "${DATA_ROOT}"; }
+[[ -n "$MEDIA_TAR"  ]] && { info "Restoring media/"  ; rm -rf "${DATA_ROOT}/media"  ; mkdir -p "${DATA_ROOT}/media"  ; extract_tar "$MEDIA_TAR"  "${DATA_ROOT}"; }
+[[ -n "$EXPORT_TAR" ]] && { info "Restoring export/" ; rm -rf "${DATA_ROOT}/export" ; mkdir -p "${DATA_ROOT}/export" ; extract_tar "$EXPORT_TAR" "${DATA_ROOT}"; }
 
 # --- Optional: restore compose snapshot ---
 if [[ -f "$COMPOSE_SNAP" && "${USE_COMPOSE_SNAPSHOT}" == "yes" ]]; then
   info "Applying compose.snapshot.yml -> docker-compose.yml"
   cp -f "$COMPOSE_SNAP" "${STACK_DIR}/docker-compose.yml"
-fi
-
-if [[ -n "$TARGET_VERSION" ]]; then
-  info "Setting Paperless-NGX image tag to ${TARGET_VERSION}"
-  sed -i -E "s|(image:[[:space:]]*ghcr\.io/paperless-ngx/paperless-ngx:).*|\1${TARGET_VERSION}|" "${STACK_DIR}/docker-compose.yml"
-  info "Pulling Paperless-NGX image ..."
-  $COMPOSE pull paperless >/dev/null 2>&1 || echo "Warning: could not pull Paperless-NGX image ${TARGET_VERSION}"
 fi
 
 # --- Bring up DB only for restore ---
