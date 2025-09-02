@@ -56,6 +56,19 @@ def apt(args: list[str], retries: int | None = None) -> None:
 
 def install_prereqs() -> None:
     say("Installing prerequisites…")
+
+    # Some hosts may have an existing Docker APT source configured. If the
+    # file is malformed (for example from a prior manual installation), the
+    # initial ``apt-get update`` would fail before we get a chance to
+    # reconfigure Docker properly.  Removing the list upfront ensures the
+    # update succeeds and we can install Docker later with a clean source.
+    from pathlib import Path
+
+    docker_list = Path("/etc/apt/sources.list.d/docker.list")
+    if docker_list.exists():
+        warn("Removing existing Docker apt source to avoid malformed entry")
+        docker_list.unlink()
+
     apt(["update", "-y"])
     apt(["upgrade", "-y"])
     apt([
