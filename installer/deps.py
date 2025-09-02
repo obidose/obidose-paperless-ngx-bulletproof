@@ -1,4 +1,7 @@
+import os
 import subprocess
+import sys
+import time
 from .common import say, ok, warn
 
 
@@ -17,13 +20,45 @@ def run(cmd: list[str], **kwargs) -> None:
     subprocess.run(cmd, check=True, **kwargs)
 
 
+def apt(args: list[str], retries: int | None = None) -> None:
+    """Run ``apt-get`` with basic retry logic.
+
+    Retries are controlled by the ``APT_RETRIES`` environment variable (default
+    3). HTTP 403/404 errors are surfaced with a helpful hint so the user can
+    switch to another mirror if needed.
+    """
+
+    if retries is None:
+        retries = int(os.environ.get("APT_RETRIES", "3"))
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(
+            ["apt-get", *args], text=True, capture_output=True, env=env
+        )
+        if proc.returncode == 0:
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            return
+        if "403" in proc.stderr or "404" in proc.stderr:
+            warn(
+                "apt-get returned HTTP error; you may need to choose a different mirror"
+            )
+        if attempt < retries:
+            say(
+                f"apt-get {' '.join(args)} failed (attempt {attempt}/{retries}); retrying…"
+            )
+            time.sleep(2 * attempt)
+        else:
+            sys.stdout.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            proc.check_returncode()
+
+
 def install_prereqs() -> None:
     say("Installing prerequisites…")
-    env = dict(DEBIAN_FRONTEND="noninteractive")
-    run(["apt-get", "update", "-y"])
-    run(["apt-get", "upgrade", "-y"])
-    run([
-        "apt-get",
+    apt(["update", "-y"])
+    apt(["upgrade", "-y"])
+    apt([
         "install",
         "-y",
         "ca-certificates",
@@ -82,16 +117,27 @@ def install_docker() -> None:
             line.strip().split("=", 1) for line in f if "=" in line
         )
     codename = lines.get("VERSION_CODENAME", "stable").strip('"')
+    arch = subprocess.check_output(
+        ["dpkg", "--print-architecture"], text=True
+    ).strip()
     repo = (
-        f"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] "
+        f"deb [arch={arch} signed-by=/etc/apt/keyrings/docker.gpg] "
         f"https://download.docker.com/linux/ubuntu {codename} stable"
     )
     Path = __import__('pathlib').Path
     Path("/etc/apt/sources.list.d").mkdir(parents=True, exist_ok=True)
     with open("/etc/apt/sources.list.d/docker.list", "w") as f:
         f.write(repo + "\n")
-    run(["apt-get", "update", "-y"])
-    run(["apt-get", "install", "-y", "docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"])
+    apt(["update", "-y"])
+    apt([
+        "install",
+        "-y",
+        "docker-ce",
+        "docker-ce-cli",
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-compose-plugin",
+    ])
     run(["systemctl", "enable", "--now", "docker"])
     run(["usermod", "-aG", "docker", "docker"])
 
