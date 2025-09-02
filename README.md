@@ -1,6 +1,6 @@
 # Paperless‑ngx Bulletproof Installer
 
-A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
+A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 24.04 (may work others but untested) with:
 - Docker + Docker Compose
 - Optional **Traefik** reverse proxy + Let’s Encrypt (HTTPS)
 - **pCloud** off‑site backups via **rclone** (OAuth, region auto‑detect)
