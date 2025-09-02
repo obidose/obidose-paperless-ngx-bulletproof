@@ -35,7 +35,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
   - `/home/docker/paperless` — data, media, export, db, etc.
   - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
-- `backup.sh` and `restore.sh` scripts placed into the stack dir
+- `backup.py` and `restore.py` scripts placed into the stack dir
 -  Cron job for nightly snapshots with retention
 - `bulletproof` command for backups, safe upgrades, listing snapshots, restores, health, and logs
 
@@ -55,8 +55,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 ## Quick start
 
 ```bash
-# Run as root (or sudo)
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
 
 The installer will:
@@ -69,7 +68,7 @@ The installer will:
 
 > If you ever need to refresh the CLI manually:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/tools/bulletproof.sh \
+> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/tools/bulletproof.py \
 >   -o /usr/local/bin/bulletproof && chmod +x /usr/local/bin/bulletproof
 > ```
 
@@ -125,16 +124,16 @@ You’ll be prompted for:
 The wizard writes:
 - `.env` → `/home/docker/paperless-setup/.env`
 - `docker-compose.yml` (Traefik on/off version)
-- Helper scripts: `backup.sh`, `restore.sh`
+- Helper scripts: `backup.py`, `restore.py`
 - Installs `bulletproof` CLI
 
-Then it runs: `docker compose up -d`
+Then it runs: `docker compose up -d` and performs a quick self-test
 
 ---
 
 ## Backup & snapshots
 
-Nightly cron (configurable) runs `backup.sh auto` and uploads incrementals to pCloud:
+Nightly cron (configurable) runs `backup.py auto` and uploads incrementals to pCloud:
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
 - Snapshot naming: `YYYYMMDD-HHMMSS`
 - Monthly snapshots are **full**; weekly/daily contain only changed files and point to their parent in `manifest.yaml`
@@ -145,6 +144,7 @@ Nightly cron (configurable) runs `backup.sh auto` and uploads incrementals to pC
   - Postgres SQL dump
   - Paperless-NGX version
   - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, retention class, mode & parent
+  - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
 - Retention: keep last **N** days (configurable) and tag snapshots as **daily**, **weekly**, or **monthly** (auto by date)
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
@@ -161,6 +161,8 @@ If snapshots exist, the installer can **restore first**:
 
 ### From the CLI
 Use **Bulletproof** to pick a snapshot and restore it at any time.
+
+A self-test runs after the stack is back up.
 
 > Restores will stop the stack as needed and bring it back after import.
 
@@ -239,4 +241,4 @@ Your off‑site snapshots remain in **pCloud**.
 
 - Installer is idempotent: safe to rerun to pick up fixes.
 - You can change `.env` and run `docker compose up -d` anytime.
-- The `bulletproof` CLI is just a shell script; read it to see what it does.
+- The `bulletproof` CLI is a Python script; read it to see what it does.
