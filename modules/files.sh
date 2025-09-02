@@ -280,10 +280,10 @@ BASH
 }
 
 # ---------- cron ----------
-install_backup_cron() {
+install_cron_backup() {
   log "Installing daily cron for backups (${CRON_TIME})"
-  local cronline="${CRON_TIME} root ${STACK_DIR}/backup_to_pcloud.sh >> ${STACK_DIR}/backup.log 2>&1"
-  if ! grep -Fq "backup_to_pcloud.sh" /etc/crontab; then
+  local cronline="${CRON_TIME} root ${STACK_DIR}/backup.sh >> ${STACK_DIR}/backup.log 2>&1"
+  if ! grep -Fq "${STACK_DIR}/backup.sh" /etc/crontab; then
     echo "$cronline" >> /etc/crontab
     systemctl restart cron
   else
