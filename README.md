@@ -1,10 +1,10 @@
 # Paperless‑ngx Bulletproof Installer
 
-A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 24.04 (may work others but untested) with:
+A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
 - Docker + Docker Compose
 - Optional **Traefik** reverse proxy + Let’s Encrypt (HTTPS)
 - **pCloud** off‑site backups via **rclone** (OAuth, region auto‑detect)
-- Easy **backup / restore / status** via the `bulletproof` CLI
+- Easy **backup / restore / safe upgrades / status** via the `bulletproof` CLI
 - Cron‑based nightly snapshots with retention
 
 > Designed for minimal input: you provide a couple of answers, the script handles the rest.
@@ -35,9 +35,9 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
   - `/home/docker/paperless` — data, media, export, db, etc.
   - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
-- `backup.sh` and `restore.sh` scripts placed into the stack dir
+- `backup.py` and `restore.py` scripts placed into the stack dir
 -  Cron job for nightly snapshots with retention
-- `bulletproof` command for backups, listing snapshots, restores, health, and logs
+- `bulletproof` command for backups, safe upgrades, listing snapshots, restores, health, and logs
 
 ---
 
@@ -55,8 +55,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 ## Quick start
 
 ```bash
-# Run as root (or sudo)
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
 
 The installer will:
@@ -69,7 +68,7 @@ The installer will:
 
 > If you ever need to refresh the CLI manually:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/tools/bulletproof.sh \
+> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/tools/bulletproof.py \
 >   -o /usr/local/bin/bulletproof && chmod +x /usr/local/bin/bulletproof
 > ```
 
@@ -125,24 +124,28 @@ You’ll be prompted for:
 The wizard writes:
 - `.env` → `/home/docker/paperless-setup/.env`
 - `docker-compose.yml` (Traefik on/off version)
-- Helper scripts: `backup.sh`, `restore.sh`
+- Helper scripts: `backup.py`, `restore.py`
 - Installs `bulletproof` CLI
 
-Then it runs: `docker compose up -d`
+Then it runs: `docker compose up -d` and performs a quick self-test
 
 ---
 
 ## Backup & snapshots
 
-Nightly cron (configurable) uploads a snapshot to pCloud:
+Nightly cron (configurable) runs `backup.py auto` and uploads incrementals to pCloud:
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
 - Snapshot naming: `YYYYMMDD-HHMMSS`
+- Monthly snapshots are **full**; weekly/daily contain only changed files and point to their parent in `manifest.yaml`
 - Includes:
   - Encrypted `.env` (if enabled) or plain `.env`
-  - Optional `compose.snapshot.yml`
-  - Tarballs of `media`, `data`, `export`
+  - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
+  - Tarballs of `media`, `data`, `export` (incremental)
   - Postgres SQL dump
-- Retention: keep last **N** days (configurable)
+  - Paperless-NGX version
+  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, retention class, mode & parent
+  - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
+- Retention: keep last **N** days (configurable) and tag snapshots as **daily**, **weekly**, or **monthly** (auto by date)
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
@@ -159,7 +162,14 @@ If snapshots exist, the installer can **restore first**:
 ### From the CLI
 Use **Bulletproof** to pick a snapshot and restore it at any time.
 
+A self-test runs after the stack is back up.
+
 > Restores will stop the stack as needed and bring it back after import.
+
+The restore process walks any incremental chain automatically, applies the
+snapshot's `docker-compose.yml` by default (`USE_COMPOSE_SNAPSHOT=no` skips it)
+and lets you choose between the snapshot's Paperless‑NGX version or the latest
+image.
 
 ---
 
@@ -169,13 +179,17 @@ A tiny helper wrapped around the installed scripts.
 
 ```bash
 bulletproof          # interactive menu
-bulletproof backup   # run a snapshot now
+bulletproof backup [class]   # run a snapshot now (daily|weekly|monthly|auto|full)
 bulletproof list     # list snapshot folders on pCloud
+bulletproof manifest # show manifest for a snapshot
 bulletproof restore  # guided restore (choose snapshot)
+bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
 ```
+
+**Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
 
 **Status** shows:
 - `docker compose ps` (state/ports)
@@ -227,4 +241,4 @@ Your off‑site snapshots remain in **pCloud**.
 
 - Installer is idempotent: safe to rerun to pick up fixes.
 - You can change `.env` and run `docker compose up -d` anytime.
-- The `bulletproof` CLI is just a shell script; read it to see what it does.
+- The `bulletproof` CLI is a Python script; read it to see what it does.
