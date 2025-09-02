@@ -61,6 +61,49 @@ def dc(*args: str) -> list[str]:
     return ["docker", "compose", "-f", str(COMPOSE_FILE), *args]
 
 
+def fetch_snapshots() -> list[tuple[str, str, str]]:
+    """Return a list of available snapshots with basic metadata.
+
+    Each entry is a tuple ``(name, mode, retention)`` where ``mode`` is the
+    backup type (e.g. ``full`` or ``incr``) and ``retention`` is the retention
+    class recorded in the snapshot's ``manifest.yaml``. If the manifest is
+    missing or cannot be read the fields default to ``?``.
+    """
+
+    try:
+        res = subprocess.run(
+            ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:
+        warn("rclone not installed")
+        return []
+    snaps: list[tuple[str, str, str]] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        name = parts[-1]
+        mode = retention = "?"
+        cat = subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cat.returncode == 0:
+            for mline in cat.stdout.splitlines():
+                if ":" in mline:
+                    k, v = mline.split(":", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k == "mode":
+                        mode = v
+                    elif k == "retention":
+                        retention = v
+        snaps.append((name, mode, retention))
+    return sorted(snaps, key=lambda x: x[0])
+
+
 def cmd_backup(args: argparse.Namespace) -> None:
     script = STACK_DIR / "backup.py"
     if not script.exists():
@@ -72,7 +115,12 @@ def cmd_backup(args: argparse.Namespace) -> None:
 
 
 def cmd_list(_: argparse.Namespace) -> None:
-    subprocess.run(["rclone", "lsd", REMOTE], check=True)
+    snaps = fetch_snapshots()
+    if not snaps:
+        warn("No snapshots found")
+        return
+    for name, mode, retention in snaps:
+        print(f"{name}\t{mode}\t{retention}")
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
@@ -80,8 +128,15 @@ def cmd_restore(args: argparse.Namespace) -> None:
     if not script.exists():
         die(f"Restore script not found at {script}")
     run = [str(script)]
-    if args.snapshot:
-        run.append(args.snapshot)
+    snap = args.snapshot
+    if not snap:
+        snaps = fetch_snapshots()
+        if snaps:
+            print("Available snapshots:")
+            for name, mode, retention in snaps:
+                print(f"- {name} ({mode}, {retention})")
+    else:
+        run.append(snap)
     subprocess.run(run, check=True)
 
 
@@ -159,7 +214,15 @@ def menu() -> None:
         elif choice == "2":
             cmd_list(argparse.Namespace())
         elif choice == "3":
-            snap = input("Snapshot (blank=latest): ").strip() or None
+            snaps = fetch_snapshots()
+            for idx, (name, mode, retention) in enumerate(snaps, 1):
+                print(f"{idx}) {name} ({mode}, {retention})")
+            choice_snap = input("Snapshot number or name (blank=latest): ").strip()
+            if choice_snap.isdigit():
+                idx = int(choice_snap)
+                snap = snaps[idx - 1][0] if 1 <= idx <= len(snaps) else None
+            else:
+                snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
         elif choice == "4":
             snap = input("Snapshot (blank=latest): ").strip() or None

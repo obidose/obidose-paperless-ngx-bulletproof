@@ -125,6 +125,27 @@ def restore_db(dump: Path) -> None:
         check=True,
     )
     time.sleep(5)
+    # Clear existing schema to avoid duplicate key errors when restoring over an
+    # existing database volume.
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(COMPOSE_FILE),
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            POSTGRES_USER,
+            "-d",
+            POSTGRES_DB,
+            "-c",
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        ],
+        check=False,
+    )
     if dump.suffix == ".gz":
         proc = subprocess.Popen(["gunzip", "-c", str(dump)], stdout=subprocess.PIPE)
         subprocess.run(
