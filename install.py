@@ -42,6 +42,7 @@ try:  # first attempt to import locally present modules
         ensure_dir_tree,
         preflight_ubuntu,
         prompt_core_values,
+        prompt_backup_plan,
         pick_and_merge_preset,
         ok,
         warn,
@@ -57,6 +58,7 @@ except ModuleNotFoundError:
         ensure_dir_tree,
         preflight_ubuntu,
         prompt_core_values,
+        prompt_backup_plan,
         pick_and_merge_preset,
         ok,
         warn,
@@ -78,11 +80,22 @@ def main() -> None:
     # pCloud
     pcloud.ensure_pcloud_remote_or_menu()
 
+    ensure_dir_tree(cfg)
+    if files.restore_existing_backup_if_present():
+        if Path(cfg.env_file).exists():
+            for line in Path(cfg.env_file).read_text().splitlines():
+                if line.startswith("CRON_TIME="):
+                    cfg.cron_time = line.split("=", 1)[1].strip()
+        files.install_cron_backup()
+        files.show_status()
+        return
+
     # Presets and prompts
     pick_and_merge_preset(
         f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
     )
     prompt_core_values()
+    prompt_backup_plan()
 
     # Directories and files
     ensure_dir_tree(cfg)
