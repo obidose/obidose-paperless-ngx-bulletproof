@@ -35,36 +35,25 @@ def _bootstrap() -> None:
 
 
 try:  # first attempt to import locally present modules
-    from installer.common import (
-        cfg,
-        say,
-        need_root,
-        ensure_dir_tree,
-        preflight_ubuntu,
-        prompt_core_values,
-        prompt_backup_plan,
-        pick_and_merge_preset,
-        ok,
-        warn,
-    )
-    from installer import deps, files, pcloud
+    from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
 except ModuleNotFoundError:
     _bootstrap()
-    from installer.common import (
-        cfg,
-        say,
-        need_root,
-        ensure_dir_tree,
-        preflight_ubuntu,
-        prompt_core_values,
-        prompt_backup_plan,
-        pick_and_merge_preset,
-        ok,
-        warn,
-    )
-    from installer import deps, files, pcloud
+    from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
+
+cfg = common.cfg
+say = common.say
+need_root = common.need_root
+ensure_dir_tree = common.ensure_dir_tree
+preflight_ubuntu = common.preflight_ubuntu
+prompt_core_values = common.prompt_core_values
+pick_and_merge_preset = common.pick_and_merge_preset
+ok = common.ok
+warn = common.warn
+# ``prompt_backup_plan`` was added in newer releases; fall back to a no-op if
+# running against an older checkout that lacks it.
+prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 
 def main() -> None:
