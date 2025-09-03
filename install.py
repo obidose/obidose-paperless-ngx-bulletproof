@@ -7,9 +7,19 @@ repository so the full installer can run without a prior ``git clone``.
 
 from pathlib import Path
 import os
+import argparse
+import sys
 
 
-BRANCH = os.environ.get("BP_BRANCH", "main")
+def _parse_branch() -> str:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--branch")
+    args, unknown = parser.parse_known_args()
+    sys.argv[1:] = unknown
+    return args.branch or os.environ.get("BP_BRANCH", "main")
+
+
+BRANCH = _parse_branch()
 
 
 def _bootstrap() -> None:
@@ -35,38 +45,30 @@ def _bootstrap() -> None:
 
 
 try:  # first attempt to import locally present modules
-    from installer.common import (
-        cfg,
-        say,
-        need_root,
-        ensure_dir_tree,
-        preflight_ubuntu,
-        prompt_core_values,
-        pick_and_merge_preset,
-        ok,
-        warn,
-    )
-    from installer import deps, files, pcloud
+    from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
 except ModuleNotFoundError:
     _bootstrap()
-    from installer.common import (
-        cfg,
-        say,
-        need_root,
-        ensure_dir_tree,
-        preflight_ubuntu,
-        prompt_core_values,
-        pick_and_merge_preset,
-        ok,
-        warn,
-    )
-    from installer import deps, files, pcloud
+    from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
+
+cfg = common.cfg
+say = common.say
+need_root = common.need_root
+ensure_dir_tree = common.ensure_dir_tree
+preflight_ubuntu = common.preflight_ubuntu
+prompt_core_values = common.prompt_core_values
+pick_and_merge_preset = common.pick_and_merge_preset
+ok = common.ok
+warn = common.warn
+# ``prompt_backup_plan`` was added in newer releases; fall back to a no-op if
+# running against an older checkout that lacks it.
+prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 
 def main() -> None:
     need_root()
+    say(f"Fetching assets from branch '{BRANCH}'")
 
     say("Starting Paperless-ngx setup wizard...")
     preflight_ubuntu()
@@ -78,11 +80,25 @@ def main() -> None:
     # pCloud
     pcloud.ensure_pcloud_remote_or_menu()
 
+    ensure_dir_tree(cfg)
+    restore_existing_backup_if_present = getattr(
+        files, "restore_existing_backup_if_present", lambda: False
+    )
+    if restore_existing_backup_if_present():
+        if Path(cfg.env_file).exists():
+            for line in Path(cfg.env_file).read_text().splitlines():
+                if line.startswith("CRON_TIME="):
+                    cfg.cron_time = line.split("=", 1)[1].strip()
+        files.install_cron_backup()
+        files.show_status()
+        return
+
     # Presets and prompts
     pick_and_merge_preset(
         f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
     )
     prompt_core_values()
+    prompt_backup_plan()
 
     # Directories and files
     ensure_dir_tree(cfg)
