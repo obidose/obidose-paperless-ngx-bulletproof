@@ -7,9 +7,19 @@ repository so the full installer can run without a prior ``git clone``.
 
 from pathlib import Path
 import os
+import argparse
+import sys
 
 
-BRANCH = os.environ.get("BP_BRANCH", "main")
+def _parse_branch() -> str:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--branch")
+    args, unknown = parser.parse_known_args()
+    sys.argv[1:] = unknown
+    return args.branch or os.environ.get("BP_BRANCH", "main")
+
+
+BRANCH = _parse_branch()
 
 
 def _bootstrap() -> None:

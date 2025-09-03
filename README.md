@@ -54,10 +54,11 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 
 ## Quick start
 
-The installer pulls code from the `main` branch by default. Set `BP_BRANCH` to a
-branch name or commit SHA to test other versions. The installer uses this value
-for the repository tarball and any preset files, so everything comes from the
-same branch.
+The installer pulls code from the `main` branch by default. Provide a branch
+name or commit SHA with the `--branch` flag (or `BP_BRANCH` environment
+variable) to test other versions. The installer uses this value for the
+repository tarball and any preset files, so everything comes from the same
+branch.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
@@ -66,14 +67,12 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 ### Dev branch example
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
-  | BP_BRANCH=dev sudo -E python3 -
+BRANCH=dev
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/install.py \
+  | sudo python3 - --branch $BRANCH
 ```
 
-The `curl` path ensures you're running the installer from `dev`. The `BP_BRANCH`
-environment variable tells the script to fetch the rest of the code and presets
-from `dev` as well, and `sudo -E` preserves that variable so the installer
-doesn't fall back to `main`.
+The `curl` path and `--branch` flag ensure everything comes from `dev`.
 
 The installer will:
 1. Install/upgrade Docker, rclone, and prerequisites
@@ -85,14 +84,15 @@ The installer will:
 
 > If you ever need to refresh the CLI manually:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/${BP_BRANCH:-main}/tools/bulletproof.py \
->   | sudo -E tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
+> BRANCH=${BRANCH:-main}
+> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/tools/bulletproof.py \
+>   | sudo tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
 > ```
-> `sudo -E` preserves `BP_BRANCH` so the correct branch's CLI is installed.
 
-Use the same `BP_BRANCH` value when refreshing the CLI so it matches the version
+Use the same `BRANCH` value when refreshing the CLI so it matches the version
 you're testing. After verifying your changes on a VPS, merge them into `main`
-(or tag a release) and run the installer without `BP_BRANCH` for production.
+(or tag a release) and run the installer without specifying a branch for
+production.
 
 ---
 
