@@ -227,6 +227,7 @@ def main() -> None:
     chain.reverse()
     say("Restoring chain: " + " -> ".join(chain))
     subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "down"], check=False)
+    dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     first = True
     for snap in chain:
@@ -254,10 +255,12 @@ def main() -> None:
                     extract_tar(tarfile_path, DATA_ROOT)
         dump = next(tmp.glob("postgres.sql*"), None)
         if dump:
-            final_dump = dump
+            final_dump = dump_dir / dump.name
+            shutil.move(str(dump), final_dump)
         shutil.rmtree(tmp)
     if final_dump:
         restore_db(final_dump)
+    shutil.rmtree(dump_dir, ignore_errors=True)
     subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"], check=False)
     if run_stack_tests(COMPOSE_FILE, ENV_FILE):
         ok("Restore complete")
@@ -271,3 +274,5 @@ if __name__ == "__main__":
     finally:
         if 'tmp' in locals() and Path(tmp).exists():
             subprocess.run(["rm", "-rf", str(tmp)])
+        if 'dump_dir' in locals() and Path(dump_dir).exists():
+            subprocess.run(["rm", "-rf", str(dump_dir)])
