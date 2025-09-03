@@ -154,11 +154,12 @@ Then it runs: `docker compose up -d` and performs a quick self-test
 
 ## Backup & snapshots
 
-Nightly cron (configurable) runs `backup.py` and uploads to pCloud. The script
-automatically takes a full snapshot once a week and incrementals on other days:
+Automated cron jobs upload snapshots to pCloud:
+- **Daily full** backup at a scheduled time
+- **Hourly incremental** backups chaining to the last full
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
-- Snapshot naming: `YYYYMMDD-HHMMSS`
-- Weekly snapshots are **full**; other days are incremental and chain to the last full
+ - Snapshot naming: `YYYY-MM-DD_HH-MM-SS`
+ - Full snapshots are self-contained; incrementals reference their parent
 - Includes:
   - Encrypted `.env` (if enabled) or plain `.env`
   - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
@@ -208,7 +209,7 @@ bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
-bulletproof schedule [cron]  # adjust backup time
+bulletproof schedule [--full CRON] [--incr CRON]  # adjust backup times
 ```
 
 **Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.

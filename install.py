@@ -87,8 +87,10 @@ def main() -> None:
     if restore_existing_backup_if_present():
         if Path(cfg.env_file).exists():
             for line in Path(cfg.env_file).read_text().splitlines():
-                if line.startswith("CRON_TIME="):
-                    cfg.cron_time = line.split("=", 1)[1].strip()
+                if line.startswith("CRON_FULL_TIME="):
+                    cfg.cron_full_time = line.split("=", 1)[1].strip()
+                elif line.startswith("CRON_INCR_TIME="):
+                    cfg.cron_incr_time = line.split("=", 1)[1].strip()
         files.install_cron_backup()
         files.show_status()
         return

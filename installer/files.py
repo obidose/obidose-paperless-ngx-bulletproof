@@ -2,7 +2,7 @@ from pathlib import Path
 import textwrap
 import subprocess
 import sys
-from .common import cfg, say, log, ok, warn
+from .common import cfg, say, log, ok, warn, confirm, prompt
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -41,10 +41,19 @@ def restore_existing_backup_if_present() -> bool:
     snaps = [line.split()[-1].rstrip("/") for line in res.stdout.splitlines() if line.strip()]
     if not snaps:
         return False
-    latest = sorted(snaps)[-1]
-    say(f"Existing backup '{latest}' found; restoring…")
+    snaps = sorted(snaps)
+    if not confirm("Existing backups found. Restore now?", True):
+        return False
+    for idx, name in enumerate(snaps, 1):
+        say(f"  {idx}) {name}")
+    choice = prompt("Choose snapshot number", str(len(snaps)))
+    try:
+        snap = snaps[int(choice) - 1]
+    except Exception:
+        snap = snaps[-1]
+    say(f"Restoring chain: {snap}")
     subprocess.run(
-        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), latest],
+        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), snap],
         check=True,
     )
     return True
@@ -86,7 +95,8 @@ def write_env_file() -> None:
         RCLONE_REMOTE_NAME={cfg.rclone_remote_name}
         RCLONE_REMOTE_PATH={cfg.rclone_remote_path}
         RETENTION_DAYS={cfg.retention_days}
-        CRON_TIME={cfg.cron_time}
+        CRON_FULL_TIME={cfg.cron_full_time}
+        CRON_INCR_TIME={cfg.cron_incr_time}
         """
     ).strip() + "\n"
     Path(cfg.env_file).write_text(content)
@@ -282,15 +292,22 @@ def bring_up_stack() -> None:
 
 
 def install_cron_backup() -> None:
-    log(f"Installing backup cron ({cfg.cron_time})")
-    cronline = f"{cfg.cron_time} root {cfg.stack_dir}/backup.py >> {cfg.stack_dir}/backup.log 2>&1"
+    log(
+        f"Installing backup cron (full: {cfg.cron_full_time}, incr: {cfg.cron_incr_time})"
+    )
     crontab = Path("/etc/crontab")
     lines = [
         l
         for l in (crontab.read_text().splitlines() if crontab.exists() else [])
         if f"{cfg.stack_dir}/backup.py" not in l
     ]
-    lines.append(cronline)
+    full_line = (
+        f"{cfg.cron_full_time} root {cfg.stack_dir}/backup.py full >> {cfg.stack_dir}/backup.log 2>&1"
+    )
+    incr_line = (
+        f"{cfg.cron_incr_time} root {cfg.stack_dir}/backup.py incr >> {cfg.stack_dir}/backup.log 2>&1"
+    )
+    lines.extend([full_line, incr_line])
     crontab.write_text("\n".join(lines) + "\n")
     subprocess.run(["systemctl", "restart", "cron"], check=True)
 

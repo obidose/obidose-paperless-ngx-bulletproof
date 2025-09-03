@@ -182,17 +182,12 @@ def test_db_restore(work: Path) -> bool:
 
 
 def main() -> None:
-    mode = sys.argv[1] if len(sys.argv) > 1 else "auto"
-    if mode not in {"full", "incr", "auto"}:
+    mode = sys.argv[1] if len(sys.argv) > 1 else None
+    if mode not in {"full", "incr"}:
         die("Usage: backup.py [full|incr]")
     ensure_remote_path(REMOTE)
     snaps = list_snapshots()
     parent = snaps[-1] if snaps else ""
-    if mode == "auto":
-        if not snaps or datetime.utcnow().weekday() == 6:
-            mode = "full"
-        else:
-            mode = "incr"
     if mode == "incr" and not snaps:
         mode = "full"
     snap = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

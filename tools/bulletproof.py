@@ -55,7 +55,8 @@ RCLONE_REMOTE_PATH = os.environ.get(
     "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
 )
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
-CRON_TIME = os.environ.get("CRON_TIME", "30 3 * * *")
+CRON_FULL_TIME = os.environ.get("CRON_FULL_TIME", "30 3 * * *")
+CRON_INCR_TIME = os.environ.get("CRON_INCR_TIME", "0 * * * *")
 
 
 def dc(*args: str) -> list[str]:
@@ -180,29 +181,49 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     subprocess.run(["docker", "info"], check=False)
 
 
-def install_cron(cron: str) -> None:
-    line = f"{cron} root {STACK_DIR}/backup.py >> {STACK_DIR}/backup.log 2>&1"
+def install_cron(full: str, incr: str) -> None:
+    full_line = (
+        f"{full} root {STACK_DIR}/backup.py full >> {STACK_DIR}/backup.log 2>&1"
+    )
+    incr_line = (
+        f"{incr} root {STACK_DIR}/backup.py incr >> {STACK_DIR}/backup.log 2>&1"
+    )
     crontab = Path("/etc/crontab")
     lines = [
         l
         for l in (crontab.read_text().splitlines() if crontab.exists() else [])
         if f"{STACK_DIR}/backup.py" not in l
     ]
-    lines.append(line)
+    lines.extend([full_line, incr_line])
     crontab.write_text("\n".join(lines) + "\n")
     if ENV_FILE.exists():
         env_lines = [
-            l for l in ENV_FILE.read_text().splitlines() if not l.startswith("CRON_TIME=")
+            l
+            for l in ENV_FILE.read_text().splitlines()
+            if not l.startswith("CRON_FULL_TIME=") and not l.startswith("CRON_INCR_TIME=")
         ]
-        env_lines.append(f"CRON_TIME={cron}")
+        env_lines.append(f"CRON_FULL_TIME={full}")
+        env_lines.append(f"CRON_INCR_TIME={incr}")
         ENV_FILE.write_text("\n".join(env_lines) + "\n")
     subprocess.run(["systemctl", "restart", "cron"], check=False)
+    global CRON_FULL_TIME, CRON_INCR_TIME
+    CRON_FULL_TIME = full
+    CRON_INCR_TIME = incr
     ok("Backup schedule updated")
 
 
 def cmd_schedule(args: argparse.Namespace) -> None:
-    cron = args.cron or input(f"Cron time (current {CRON_TIME}): ").strip() or CRON_TIME
-    install_cron(cron)
+    full = (
+        args.full
+        or input(f"Full backup cron (current {CRON_FULL_TIME}): ").strip()
+        or CRON_FULL_TIME
+    )
+    incr = (
+        args.incr
+        or input(f"Incremental backup cron (current {CRON_INCR_TIME}): ").strip()
+        or CRON_INCR_TIME
+    )
+    install_cron(full, incr)
 
 
 def menu() -> None:
@@ -213,7 +234,7 @@ def menu() -> None:
         print(f"{COLOR_BLUE}=== Bulletproof ({INSTANCE_NAME}) ==={COLOR_OFF}")
         print(f"Remote: {REMOTE}")
         print(f"Snapshots: {len(snaps)} (latest: {latest})")
-        print(f"Schedule: {CRON_TIME}\n")
+        print(f"Schedule: full={CRON_FULL_TIME} incr={CRON_INCR_TIME}\n")
         print("1) Backup")
         print("2) Snapshots")
         print("3) Restore snapshot")
@@ -258,7 +279,7 @@ def menu() -> None:
         elif choice == "7":
             cmd_doctor(argparse.Namespace())
         elif choice == "8":
-            cmd_schedule(argparse.Namespace(cron=None))
+            cmd_schedule(argparse.Namespace(full=None, incr=None))
         elif choice == "9":
             break
         else:
@@ -294,7 +315,8 @@ p = sub.add_parser("doctor", help="basic checks")
 p.set_defaults(func=cmd_doctor)
 
 p = sub.add_parser("schedule", help="configure backup cron schedule")
-p.add_argument("cron", nargs="?")
+p.add_argument("--full")
+p.add_argument("--incr")
 p.set_defaults(func=cmd_schedule)
 
 
