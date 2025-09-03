@@ -67,12 +67,11 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 ### Dev branch example
 
 ```bash
-BRANCH=dev
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/install.py \
-  | sudo python3 - --branch $BRANCH
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
+  | BP_BRANCH=dev sudo -E python3 - --branch dev
 ```
 
-The `curl` path and `--branch` flag ensure everything comes from `dev`.
+The env var and flag ensure everything comes from `dev`.
 
 The installer will:
 1. Install/upgrade Docker, rclone, and prerequisites

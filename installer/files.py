@@ -1,6 +1,7 @@
 from pathlib import Path
 import textwrap
 import subprocess
+import sys
 from .common import cfg, say, log, ok, warn
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -42,7 +43,10 @@ def restore_existing_backup_if_present() -> bool:
         return False
     latest = sorted(snaps)[-1]
     say(f"Existing backup '{latest}' found; restoring…")
-    subprocess.run([str(BASE_DIR / "modules" / "restore.py"), latest], check=True)
+    subprocess.run(
+        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), latest],
+        check=True,
+    )
     return True
 
 
