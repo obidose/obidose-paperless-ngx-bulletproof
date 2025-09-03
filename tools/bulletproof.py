@@ -143,7 +143,7 @@ def cmd_restore(args: argparse.Namespace) -> None:
 
 def cmd_upgrade(_: argparse.Namespace) -> None:
     say("Running backup before upgrade")
-    cmd_backup(argparse.Namespace(mode="auto"))
+    cmd_backup(argparse.Namespace(mode="full"))
     say("Pulling images")
     subprocess.run(dc("pull"), check=False)
     say("Recreating containers")

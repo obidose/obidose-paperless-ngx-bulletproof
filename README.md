@@ -67,12 +67,13 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
-  | BP_BRANCH=dev sudo python3 -
+  | BP_BRANCH=dev sudo -E python3 -
 ```
 
 The `curl` path ensures you're running the installer from `dev`. The `BP_BRANCH`
 environment variable tells the script to fetch the rest of the code and presets
-from `dev` as well, letting you test changes without touching `main`.
+from `dev` as well, and `sudo -E` preserves that variable so the installer
+doesn't fall back to `main`.
 
 The installer will:
 1. Install/upgrade Docker, rclone, and prerequisites
@@ -85,8 +86,9 @@ The installer will:
 > If you ever need to refresh the CLI manually:
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/${BP_BRANCH:-main}/tools/bulletproof.py \
->   -o /usr/local/bin/bulletproof && chmod +x /usr/local/bin/bulletproof
+>   | sudo -E tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
 > ```
+> `sudo -E` preserves `BP_BRANCH` so the correct branch's CLI is installed.
 
 Use the same `BP_BRANCH` value when refreshing the CLI so it matches the version
 you're testing. After verifying your changes on a VPS, merge them into `main`

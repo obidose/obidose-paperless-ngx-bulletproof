@@ -58,6 +58,7 @@ prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 def main() -> None:
     need_root()
+    say(f"Fetching assets from branch '{BRANCH}'")
 
     say("Starting Paperless-ngx setup wizard...")
     preflight_ubuntu()
