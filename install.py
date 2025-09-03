@@ -6,12 +6,15 @@ repository so the full installer can run without a prior ``git clone``.
 """
 
 from pathlib import Path
+import os
+
+
+BRANCH = os.environ.get("BP_BRANCH", "main")
 
 
 def _bootstrap() -> None:
     """Download repository sources into a temporary directory and load them."""
     import io
-    import os
     import sys
     import tarfile
     import tempfile
@@ -19,7 +22,7 @@ def _bootstrap() -> None:
 
     url = (
         "https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof/"
-        "tar.gz/refs/heads/main"
+        f"tar.gz/refs/heads/{BRANCH}"
     )
     tmpdir = tempfile.mkdtemp(prefix="paperless-inst-")
     with urllib.request.urlopen(url) as resp:
@@ -76,7 +79,9 @@ def main() -> None:
     pcloud.ensure_pcloud_remote_or_menu()
 
     # Presets and prompts
-    pick_and_merge_preset("https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main")
+    pick_and_merge_preset(
+        f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
+    )
     prompt_core_values()
 
     # Directories and files
