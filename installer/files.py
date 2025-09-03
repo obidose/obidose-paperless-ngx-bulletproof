@@ -27,6 +27,25 @@ def copy_helper_scripts() -> None:
         warn(f"Missing bulletproof CLI: {bp_src}")
 
 
+def restore_existing_backup_if_present() -> bool:
+    remote = f"{cfg.rclone_remote_name}:{cfg.rclone_remote_path}"
+    try:
+        res = subprocess.run(
+            ["rclone", "lsd", remote], capture_output=True, text=True, check=False
+        )
+    except Exception:
+        return False
+    if res.returncode != 0:
+        return False
+    snaps = [line.split()[-1].rstrip("/") for line in res.stdout.splitlines() if line.strip()]
+    if not snaps:
+        return False
+    latest = sorted(snaps)[-1]
+    say(f"Existing backup '{latest}' found; restoring…")
+    subprocess.run([str(BASE_DIR / "modules" / "restore.py"), latest], check=True)
+    return True
+
+
 def write_env_file() -> None:
     log(f"Writing {cfg.env_file}")
     if cfg.enable_traefik == "yes":
@@ -63,6 +82,7 @@ def write_env_file() -> None:
         RCLONE_REMOTE_NAME={cfg.rclone_remote_name}
         RCLONE_REMOTE_PATH={cfg.rclone_remote_path}
         RETENTION_DAYS={cfg.retention_days}
+        CRON_TIME={cfg.cron_time}
         """
     ).strip() + "\n"
     Path(cfg.env_file).write_text(content)
@@ -261,13 +281,14 @@ def install_cron_backup() -> None:
     log(f"Installing daily cron for backups ({cfg.cron_time})")
     cronline = f"{cfg.cron_time} root {cfg.stack_dir}/backup.py >> {cfg.stack_dir}/backup.log 2>&1"
     crontab = Path("/etc/crontab")
-    content = crontab.read_text() if crontab.exists() else ""
-    if cfg.stack_dir not in content:
-        with crontab.open("a") as f:
-            f.write(cronline + "\n")
-        subprocess.run(["systemctl", "restart", "cron"], check=True)
-    else:
-        log("Cron line already present.")
+    lines = [
+        l
+        for l in (crontab.read_text().splitlines() if crontab.exists() else [])
+        if f"{cfg.stack_dir}/backup.py" not in l
+    ]
+    lines.append(cronline)
+    crontab.write_text("\n".join(lines) + "\n")
+    subprocess.run(["systemctl", "restart", "cron"], check=True)
 
 
 def show_status() -> None:

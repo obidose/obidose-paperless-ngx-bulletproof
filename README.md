@@ -153,19 +153,19 @@ Then it runs: `docker compose up -d` and performs a quick self-test
 
 ## Backup & snapshots
 
-Nightly cron (configurable) runs `backup.py auto` and uploads incrementals to pCloud:
+Nightly cron (configurable) runs `backup.py auto` and uploads to pCloud:
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
 - Snapshot naming: `YYYYMMDD-HHMMSS`
-- Monthly snapshots are **full**; weekly/daily contain only changed files and point to their parent in `manifest.yaml`
+- Weekly snapshots are **full**; other days are incremental and chain to the last full
 - Includes:
   - Encrypted `.env` (if enabled) or plain `.env`
   - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
   - Tarballs of `media`, `data`, `export` (incremental)
   - Postgres SQL dump
   - Paperless-NGX version
-  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, retention class, mode & parent
+  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, mode & parent
   - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
-- Retention: keep last **N** days (configurable) and tag snapshots as **daily**, **weekly**, or **monthly** (auto by date)
+- Retention: keep last **N** days (configurable)
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
@@ -199,7 +199,7 @@ A tiny helper wrapped around the installed scripts.
 
 ```bash
 bulletproof          # interactive menu
-bulletproof backup [class]   # run a snapshot now (daily|weekly|monthly|auto|full)
+bulletproof backup [mode]    # run a backup now (full|incr|auto)
 bulletproof list     # list snapshot folders on pCloud
 bulletproof manifest # show manifest for a snapshot
 bulletproof restore  # guided restore (choose snapshot)
@@ -207,6 +207,7 @@ bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
+bulletproof schedule [cron]  # adjust daily backup time
 ```
 
 **Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
