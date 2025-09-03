@@ -70,7 +70,10 @@ def main() -> None:
     pcloud.ensure_pcloud_remote_or_menu()
 
     ensure_dir_tree(cfg)
-    if files.restore_existing_backup_if_present():
+    restore_existing_backup_if_present = getattr(
+        files, "restore_existing_backup_if_present", lambda: False
+    )
+    if restore_existing_backup_if_present():
         if Path(cfg.env_file).exists():
             for line in Path(cfg.env_file).read_text().splitlines():
                 if line.startswith("CRON_TIME="):
