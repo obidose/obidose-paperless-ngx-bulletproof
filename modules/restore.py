@@ -2,7 +2,7 @@
 """Restore Paperless-ngx data from an rclone snapshot."""
 import os
 import sys
-import tarfile
+import shutil
 import tempfile
 import subprocess
 import time
@@ -101,21 +101,40 @@ POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 
 
-def list_snapshots() -> list[str]:
+def fetch_snapshots() -> list[tuple[str, str, str]]:
     res = subprocess.run(
         ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
     )
-    snaps = []
+    snaps: list[tuple[str, str, str]] = []
     for line in res.stdout.splitlines():
         parts = line.strip().split()
-        if parts:
-            snaps.append(parts[-1].rstrip("/"))
-    return sorted(snaps)
+        if not parts:
+            continue
+        name = parts[-1].rstrip("/")
+        mode = parent = "?"
+        cat = subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cat.returncode == 0:
+            for mline in cat.stdout.splitlines():
+                if ":" in mline:
+                    k, v = mline.split(":", 1)
+                    if k.strip() == "mode":
+                        mode = v.strip()
+                    elif k.strip() == "parent":
+                        parent = v.strip()
+        snaps.append((name, mode, parent))
+    return sorted(snaps, key=lambda x: x[0])
 
 
 def extract_tar(tar_path: Path, dest: Path) -> None:
-    with tarfile.open(tar_path, "r:*") as tar:
-        tar.extractall(path=dest)
+    subprocess.run(
+        ["tar", "--listed-incremental=/dev/null", "-xpf", str(tar_path), "-C", str(dest)],
+        check=True,
+    )
 
 
 def restore_db(dump: Path) -> None:
@@ -189,38 +208,56 @@ def restore_db(dump: Path) -> None:
 
 
 def main() -> None:
-    snaps = list_snapshots()
+    snaps = fetch_snapshots()
     if not snaps:
         die(f"No snapshots found in {REMOTE}")
-    snap = sys.argv[1] if len(sys.argv) > 1 else snaps[-1]
-    if snap not in snaps:
-        die(f"Snapshot {snap} not found")
-    say(f"Restoring snapshot {snap}")
-    tmp = Path(tempfile.mkdtemp(prefix="paperless-restore."))
-    subprocess.run(["rclone", "sync", f"{REMOTE}/{snap}", str(tmp)], check=True)
-
+    names = [n for n, _, _ in snaps]
+    target = sys.argv[1] if len(sys.argv) > 1 else names[-1]
+    if target not in names:
+        die(f"Snapshot {target} not found")
+    meta = {n: (m, p) for n, m, p in snaps}
+    chain = []
+    cur = target
+    while True:
+        chain.append(cur)
+        mode, parent = meta.get(cur, ("full", ""))
+        if mode == "full" or not parent:
+            break
+        cur = parent
+    chain.reverse()
+    say("Restoring chain: " + " -> ".join(chain))
     subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "down"], check=False)
-
-    if (tmp / ".env").exists():
-        (STACK_DIR / ".env").write_text((tmp / ".env").read_text())
-        ok("Restored .env")
-
-    for name in ["data", "media", "export"]:
-        dest = DATA_ROOT / name
-        if dest.exists():
-            subprocess.run(["rm", "-rf", str(dest)], check=False)
-        tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
-        if tarfile_path:
-            extract_tar(tarfile_path, DATA_ROOT)
-
-    dump = next(tmp.glob("postgres.sql*"), None)
-    if dump:
-        restore_db(dump)
-
-    compose_snap = tmp / "compose.snapshot.yml"
-    if compose_snap.exists():
-        compose_snap.replace(COMPOSE_FILE)
-
+    final_dump: Path | None = None
+    first = True
+    for snap in chain:
+        tmp = Path(tempfile.mkdtemp(prefix="paperless-restore."))
+        subprocess.run(["rclone", "sync", f"{REMOTE}/{snap}", str(tmp)], check=True)
+        if first:
+            if (tmp / ".env").exists():
+                (STACK_DIR / ".env").write_text((tmp / ".env").read_text())
+                ok("Restored .env")
+            for name in ["data", "media", "export"]:
+                dest = DATA_ROOT / name
+                if dest.exists():
+                    subprocess.run(["rm", "-rf", str(dest)], check=False)
+                tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
+                if tarfile_path:
+                    extract_tar(tarfile_path, DATA_ROOT)
+            compose_snap = tmp / "compose.snapshot.yml"
+            if compose_snap.exists():
+                compose_snap.replace(COMPOSE_FILE)
+            first = False
+        else:
+            for name in ["data", "media", "export"]:
+                tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
+                if tarfile_path:
+                    extract_tar(tarfile_path, DATA_ROOT)
+        dump = next(tmp.glob("postgres.sql*"), None)
+        if dump:
+            final_dump = dump
+        shutil.rmtree(tmp)
+    if final_dump:
+        restore_db(final_dump)
     subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"], check=False)
     if run_stack_tests(COMPOSE_FILE, ENV_FILE):
         ok("Restore complete")
