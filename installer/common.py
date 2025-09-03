@@ -175,6 +175,11 @@ def prompt_core_values() -> None:
     cfg.refresh_paths()
 
 
+def prompt_backup_plan() -> None:
+    print()
+    say("Configure backup schedule")
+    cfg.cron_time = prompt("Daily backup cron time", cfg.cron_time)
+
 
 def pick_and_merge_preset(base: str) -> None:
     print()

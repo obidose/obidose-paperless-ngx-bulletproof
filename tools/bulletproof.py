@@ -55,6 +55,7 @@ RCLONE_REMOTE_PATH = os.environ.get(
     "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
 )
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+CRON_TIME = os.environ.get("CRON_TIME", "30 3 * * *")
 
 
 def dc(*args: str) -> list[str]:
@@ -62,14 +63,6 @@ def dc(*args: str) -> list[str]:
 
 
 def fetch_snapshots() -> list[tuple[str, str, str]]:
-    """Return a list of available snapshots with basic metadata.
-
-    Each entry is a tuple ``(name, mode, retention)`` where ``mode`` is the
-    backup type (e.g. ``full`` or ``incr``) and ``retention`` is the retention
-    class recorded in the snapshot's ``manifest.yaml``. If the manifest is
-    missing or cannot be read the fields default to ``?``.
-    """
-
     try:
         res = subprocess.run(
             ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
@@ -83,7 +76,7 @@ def fetch_snapshots() -> list[tuple[str, str, str]]:
         if not parts:
             continue
         name = parts[-1]
-        mode = retention = "?"
+        mode = parent = "?"
         cat = subprocess.run(
             ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
             capture_output=True,
@@ -98,9 +91,9 @@ def fetch_snapshots() -> list[tuple[str, str, str]]:
                     v = v.strip()
                     if k == "mode":
                         mode = v
-                    elif k == "retention":
-                        retention = v
-        snaps.append((name, mode, retention))
+                    elif k == "parent":
+                        parent = v
+        snaps.append((name, mode, parent))
     return sorted(snaps, key=lambda x: x[0])
 
 
@@ -109,18 +102,25 @@ def cmd_backup(args: argparse.Namespace) -> None:
     if not script.exists():
         die(f"Backup script not found at {script}")
     run = [str(script)]
-    if args.retention:
-        run.append(args.retention)
+    if args.mode:
+        run.append(args.mode)
     subprocess.run(run, check=True)
 
 
-def cmd_list(_: argparse.Namespace) -> None:
+def cmd_snapshots(args: argparse.Namespace) -> None:
     snaps = fetch_snapshots()
     if not snaps:
         warn("No snapshots found")
         return
-    for name, mode, retention in snaps:
-        print(f"{name}\t{mode}\t{retention}")
+    if args.snapshot:
+        subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{args.snapshot}/manifest.yaml"], check=True
+        )
+        return
+    print(f"{'NAME':<32} {'MODE':<8} PARENT")
+    for name, mode, parent in snaps:
+        parent_disp = parent if mode == "incr" else "-"
+        print(f"{name:<32} {mode:<8} {parent_disp}")
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
@@ -133,31 +133,17 @@ def cmd_restore(args: argparse.Namespace) -> None:
         snaps = fetch_snapshots()
         if snaps:
             print("Available snapshots:")
-            for name, mode, retention in snaps:
-                print(f"- {name} ({mode}, {retention})")
+            for name, mode, parent in snaps:
+                detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
+                print(f"- {name} ({detail})")
     else:
         run.append(snap)
     subprocess.run(run, check=True)
 
 
-def cmd_manifest(args: argparse.Namespace) -> None:
-    snap = args.snapshot
-    if not snap:
-        res = subprocess.run(
-            ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=True
-        )
-        snaps = [line.split()[-1] for line in res.stdout.strip().splitlines() if line]
-        if not snaps:
-            die("No snapshots found")
-        snap = snaps[-1]
-    subprocess.run(
-        ["rclone", "cat", f"{REMOTE}/{snap}/manifest.yaml"], check=True
-    )
-
-
 def cmd_upgrade(_: argparse.Namespace) -> None:
     say("Running backup before upgrade")
-    cmd_backup(argparse.Namespace(retention="auto"))
+    cmd_backup(argparse.Namespace(mode="auto"))
     say("Pulling images")
     subprocess.run(dc("pull"), check=False)
     say("Recreating containers")
@@ -194,29 +180,67 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     subprocess.run(["docker", "info"], check=False)
 
 
+def install_cron(cron: str) -> None:
+    line = f"{cron} root {STACK_DIR}/backup.py >> {STACK_DIR}/backup.log 2>&1"
+    crontab = Path("/etc/crontab")
+    lines = [
+        l
+        for l in (crontab.read_text().splitlines() if crontab.exists() else [])
+        if f"{STACK_DIR}/backup.py" not in l
+    ]
+    lines.append(line)
+    crontab.write_text("\n".join(lines) + "\n")
+    if ENV_FILE.exists():
+        env_lines = [
+            l for l in ENV_FILE.read_text().splitlines() if not l.startswith("CRON_TIME=")
+        ]
+        env_lines.append(f"CRON_TIME={cron}")
+        ENV_FILE.write_text("\n".join(env_lines) + "\n")
+    subprocess.run(["systemctl", "restart", "cron"], check=False)
+    ok("Backup schedule updated")
+
+
+def cmd_schedule(args: argparse.Namespace) -> None:
+    cron = args.cron or input(f"Cron time (current {CRON_TIME}): ").strip() or CRON_TIME
+    install_cron(cron)
+
+
 def menu() -> None:
     """Interactive menu for easier use."""
     while True:
-        print("Bulletproof helper")
+        snaps = fetch_snapshots()
+        latest = snaps[-1][0] if snaps else "none"
+        print(f"{COLOR_BLUE}=== Bulletproof ({INSTANCE_NAME}) ==={COLOR_OFF}")
+        print(f"Remote: {REMOTE}")
+        print(f"Snapshots: {len(snaps)} (latest: {latest})")
+        print(f"Schedule: {CRON_TIME}\n")
         print("1) Backup")
-        print("2) List snapshots")
+        print("2) Snapshots")
         print("3) Restore snapshot")
-        print("4) Show manifest")
-        print("5) Upgrade")
-        print("6) Status")
-        print("7) Logs")
-        print("8) Doctor")
+        print("4) Upgrade")
+        print("5) Status")
+        print("6) Logs")
+        print("7) Doctor")
+        print("8) Backup schedule")
         print("9) Quit")
         choice = input("Choose [1-9]: ").strip()
         if choice == "1":
-            ret = input("Retention (daily|weekly|monthly|auto) [auto]: ").strip() or "auto"
-            cmd_backup(argparse.Namespace(retention=ret))
+            mode_in = input("Full or Incremental? [incr]: ").strip().lower()
+            if mode_in.startswith("f"):
+                mode = "full"
+            else:
+                mode = "incr"
+            cmd_backup(argparse.Namespace(mode=mode))
         elif choice == "2":
-            cmd_list(argparse.Namespace())
+            cmd_snapshots(argparse.Namespace(snapshot=None))
+            snap = input("Show manifest for snapshot (blank=back): ").strip()
+            if snap:
+                cmd_snapshots(argparse.Namespace(snapshot=snap))
         elif choice == "3":
             snaps = fetch_snapshots()
-            for idx, (name, mode, retention) in enumerate(snaps, 1):
-                print(f"{idx}) {name} ({mode}, {retention})")
+            for idx, (name, mode, parent) in enumerate(snaps, 1):
+                detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
+                print(f"{idx}) {name} ({detail})")
             choice_snap = input("Snapshot number or name (blank=latest): ").strip()
             if choice_snap.isdigit():
                 idx = int(choice_snap)
@@ -225,17 +249,16 @@ def menu() -> None:
                 snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
         elif choice == "4":
-            snap = input("Snapshot (blank=latest): ").strip() or None
-            cmd_manifest(argparse.Namespace(snapshot=snap))
-        elif choice == "5":
             cmd_upgrade(argparse.Namespace())
-        elif choice == "6":
+        elif choice == "5":
             cmd_status(argparse.Namespace())
-        elif choice == "7":
+        elif choice == "6":
             svc = input("Service (blank=all): ").strip() or None
             cmd_logs(argparse.Namespace(service=svc))
-        elif choice == "8":
+        elif choice == "7":
             cmd_doctor(argparse.Namespace())
+        elif choice == "8":
+            cmd_schedule(argparse.Namespace(cron=None))
         elif choice == "9":
             break
         else:
@@ -246,19 +269,16 @@ parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")
 sub = parser.add_subparsers(dest="command")
 
 p = sub.add_parser("backup", help="run backup script")
-p.add_argument("retention", nargs="?", help="daily|weekly|monthly|auto")
+p.add_argument("mode", nargs="?", choices=["full", "incr"], help="full|incr")
 p.set_defaults(func=cmd_backup)
 
-p = sub.add_parser("list", help="list snapshots")
-p.set_defaults(func=cmd_list)
+p = sub.add_parser("snapshots", help="list snapshots or show manifest")
+p.add_argument("snapshot", nargs="?", help="snapshot to show manifest")
+p.set_defaults(func=cmd_snapshots)
 
 p = sub.add_parser("restore", help="restore snapshot")
 p.add_argument("snapshot", nargs="?")
 p.set_defaults(func=cmd_restore)
-
-p = sub.add_parser("manifest", help="show snapshot manifest")
-p.add_argument("snapshot", nargs="?")
-p.set_defaults(func=cmd_manifest)
 
 p = sub.add_parser("upgrade", help="backup then pull images and up -d")
 p.set_defaults(func=cmd_upgrade)
@@ -272,6 +292,10 @@ p.set_defaults(func=cmd_logs)
 
 p = sub.add_parser("doctor", help="basic checks")
 p.set_defaults(func=cmd_doctor)
+
+p = sub.add_parser("schedule", help="configure backup cron schedule")
+p.add_argument("cron", nargs="?")
+p.set_defaults(func=cmd_schedule)
 
 
 if __name__ == "__main__":
