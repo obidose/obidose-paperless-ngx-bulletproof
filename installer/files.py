@@ -278,7 +278,7 @@ def bring_up_stack() -> None:
 
 
 def install_cron_backup() -> None:
-    log(f"Installing daily cron for backups ({cfg.cron_time})")
+    log(f"Installing backup cron ({cfg.cron_time})")
     cronline = f"{cfg.cron_time} root {cfg.stack_dir}/backup.py >> {cfg.stack_dir}/backup.log 2>&1"
     crontab = Path("/etc/crontab")
     lines = [

@@ -184,7 +184,7 @@ def test_db_restore(work: Path) -> bool:
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "auto"
     if mode not in {"full", "incr", "auto"}:
-        die("Usage: backup.py [full|incr|auto]")
+        die("Usage: backup.py [full|incr]")
     ensure_remote_path(REMOTE)
     snaps = list_snapshots()
     parent = snaps[-1] if snaps else ""
