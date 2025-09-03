@@ -35,13 +35,15 @@ def restore_existing_backup_if_present() -> bool:
         )
     except Exception:
         return False
+    if res.returncode != 0:
+        return False
     snaps = [line.split()[-1].rstrip("/") for line in res.stdout.splitlines() if line.strip()]
-    if snaps:
-        latest = sorted(snaps)[-1]
-        say(f"Existing backup '{latest}' found; restoring…")
-        subprocess.run([str(BASE_DIR / "modules" / "restore.py"), latest], check=True)
-        return True
-    return False
+    if not snaps:
+        return False
+    latest = sorted(snaps)[-1]
+    say(f"Existing backup '{latest}' found; restoring…")
+    subprocess.run([str(BASE_DIR / "modules" / "restore.py"), latest], check=True)
+    return True
 
 
 def write_env_file() -> None:
