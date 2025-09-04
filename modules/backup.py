@@ -2,12 +2,23 @@
 """Snapshot Paperless-ngx data and upload to an rclone remote."""
 import os
 import sys
-import tarfile
 import tempfile
 import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
+
+
+def list_snapshots() -> list[str]:
+    res = subprocess.run(
+        ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
+    )
+    snaps = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if parts:
+            snaps.append(parts[-1].rstrip("/"))
+    return sorted(snaps)
 
 
 def load_env(path: Path) -> None:
@@ -59,11 +70,15 @@ DIR_DATA = DATA_ROOT / "data"
 COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
+RCLONE_ARCHIVE_PATH = os.environ.get(
+    "RCLONE_ARCHIVE_PATH", f"{RCLONE_REMOTE_PATH}/archive"
+)
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
 
 
 def ensure_remote_path(remote: str) -> None:
@@ -98,13 +113,27 @@ def dump_db(work: Path) -> None:
         warn("Compose file not found; skipping DB dump")
 
 
-def tar_dir(src: Path, name: str, work: Path) -> None:
+def tar_dir(src: Path, name: str, work: Path, mode: str) -> None:
     if not src.exists():
         warn(f"Skip {name}: directory not found at {src}")
         return
     say(f"Archiving {name}…")
-    with tarfile.open(work / f"{name}.tar.gz", "w:gz") as tar:
-        tar.add(src, arcname=name)
+    snarf = work / f"{name}.snar"
+    if mode == "full" and snarf.exists():
+        snarf.unlink()
+    subprocess.run(
+        [
+            "tar",
+            "--listed-incremental",
+            str(snarf),
+            "-czf",
+            str(work / f"{name}.tar.gz"),
+            "-C",
+            str(src.parent),
+            name,
+        ],
+        check=True,
+    )
 
 
 def verify_archives(work: Path) -> bool:
@@ -157,16 +186,28 @@ def test_db_restore(work: Path) -> bool:
 
 
 def main() -> None:
-    retention_class = sys.argv[1] if len(sys.argv) > 1 else "auto"
-    ensure_remote_path(REMOTE)
+    mode = sys.argv[1] if len(sys.argv) > 1 else None
+    if mode not in {"full", "incr", "archive"}:
+        die("Usage: backup.py [full|incr|archive]")
+    ensure_remote_path(ARCHIVE_REMOTE if mode == "archive" else REMOTE)
+    snaps = list_snapshots()
+    parent = snaps[-1] if snaps else ""
+    if mode == "incr" and not snaps:
+        mode = "full"
     snap = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     work = Path(tempfile.mkdtemp(prefix="paperless-backup."))
-    say(f"Creating snapshot {snap}")
+    if mode == "incr" and parent:
+        subprocess.run(
+            ["rclone", "copy", f"{REMOTE}/{parent}", str(work), "--include", "*.snar"],
+            check=False,
+        )
+    say(f"Creating {mode} snapshot {snap}")
 
     dump_db(work)
-    tar_dir(DIR_MEDIA, "media", work)
-    tar_dir(DIR_DATA, "data", work)
-    tar_dir(DIR_EXPORT, "export", work)
+    tar_mode = "full" if mode in {"full", "archive"} else "incr"
+    tar_dir(DIR_MEDIA, "media", work, tar_mode)
+    tar_dir(DIR_DATA, "data", work, tar_mode)
+    tar_dir(DIR_EXPORT, "export", work, tar_mode)
 
     if ENV_FILE.exists():
         (work / ".env").write_text(ENV_FILE.read_text())
@@ -177,9 +218,10 @@ def main() -> None:
         shutil_path = work / "compose.snapshot.yml"
         shutil_path.write_text(COMPOSE_FILE.read_text())
 
-    (work / "manifest.yaml").write_text(
-        f"mode: full\nretention: {retention_class}\ncreated: {datetime.utcnow().isoformat()}\n"
-    )
+    manifest_lines = [f"mode: {mode}", f"created: {datetime.utcnow().isoformat()}"]
+    if mode == "incr" and parent:
+        manifest_lines.append(f"parent: {parent}")
+    (work / "manifest.yaml").write_text("\n".join(manifest_lines) + "\n")
 
     passed = verify_archives(work) and test_db_restore(work)
     status = "status.ok" if passed else "status.fail"
@@ -189,7 +231,8 @@ def main() -> None:
     else:
         warn("Integrity checks failed")
 
-    dest = f"{REMOTE}/{snap}"
+    dest_root = ARCHIVE_REMOTE if mode == "archive" else REMOTE
+    dest = f"{dest_root}/{snap}"
     say(f"Uploading to {dest}")
     subprocess.run(
         [
@@ -207,7 +250,7 @@ def main() -> None:
         check=True,
     )
 
-    if RETENTION_DAYS > 0:
+    if mode != "archive" and RETENTION_DAYS > 0:
         subprocess.run(
             [
                 "rclone",
