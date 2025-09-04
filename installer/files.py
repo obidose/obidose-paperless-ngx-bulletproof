@@ -97,6 +97,7 @@ def write_env_file() -> None:
         RETENTION_DAYS={cfg.retention_days}
         CRON_FULL_TIME={cfg.cron_full_time}
         CRON_INCR_TIME={cfg.cron_incr_time}
+        CRON_ARCHIVE_TIME={cfg.cron_archive_time}
         """
     ).strip() + "\n"
     Path(cfg.env_file).write_text(content)
@@ -293,7 +294,7 @@ def bring_up_stack() -> None:
 
 def install_cron_backup() -> None:
     log(
-        f"Installing backup cron (full: {cfg.cron_full_time}, incr: {cfg.cron_incr_time})"
+        f"Installing backup cron (full: {cfg.cron_full_time}, incr: {cfg.cron_incr_time}, archive: {cfg.cron_archive_time or 'disabled'})"
     )
     crontab = Path("/etc/crontab")
     lines = [
@@ -308,6 +309,11 @@ def install_cron_backup() -> None:
         f"{cfg.cron_incr_time} root {cfg.stack_dir}/backup.py incr >> {cfg.stack_dir}/backup.log 2>&1"
     )
     lines.extend([full_line, incr_line])
+    if cfg.cron_archive_time:
+        archive_line = (
+            f"{cfg.cron_archive_time} root {cfg.stack_dir}/backup.py archive >> {cfg.stack_dir}/backup.log 2>&1"
+        )
+        lines.append(archive_line)
     crontab.write_text("\n".join(lines) + "\n")
     subprocess.run(["systemctl", "restart", "cron"], check=True)
 

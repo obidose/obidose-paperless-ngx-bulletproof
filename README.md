@@ -155,8 +155,9 @@ Then it runs: `docker compose up -d` and performs a quick self-test
 ## Backup & snapshots
 
 Automated cron jobs upload snapshots to pCloud:
-- **Daily full** backup at a scheduled time
-- **Hourly incremental** backups chaining to the last full
+- **Weekly full** backup at a scheduled time
+- **Daily incremental** backups chaining to the last full
+- Optional **monthly archive** snapshot kept separately
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
  - Snapshot naming: `YYYY-MM-DD_HH-MM-SS`
  - Full snapshots are self-contained; incrementals reference their parent
@@ -172,8 +173,8 @@ Automated cron jobs upload snapshots to pCloud:
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
-During installation you're guided through setting the full backup time (HH:MM)
-and how often incrementals run (hours). Adjust these later with
+During installation you're guided through choosing the full/incremental cadence
+and whether to enable a monthly archive. Adjust these later with
 `bulletproof schedule`.
 
 ---
@@ -206,14 +207,14 @@ A tiny helper wrapped around the installed scripts.
 
 ```bash
 bulletproof          # interactive menu
-bulletproof backup [mode]    # run a backup now (full|incr)
+bulletproof backup [mode]    # run a backup now (full|incr|archive)
 bulletproof snapshots            # list snapshots (pick number to show manifest)
 bulletproof restore  # guided restore (choose snapshot)
 bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
-bulletproof schedule [--full CRON] [--incr CRON]  # adjust backup times
+bulletproof schedule [--full CRON] [--incr CRON] [--archive CRON]  # adjust backup times
 ```
 
 **Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.

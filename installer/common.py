@@ -117,8 +117,9 @@ class Config:
     rclone_remote_name: str = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     rclone_remote_path: str = os.environ.get("RCLONE_REMOTE_PATH", "backups/paperless/paperless")
     retention_days: str = os.environ.get("RETENTION_DAYS", "30")
-    cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * *")
-    cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 * * * *")
+    cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
+    cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
+    cron_archive_time: str = os.environ.get("CRON_ARCHIVE_TIME", "")
 
     env_backup_mode: str = os.environ.get("ENV_BACKUP_MODE", "openssl")
     env_backup_passphrase_file: str = os.environ.get("ENV_BACKUP_PASSPHRASE_FILE", "/root/.paperless_env_pass")
@@ -181,33 +182,55 @@ def prompt_backup_plan() -> None:
     say("Configure backup schedule")
     print("Full backups capture everything; incremental backups save changes since the last full.")
 
-    def parse_time(val: str, default: str) -> str:
-        val = val.strip()
-        if not val:
-            return default
-        if " " in val:
-            return val
-        if ":" in val:
-            h, m = val.split(":", 1)
-            if h.isdigit() and m.isdigit():
-                return f"{int(m)} {int(h)} * * *"
-        return default
+    freq_full = prompt(
+        "Full backup frequency (daily/weekly/monthly/cron)", "weekly"
+    ).lower()
+    if " " in freq_full:
+        cfg.cron_full_time = freq_full
+    elif freq_full.startswith("d"):
+        t = prompt("Time (HH:MM)", "03:30")
+        h, m = t.split(":", 1)
+        cfg.cron_full_time = f"{int(m)} {int(h)} * * *"
+    elif freq_full.startswith("w"):
+        dow = prompt("Day of week (0=Sun..6=Sat)", "0")
+        t = prompt("Time (HH:MM)", "03:30")
+        h, m = t.split(":", 1)
+        cfg.cron_full_time = f"{int(m)} {int(h)} * * {dow}"
+    elif freq_full.startswith("m"):
+        dom = prompt("Day of month (1-31)", "1")
+        t = prompt("Time (HH:MM)", "03:30")
+        h, m = t.split(":", 1)
+        cfg.cron_full_time = f"{int(m)} {int(h)} {dom} * *"
+    elif freq_full.startswith("c"):
+        cfg.cron_full_time = prompt("Cron expression", cfg.cron_full_time)
 
-    def parse_interval(val: str, default: str) -> str:
-        val = val.strip()
-        if not val:
-            return default
-        if " " in val:
-            return val
-        if val.isdigit():
-            n = max(1, int(val))
-            return f"0 */{n} * * *"
-        return default
+    freq_incr = prompt(
+        "Incremental backup frequency (hourly/daily/weekly/cron)", "daily"
+    ).lower()
+    if " " in freq_incr:
+        cfg.cron_incr_time = freq_incr
+    elif freq_incr.startswith("h"):
+        n = prompt("Every how many hours?", "1")
+        cfg.cron_incr_time = f"0 */{int(n)} * * *"
+    elif freq_incr.startswith("d"):
+        t = prompt("Time (HH:MM)", "00:00")
+        h, m = t.split(":", 1)
+        cfg.cron_incr_time = f"{int(m)} {int(h)} * * *"
+    elif freq_incr.startswith("w"):
+        dow = prompt("Day of week (0=Sun..6=Sat)", "0")
+        t = prompt("Time (HH:MM)", "00:00")
+        h, m = t.split(":", 1)
+        cfg.cron_incr_time = f"{int(m)} {int(h)} * * {dow}"
+    elif freq_incr.startswith("c"):
+        cfg.cron_incr_time = prompt("Cron expression", cfg.cron_incr_time)
 
-    full_raw = prompt("When should the full backup run? (HH:MM 24h or cron)", "03:30")
-    incr_raw = prompt("Run incremental backups every how many hours? (number or cron)", "1")
-    cfg.cron_full_time = parse_time(full_raw, cfg.cron_full_time)
-    cfg.cron_incr_time = parse_interval(incr_raw, cfg.cron_incr_time)
+    if confirm("Enable monthly archive backup?", False):
+        dom = prompt("Day of month for archive", "1")
+        t = prompt("Time for archive (HH:MM)", "04:00")
+        h, m = t.split(":", 1)
+        cfg.cron_archive_time = f"{int(m)} {int(h)} {dom} * *"
+    else:
+        cfg.cron_archive_time = ""
 
 
 def pick_and_merge_preset(base: str) -> None:

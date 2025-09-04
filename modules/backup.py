@@ -70,11 +70,15 @@ DIR_DATA = DATA_ROOT / "data"
 COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
+RCLONE_ARCHIVE_PATH = os.environ.get(
+    "RCLONE_ARCHIVE_PATH", f"{RCLONE_REMOTE_PATH}/archive"
+)
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
 
 
 def ensure_remote_path(remote: str) -> None:
@@ -183,9 +187,9 @@ def test_db_restore(work: Path) -> bool:
 
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else None
-    if mode not in {"full", "incr"}:
-        die("Usage: backup.py [full|incr]")
-    ensure_remote_path(REMOTE)
+    if mode not in {"full", "incr", "archive"}:
+        die("Usage: backup.py [full|incr|archive]")
+    ensure_remote_path(ARCHIVE_REMOTE if mode == "archive" else REMOTE)
     snaps = list_snapshots()
     parent = snaps[-1] if snaps else ""
     if mode == "incr" and not snaps:
@@ -200,9 +204,10 @@ def main() -> None:
     say(f"Creating {mode} snapshot {snap}")
 
     dump_db(work)
-    tar_dir(DIR_MEDIA, "media", work, mode)
-    tar_dir(DIR_DATA, "data", work, mode)
-    tar_dir(DIR_EXPORT, "export", work, mode)
+    tar_mode = "full" if mode in {"full", "archive"} else "incr"
+    tar_dir(DIR_MEDIA, "media", work, tar_mode)
+    tar_dir(DIR_DATA, "data", work, tar_mode)
+    tar_dir(DIR_EXPORT, "export", work, tar_mode)
 
     if ENV_FILE.exists():
         (work / ".env").write_text(ENV_FILE.read_text())
@@ -226,7 +231,8 @@ def main() -> None:
     else:
         warn("Integrity checks failed")
 
-    dest = f"{REMOTE}/{snap}"
+    dest_root = ARCHIVE_REMOTE if mode == "archive" else REMOTE
+    dest = f"{dest_root}/{snap}"
     say(f"Uploading to {dest}")
     subprocess.run(
         [
@@ -244,7 +250,7 @@ def main() -> None:
         check=True,
     )
 
-    if RETENTION_DAYS > 0:
+    if mode != "archive" and RETENTION_DAYS > 0:
         subprocess.run(
             [
                 "rclone",

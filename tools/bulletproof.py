@@ -55,8 +55,9 @@ RCLONE_REMOTE_PATH = os.environ.get(
     "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
 )
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
-CRON_FULL_TIME = os.environ.get("CRON_FULL_TIME", "30 3 * * *")
-CRON_INCR_TIME = os.environ.get("CRON_INCR_TIME", "0 * * * *")
+CRON_FULL_TIME = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
+CRON_INCR_TIME = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
+CRON_ARCHIVE_TIME = os.environ.get("CRON_ARCHIVE_TIME", "")
 
 
 def dc(*args: str) -> list[str]:
@@ -186,12 +187,17 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     subprocess.run(["docker", "info"], check=False)
 
 
-def install_cron(full: str, incr: str) -> None:
+def install_cron(full: str, incr: str, archive: str) -> None:
     full_line = (
         f"{full} root {STACK_DIR}/backup.py full >> {STACK_DIR}/backup.log 2>&1"
     )
     incr_line = (
         f"{incr} root {STACK_DIR}/backup.py incr >> {STACK_DIR}/backup.log 2>&1"
+    )
+    archive_line = (
+        f"{archive} root {STACK_DIR}/backup.py archive >> {STACK_DIR}/backup.log 2>&1"
+        if archive
+        else None
     )
     crontab = Path("/etc/crontab")
     lines = [
@@ -200,57 +206,103 @@ def install_cron(full: str, incr: str) -> None:
         if f"{STACK_DIR}/backup.py" not in l
     ]
     lines.extend([full_line, incr_line])
+    if archive_line:
+        lines.append(archive_line)
     crontab.write_text("\n".join(lines) + "\n")
     if ENV_FILE.exists():
         env_lines = [
             l
             for l in ENV_FILE.read_text().splitlines()
-            if not l.startswith("CRON_FULL_TIME=") and not l.startswith("CRON_INCR_TIME=")
+            if not l.startswith("CRON_FULL_TIME=")
+            and not l.startswith("CRON_INCR_TIME=")
+            and not l.startswith("CRON_ARCHIVE_TIME=")
         ]
         env_lines.append(f"CRON_FULL_TIME={full}")
         env_lines.append(f"CRON_INCR_TIME={incr}")
+        env_lines.append(f"CRON_ARCHIVE_TIME={archive}")
         ENV_FILE.write_text("\n".join(env_lines) + "\n")
     subprocess.run(["systemctl", "restart", "cron"], check=False)
-    global CRON_FULL_TIME, CRON_INCR_TIME
+    global CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME
     CRON_FULL_TIME = full
     CRON_INCR_TIME = incr
+    CRON_ARCHIVE_TIME = archive
     ok("Backup schedule updated")
 
 
-def parse_time(val: str, current: str) -> str:
-    val = val.strip()
-    if not val:
-        return current
-    if " " in val:
-        return val
-    if ":" in val:
-        h, m = val.split(":", 1)
-        if h.isdigit() and m.isdigit():
-            return f"{int(m)} {int(h)} * * *"
-    return current
+def _hhmm_to_cron(hhmm: str) -> str:
+    h, m = hhmm.split(":", 1)
+    return f"{int(m)} {int(h)} * * *"
 
 
-def parse_interval(val: str, current: str) -> str:
-    val = val.strip()
-    if not val:
-        return current
-    if " " in val:
-        return val
-    if val.isdigit():
-        n = max(1, int(val))
-        return f"0 */{n} * * *"
-    return current
+def prompt_full_schedule(current: str) -> str:
+    freq = input(
+        "Full backup frequency (daily/weekly/monthly/cron) [weekly]: "
+    ).strip().lower()
+    if not freq:
+        freq = "weekly"
+    if " " in freq:
+        return freq
+    if freq.startswith("d"):
+        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
+        return _hhmm_to_cron(t)
+    if freq.startswith("w"):
+        dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
+        h, m = t.split(":", 1)
+        return f"{int(m)} {int(h)} * * {dow}"
+    if freq.startswith("m"):
+        dom = input("Day of month (1-31) [1]: ").strip() or "1"
+        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
+        h, m = t.split(":", 1)
+        return f"{int(m)} {int(h)} {dom} * *"
+    if freq.startswith("c"):
+        return input(f"Cron expression [{current}]: ").strip() or current
+    return freq
+
+
+def prompt_incr_schedule(current: str) -> str:
+    freq = input(
+        "Incremental backup frequency (hourly/daily/weekly/cron) [daily]: "
+    ).strip().lower()
+    if not freq:
+        freq = "daily"
+    if " " in freq:
+        return freq
+    if freq.startswith("h"):
+        n = input("Every how many hours? [1]: ").strip() or "1"
+        return f"0 */{int(n)} * * *"
+    if freq.startswith("d"):
+        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
+        return _hhmm_to_cron(t)
+    if freq.startswith("w"):
+        dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
+        h, m = t.split(":", 1)
+        return f"{int(m)} {int(h)} * * {dow}"
+    if freq.startswith("c"):
+        return input(f"Cron expression [{current}]: ").strip() or current
+    return freq
+
+
+def prompt_archive_schedule(current: str) -> str:
+    enable = input("Enable monthly archive backup? (y/N): ").strip().lower()
+    if enable.startswith("y"):
+        dom = input("Day of month [1]: ").strip() or "1"
+        t = input("Time (HH:MM) [04:00]: ").strip() or "04:00"
+        h, m = t.split(":", 1)
+        return f"{int(m)} {int(h)} {dom} * *"
+    return ""
 
 
 def cmd_schedule(args: argparse.Namespace) -> None:
-    print("Full backups capture everything; incremental backups store only changes.")
-    full_prompt = f"Time for daily full backup (HH:MM or cron) [{CRON_FULL_TIME}]: "
-    incr_prompt = f"Incremental backup frequency (hours or cron) [{CRON_INCR_TIME}]: "
-    full_in = args.full or input(full_prompt).strip()
-    incr_in = args.incr or input(incr_prompt).strip()
-    full = parse_time(full_in, CRON_FULL_TIME)
-    incr = parse_interval(incr_in, CRON_INCR_TIME)
-    install_cron(full, incr)
+    print("Configure when backups run.")
+    full = args.full or prompt_full_schedule(CRON_FULL_TIME)
+    incr = args.incr or prompt_incr_schedule(CRON_INCR_TIME)
+    if args.archive is not None:
+        archive = args.archive
+    else:
+        archive = prompt_archive_schedule(CRON_ARCHIVE_TIME)
+    install_cron(full, incr, archive)
 
 
 def menu() -> None:
@@ -261,11 +313,15 @@ def menu() -> None:
         print(f"{COLOR_BLUE}=== Bulletproof ({INSTANCE_NAME}) ==={COLOR_OFF}")
         print(f"Remote: {REMOTE}")
         print(f"Snapshots: {len(snaps)} (latest: {latest})")
-        def desc(full: str, incr: str) -> str:
+        def desc(full: str, incr: str, arch: str) -> str:
             try:
                 m, h, dom, mon, dow = full.split()
                 if dom == mon == dow == "*":
                     full_txt = f"daily at {int(h):02d}:{int(m):02d}"
+                elif dom == mon == "*" and dow != "*":
+                    full_txt = f"weekly {dow} at {int(h):02d}:{int(m):02d}"
+                elif dom != "*" and mon == dow == "*":
+                    full_txt = f"monthly {dom} at {int(h):02d}:{int(m):02d}"
                 else:
                     full_txt = full
             except Exception:
@@ -275,13 +331,27 @@ def menu() -> None:
                 if parts[0] == "0" and parts[1].startswith("*/"):
                     hrs = parts[1][2:]
                     incr_txt = f"every {int(hrs)}h"
+                elif parts[0].isdigit() and parts[1].isdigit() and parts[2] == parts[3] == parts[4] == "*":
+                    incr_txt = f"daily at {int(parts[1]):02d}:{int(parts[0]):02d}"
+                elif parts[0].isdigit() and parts[1].isdigit() and parts[2] == parts[3] == "*" and parts[4] != "*":
+                    incr_txt = f"weekly {parts[4]} at {int(parts[1]):02d}:{int(parts[0]):02d}"
                 else:
                     incr_txt = incr
             except Exception:
                 incr_txt = incr
+            if arch:
+                try:
+                    am, ah, adom, amon, adow = arch.split()
+                    if adom != "*" and amon == adow == "*":
+                        arch_txt = f"monthly {int(adom)} at {int(ah):02d}:{int(am):02d}"
+                    else:
+                        arch_txt = arch
+                except Exception:
+                    arch_txt = arch
+                return f"full {full_txt}, incr {incr_txt}, archive {arch_txt}"
             return f"full {full_txt}, incr {incr_txt}"
 
-        print(f"Schedule: {desc(CRON_FULL_TIME, CRON_INCR_TIME)}\n")
+        print(f"Schedule: {desc(CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME)}\n")
         print("1) Backup")
         print("2) Snapshots")
         print("3) Restore snapshot")
@@ -293,9 +363,11 @@ def menu() -> None:
         print("9) Quit")
         choice = input("Choose [1-9]: ").strip()
         if choice == "1":
-            mode_in = input("Full or Incremental? [incr]: ").strip().lower()
+            mode_in = input("Full, Incremental, or Archive? [incr]: ").strip().lower()
             if mode_in.startswith("f"):
                 mode = "full"
+            elif mode_in.startswith("a"):
+                mode = "archive"
             else:
                 mode = "incr"
             cmd_backup(argparse.Namespace(mode=mode))
@@ -323,7 +395,7 @@ def menu() -> None:
         elif choice == "7":
             cmd_doctor(argparse.Namespace())
         elif choice == "8":
-            cmd_schedule(argparse.Namespace(full=None, incr=None))
+            cmd_schedule(argparse.Namespace(full=None, incr=None, archive=None))
         elif choice == "9":
             break
         else:
@@ -334,7 +406,9 @@ parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")
 sub = parser.add_subparsers(dest="command")
 
 p = sub.add_parser("backup", help="run backup script")
-p.add_argument("mode", nargs="?", choices=["full", "incr"], help="full|incr")
+p.add_argument(
+    "mode", nargs="?", choices=["full", "incr", "archive"], help="full|incr|archive"
+)
 p.set_defaults(func=cmd_backup)
 
 p = sub.add_parser("snapshots", help="list snapshots and optionally show a manifest")
@@ -365,6 +439,7 @@ p.set_defaults(func=cmd_doctor)
 p = sub.add_parser("schedule", help="configure backup schedule")
 p.add_argument("--full", help="time for daily full backup (HH:MM or cron)")
 p.add_argument("--incr", help="incremental frequency (hours or cron)")
+p.add_argument("--archive", help="cron for monthly archive or blank to disable")
 p.set_defaults(func=cmd_schedule)
 
 

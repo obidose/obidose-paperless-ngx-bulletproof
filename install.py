@@ -92,6 +92,8 @@ def main() -> None:
                     cfg.cron_full_time = line.split("=", 1)[1].strip()
                 elif line.startswith("CRON_INCR_TIME="):
                     cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                elif line.startswith("CRON_ARCHIVE_TIME="):
+                    cfg.cron_archive_time = line.split("=", 1)[1].strip()
         files.install_cron_backup()
         files.show_status()
         return
