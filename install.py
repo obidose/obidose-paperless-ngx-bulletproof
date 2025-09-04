@@ -85,6 +85,7 @@ def main() -> None:
         files, "restore_existing_backup_if_present", lambda: False
     )
     if restore_existing_backup_if_present():
+        files.copy_helper_scripts()
         if Path(cfg.env_file).exists():
             for line in Path(cfg.env_file).read_text().splitlines():
                 if line.startswith("CRON_FULL_TIME="):
