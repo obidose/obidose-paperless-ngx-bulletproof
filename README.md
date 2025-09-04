@@ -172,6 +172,10 @@ Automated cron jobs upload snapshots to pCloud:
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
+During installation you're guided through setting the full backup time (HH:MM)
+and how often incrementals run (hours). Adjust these later with
+`bulletproof schedule`.
+
 ---
 
 ## Restore
@@ -203,7 +207,7 @@ A tiny helper wrapped around the installed scripts.
 ```bash
 bulletproof          # interactive menu
 bulletproof backup [mode]    # run a backup now (full|incr)
-bulletproof snapshots [snapshot]  # list snapshots or show manifest
+bulletproof snapshots            # list snapshots (pick number to show manifest)
 bulletproof restore  # guided restore (choose snapshot)
 bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview

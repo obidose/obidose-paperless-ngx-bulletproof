@@ -179,8 +179,35 @@ def prompt_core_values() -> None:
 def prompt_backup_plan() -> None:
     print()
     say("Configure backup schedule")
-    cfg.cron_full_time = prompt("Daily full backup cron time", cfg.cron_full_time)
-    cfg.cron_incr_time = prompt("Hourly incremental cron time", cfg.cron_incr_time)
+    print("Full backups capture everything; incremental backups save changes since the last full.")
+
+    def parse_time(val: str, default: str) -> str:
+        val = val.strip()
+        if not val:
+            return default
+        if " " in val:
+            return val
+        if ":" in val:
+            h, m = val.split(":", 1)
+            if h.isdigit() and m.isdigit():
+                return f"{int(m)} {int(h)} * * *"
+        return default
+
+    def parse_interval(val: str, default: str) -> str:
+        val = val.strip()
+        if not val:
+            return default
+        if " " in val:
+            return val
+        if val.isdigit():
+            n = max(1, int(val))
+            return f"0 */{n} * * *"
+        return default
+
+    full_raw = prompt("When should the full backup run? (HH:MM 24h or cron)", "03:30")
+    incr_raw = prompt("Run incremental backups every how many hours? (number or cron)", "1")
+    cfg.cron_full_time = parse_time(full_raw, cfg.cron_full_time)
+    cfg.cron_incr_time = parse_interval(incr_raw, cfg.cron_incr_time)
 
 
 def pick_and_merge_preset(base: str) -> None:

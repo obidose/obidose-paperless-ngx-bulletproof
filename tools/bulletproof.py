@@ -113,15 +113,20 @@ def cmd_snapshots(args: argparse.Namespace) -> None:
     if not snaps:
         warn("No snapshots found")
         return
-    if args.snapshot:
-        subprocess.run(
-            ["rclone", "cat", f"{REMOTE}/{args.snapshot}/manifest.yaml"], check=True
-        )
-        return
-    print(f"{'NAME':<32} {'MODE':<8} PARENT")
-    for name, mode, parent in snaps:
+
+    print(f"{'#':>3} {'NAME':<32} {'MODE':<8} PARENT")
+    for idx, (name, mode, parent) in enumerate(snaps, 1):
         parent_disp = parent if mode == "incr" else "-"
-        print(f"{name:<32} {mode:<8} {parent_disp}")
+        print(f"{idx:>3} {name:<32} {mode:<8} {parent_disp}")
+
+    snap = args.snapshot
+    if snap is None and sys.stdin.isatty():
+        snap = input("Snapshot number for manifest (blank=exit): ").strip() or None
+    if not snap:
+        return
+    if snap.isdigit() and 1 <= int(snap) <= len(snaps):
+        snap = snaps[int(snap) - 1][0]
+    subprocess.run(["rclone", "cat", f"{REMOTE}/{snap}/manifest.yaml"], check=True)
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
@@ -212,17 +217,39 @@ def install_cron(full: str, incr: str) -> None:
     ok("Backup schedule updated")
 
 
+def parse_time(val: str, current: str) -> str:
+    val = val.strip()
+    if not val:
+        return current
+    if " " in val:
+        return val
+    if ":" in val:
+        h, m = val.split(":", 1)
+        if h.isdigit() and m.isdigit():
+            return f"{int(m)} {int(h)} * * *"
+    return current
+
+
+def parse_interval(val: str, current: str) -> str:
+    val = val.strip()
+    if not val:
+        return current
+    if " " in val:
+        return val
+    if val.isdigit():
+        n = max(1, int(val))
+        return f"0 */{n} * * *"
+    return current
+
+
 def cmd_schedule(args: argparse.Namespace) -> None:
-    full = (
-        args.full
-        or input(f"Full backup cron (current {CRON_FULL_TIME}): ").strip()
-        or CRON_FULL_TIME
-    )
-    incr = (
-        args.incr
-        or input(f"Incremental backup cron (current {CRON_INCR_TIME}): ").strip()
-        or CRON_INCR_TIME
-    )
+    print("Full backups capture everything; incremental backups store only changes.")
+    full_prompt = f"Time for daily full backup (HH:MM or cron) [{CRON_FULL_TIME}]: "
+    incr_prompt = f"Incremental backup frequency (hours or cron) [{CRON_INCR_TIME}]: "
+    full_in = args.full or input(full_prompt).strip()
+    incr_in = args.incr or input(incr_prompt).strip()
+    full = parse_time(full_in, CRON_FULL_TIME)
+    incr = parse_interval(incr_in, CRON_INCR_TIME)
     install_cron(full, incr)
 
 
@@ -234,7 +261,27 @@ def menu() -> None:
         print(f"{COLOR_BLUE}=== Bulletproof ({INSTANCE_NAME}) ==={COLOR_OFF}")
         print(f"Remote: {REMOTE}")
         print(f"Snapshots: {len(snaps)} (latest: {latest})")
-        print(f"Schedule: full={CRON_FULL_TIME} incr={CRON_INCR_TIME}\n")
+        def desc(full: str, incr: str) -> str:
+            try:
+                m, h, dom, mon, dow = full.split()
+                if dom == mon == dow == "*":
+                    full_txt = f"daily at {int(h):02d}:{int(m):02d}"
+                else:
+                    full_txt = full
+            except Exception:
+                full_txt = full
+            try:
+                parts = incr.split()
+                if parts[0] == "0" and parts[1].startswith("*/"):
+                    hrs = parts[1][2:]
+                    incr_txt = f"every {int(hrs)}h"
+                else:
+                    incr_txt = incr
+            except Exception:
+                incr_txt = incr
+            return f"full {full_txt}, incr {incr_txt}"
+
+        print(f"Schedule: {desc(CRON_FULL_TIME, CRON_INCR_TIME)}\n")
         print("1) Backup")
         print("2) Snapshots")
         print("3) Restore snapshot")
@@ -254,9 +301,6 @@ def menu() -> None:
             cmd_backup(argparse.Namespace(mode=mode))
         elif choice == "2":
             cmd_snapshots(argparse.Namespace(snapshot=None))
-            snap = input("Show manifest for snapshot (blank=back): ").strip()
-            if snap:
-                cmd_snapshots(argparse.Namespace(snapshot=snap))
         elif choice == "3":
             snaps = fetch_snapshots()
             for idx, (name, mode, parent) in enumerate(snaps, 1):
@@ -293,8 +337,12 @@ p = sub.add_parser("backup", help="run backup script")
 p.add_argument("mode", nargs="?", choices=["full", "incr"], help="full|incr")
 p.set_defaults(func=cmd_backup)
 
-p = sub.add_parser("snapshots", help="list snapshots or show manifest")
-p.add_argument("snapshot", nargs="?", help="snapshot to show manifest")
+p = sub.add_parser("snapshots", help="list snapshots and optionally show a manifest")
+p.add_argument(
+    "snapshot",
+    nargs="?",
+    help="snapshot name or number to show manifest",
+)
 p.set_defaults(func=cmd_snapshots)
 
 p = sub.add_parser("restore", help="restore snapshot")
@@ -314,9 +362,9 @@ p.set_defaults(func=cmd_logs)
 p = sub.add_parser("doctor", help="basic checks")
 p.set_defaults(func=cmd_doctor)
 
-p = sub.add_parser("schedule", help="configure backup cron schedule")
-p.add_argument("--full")
-p.add_argument("--incr")
+p = sub.add_parser("schedule", help="configure backup schedule")
+p.add_argument("--full", help="time for daily full backup (HH:MM or cron)")
+p.add_argument("--incr", help="incremental frequency (hours or cron)")
 p.set_defaults(func=cmd_schedule)
 
 
