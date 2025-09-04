@@ -117,7 +117,8 @@ class Config:
     rclone_remote_name: str = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     rclone_remote_path: str = os.environ.get("RCLONE_REMOTE_PATH", "backups/paperless/paperless")
     retention_days: str = os.environ.get("RETENTION_DAYS", "30")
-    cron_time: str = os.environ.get("CRON_TIME", "30 3 * * *")
+    cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * *")
+    cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 * * * *")
 
     env_backup_mode: str = os.environ.get("ENV_BACKUP_MODE", "openssl")
     env_backup_passphrase_file: str = os.environ.get("ENV_BACKUP_PASSPHRASE_FILE", "/root/.paperless_env_pass")
@@ -174,6 +175,39 @@ def prompt_core_values() -> None:
 
     cfg.refresh_paths()
 
+
+def prompt_backup_plan() -> None:
+    print()
+    say("Configure backup schedule")
+    print("Full backups capture everything; incremental backups save changes since the last full.")
+
+    def parse_time(val: str, default: str) -> str:
+        val = val.strip()
+        if not val:
+            return default
+        if " " in val:
+            return val
+        if ":" in val:
+            h, m = val.split(":", 1)
+            if h.isdigit() and m.isdigit():
+                return f"{int(m)} {int(h)} * * *"
+        return default
+
+    def parse_interval(val: str, default: str) -> str:
+        val = val.strip()
+        if not val:
+            return default
+        if " " in val:
+            return val
+        if val.isdigit():
+            n = max(1, int(val))
+            return f"0 */{n} * * *"
+        return default
+
+    full_raw = prompt("When should the full backup run? (HH:MM 24h or cron)", "03:30")
+    incr_raw = prompt("Run incremental backups every how many hours? (number or cron)", "1")
+    cfg.cron_full_time = parse_time(full_raw, cfg.cron_full_time)
+    cfg.cron_incr_time = parse_interval(incr_raw, cfg.cron_incr_time)
 
 
 def pick_and_merge_preset(base: str) -> None:
