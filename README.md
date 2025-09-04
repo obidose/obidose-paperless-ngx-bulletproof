@@ -54,10 +54,11 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
 
 ## Quick start
 
-The installer pulls code from the `main` branch by default. Set `BP_BRANCH` to a
-branch name or commit SHA to test other versions. The installer uses this value
-for the repository tarball and any preset files, so everything comes from the
-same branch.
+The installer pulls code from the `main` branch by default. Provide a branch
+name or commit SHA with the `--branch` flag (or `BP_BRANCH` environment
+variable) to test other versions. The installer uses this value for the
+repository tarball and any preset files, so everything comes from the same
+branch.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
@@ -67,12 +68,10 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
-  | BP_BRANCH=dev sudo python3 -
+  | BP_BRANCH=dev sudo -E python3 - --branch dev
 ```
 
-The `curl` path ensures you're running the installer from `dev`. The `BP_BRANCH`
-environment variable tells the script to fetch the rest of the code and presets
-from `dev` as well, letting you test changes without touching `main`.
+The env var and flag ensure everything comes from `dev`.
 
 The installer will:
 1. Install/upgrade Docker, rclone, and prerequisites
@@ -84,13 +83,15 @@ The installer will:
 
 > If you ever need to refresh the CLI manually:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/${BP_BRANCH:-main}/tools/bulletproof.py \
->   -o /usr/local/bin/bulletproof && chmod +x /usr/local/bin/bulletproof
+> BRANCH=${BRANCH:-main}
+> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/tools/bulletproof.py \
+>   | sudo tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
 > ```
 
-Use the same `BP_BRANCH` value when refreshing the CLI so it matches the version
+Use the same `BRANCH` value when refreshing the CLI so it matches the version
 you're testing. After verifying your changes on a VPS, merge them into `main`
-(or tag a release) and run the installer without `BP_BRANCH` for production.
+(or tag a release) and run the installer without specifying a branch for
+production.
 
 ---
 
@@ -153,19 +154,21 @@ Then it runs: `docker compose up -d` and performs a quick self-test
 
 ## Backup & snapshots
 
-Nightly cron (configurable) runs `backup.py auto` and uploads incrementals to pCloud:
+Automated cron jobs upload snapshots to pCloud:
+- **Daily full** backup at a scheduled time
+- **Hourly incremental** backups chaining to the last full
 - Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
-- Snapshot naming: `YYYYMMDD-HHMMSS`
-- Monthly snapshots are **full**; weekly/daily contain only changed files and point to their parent in `manifest.yaml`
+ - Snapshot naming: `YYYY-MM-DD_HH-MM-SS`
+ - Full snapshots are self-contained; incrementals reference their parent
 - Includes:
   - Encrypted `.env` (if enabled) or plain `.env`
   - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
   - Tarballs of `media`, `data`, `export` (incremental)
   - Postgres SQL dump
   - Paperless-NGX version
-  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, retention class, mode & parent
+  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, mode & parent
   - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
-- Retention: keep last **N** days (configurable) and tag snapshots as **daily**, **weekly**, or **monthly** (auto by date)
+- Retention: keep last **N** days (configurable)
 
 You can also trigger a backup manually (see **Bulletproof CLI**).
 
@@ -199,14 +202,14 @@ A tiny helper wrapped around the installed scripts.
 
 ```bash
 bulletproof          # interactive menu
-bulletproof backup [class]   # run a snapshot now (daily|weekly|monthly|auto|full)
-bulletproof list     # list snapshot folders on pCloud
-bulletproof manifest # show manifest for a snapshot
+bulletproof backup [mode]    # run a backup now (full|incr)
+bulletproof snapshots [snapshot]  # list snapshots or show manifest
 bulletproof restore  # guided restore (choose snapshot)
 bulletproof upgrade  # backup + pull images + up -d with rollback
 bulletproof status   # container & health overview
 bulletproof logs     # tail paperless logs
 bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
+bulletproof schedule [--full CRON] [--incr CRON]  # adjust backup times
 ```
 
 **Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
@@ -235,8 +238,8 @@ bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
 - **HTTPS not issuing**  
   Confirm DNS points to this host and ports 80/443 are reachable. Traefik will retry challenges.
 
-- **Backup shows “No snapshots found”**  
-  Run `bulletproof backup` then `bulletproof list`. Verify the path shown matches
+- **Backup shows “No snapshots found”**
+  Run `bulletproof backup` then `bulletproof snapshots`. Verify the path shown matches
   `pcloud:backups/paperless/${INSTANCE_NAME}`. Check rclone with `rclone about pcloud:`.
 
 - **Running without root**  
