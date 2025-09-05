@@ -288,6 +288,22 @@ def up_instance(inst: Instance) -> None:
     )
 
 
+def start_all(insts: list[Instance]) -> None:
+    for inst in insts:
+        up_instance(inst)
+
+
+def stop_all(insts: list[Instance]) -> None:
+    for inst in insts:
+        down_instance(inst)
+
+
+def delete_all(insts: list[Instance]) -> None:
+    if input("Delete ALL instances? (y/N): ").lower().startswith("y"):
+        for inst in insts:
+            delete_instance(inst)
+
+
 def rename_instance(inst: Instance, new: str) -> None:
     if new == inst.name:
         warn("New name is the same as the current name")
@@ -321,11 +337,15 @@ def rename_instance(inst: Instance, new: str) -> None:
         )
 
 
-def restore_instance(inst: Instance, snap: str | None = None) -> None:
+def restore_instance(inst: Instance, snap: str | None = None, source: str | None = None) -> None:
+    env = inst.env_for_subprocess()
+    if source:
+        env["RCLONE_REMOTE_PATH"] = f"backups/paperless/{source}"
+        env["REMOTE"] = f"{env.get('RCLONE_REMOTE_NAME', RCLONE_REMOTE_NAME)}:{env['RCLONE_REMOTE_PATH']}"
     cmd = [str(Path(__file__)), "--instance", inst.name, "restore"]
     if snap:
         cmd.append(snap)
-    subprocess.run(cmd, env=inst.env_for_subprocess(), check=False)
+    subprocess.run(cmd, env=env, check=False)
 
 
 def multi_main() -> None:
@@ -352,50 +372,62 @@ def multi_main() -> None:
         print()
         print("Actions:")
         print(" 1) Manage instance")
-        print(" 2) Backup instance")
-        print(" 3) Backup all")
-        print(" 4) Restore instance")
-        print(" 5) Add instance")
-        print(" 6) Rename instance")
-        print(" 7) Delete instance")
+        print(" 2) Backup all")
+        print(" 3) Add instance")
+        print(" 4) Start all")
+        print(" 5) Stop all")
+        print(" 6) Delete all")
         print(" 0) Quit")
 
         choice = input("Select action: ").strip()
-        if choice == "5":
-            name = input("New instance name: ").strip()
-            if name:
+        if choice == "3":
+            mode = input("Add from scratch or backup? (s/b) [s]: ").strip().lower()
+            if mode.startswith("b"):
+                rem_insts = list_remote_instances()
+                if not rem_insts:
+                    warn("No backups found on remote")
+                    continue
+                for i, name in enumerate(rem_insts, 1):
+                    print(f"{i}) {name}")
+                sel = input("Source instance number or name: ").strip()
+                if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
+                    source = rem_insts[int(sel) - 1]
+                else:
+                    source = sel or rem_insts[0]
+                snaps = fetch_snapshots_for(source)
+                for i, (n, m, p) in enumerate(snaps, 1):
+                    detail = f"{m}" if m != "incr" else f"{m}<-{p}"
+                    print(f"{i}) {n} ({detail})")
+                sel_snap = input("Snapshot number or name (blank=latest): ").strip()
+                if sel_snap.isdigit() and 1 <= int(sel_snap) <= len(snaps):
+                    snap = snaps[int(sel_snap) - 1][0]
+                else:
+                    snap = sel_snap or (snaps[-1][0] if snaps else None)
+                default_name = source
+                existing = {i.name for i in insts}
+                while default_name in existing:
+                    default_name += "-copy"
+                name = input(f"New instance name [{default_name}]: ").strip() or default_name
                 install_instance(name)
                 new_inst = next((i for i in find_instances() if i.name == name), None)
-                if new_inst and input("Restore from snapshot? (y/N): ").lower().startswith("y"):
-                    snap = input("Snapshot name (blank=latest): ").strip() or None
-                    restore_instance(new_inst, snap)
-        elif choice == "7":
-            idx = input("Instance number to delete: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                delete_instance(insts[int(idx) - 1])
+                if new_inst:
+                    restore_instance(new_inst, snap, source)
+            else:
+                name = input("New instance name: ").strip()
+                if name:
+                    install_instance(name)
         elif choice == "6":
-            idx = input("Instance number to rename: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                new = input("New name: ").strip()
-                if new:
-                    rename_instance(insts[int(idx) - 1], new)
+            delete_all(insts)
         elif choice == "2":
-            idx = input("Instance number to backup: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                mode = input("Full or Incremental? [incr]: ").strip().lower()
-                mode = "full" if mode.startswith("f") else "incr"
-                backup_instance(insts[int(idx) - 1], mode)
-        elif choice == "3":
             mode = input("Full or Incremental? [incr]: ").strip().lower()
             mode = "full" if mode.startswith("f") else "incr"
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
         elif choice == "4":
-            idx = input("Instance number to restore: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                snap = input("Snapshot name (blank=latest): ").strip() or None
-                restore_instance(insts[int(idx) - 1], snap)
+            start_all(insts)
+        elif choice == "5":
+            stop_all(insts)
         elif choice == "1":
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
@@ -442,6 +474,58 @@ def fetch_snapshots() -> list[tuple[str, str, str]]:
                     elif k == "parent":
                         parent = v
         snaps.append((name, mode, parent))
+    return sorted(snaps, key=lambda x: x[0])
+
+
+def list_remote_instances() -> list[str]:
+    """List instance names that have backups on the remote."""
+    try:
+        res = subprocess.run(
+            ["rclone", "lsd", f"{RCLONE_REMOTE_NAME}:backups/paperless"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return []
+    names: list[str] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if parts:
+            names.append(parts[-1].rstrip("/"))
+    return sorted(names)
+
+
+def fetch_snapshots_for(name: str) -> list[tuple[str, str, str]]:
+    """Fetch snapshots for a given remote instance name."""
+    remote = f"{RCLONE_REMOTE_NAME}:backups/paperless/{name}"
+    res = subprocess.run(
+        ["rclone", "lsd", remote], capture_output=True, text=True, check=False
+    )
+    snaps: list[tuple[str, str, str]] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        snap_name = parts[-1].rstrip("/")
+        mode = parent = "?"
+        cat = subprocess.run(
+            ["rclone", "cat", f"{remote}/{snap_name}/manifest.yaml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cat.returncode == 0:
+            for mline in cat.stdout.splitlines():
+                if ":" in mline:
+                    k, v = mline.split(":", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k == "mode":
+                        mode = v
+                    elif k == "parent":
+                        parent = v
+        snaps.append((snap_name, mode, parent))
     return sorted(snaps, key=lambda x: x[0])
 
 
@@ -845,13 +929,16 @@ def menu() -> None:
         print("3) Backup")
         print("4) Snapshots")
         print("5) Restore snapshot")
-        print("6) Upgrade")
-        print("7) Status")
-        print("8) Logs")
-        print("9) Doctor")
-        print("10) Backup schedule")
-        print("11) Quit")
-        choice = input("Choose [1-11]: ").strip()
+        print("6) Rename instance")
+        print("7) Delete instance")
+        print("8) Upgrade")
+        print("9) Status")
+        print("10) Logs")
+        print("11) Doctor")
+        print("12) Backup schedule")
+        print("13) Quit")
+        choice = input("Choose [1-13]: ").strip()
+        current = Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ)
         if choice == "3":
             mode_in = input("Full, Incremental, or Archive? [incr]: ").strip().lower()
             if mode_in.startswith("f"):
@@ -876,21 +963,29 @@ def menu() -> None:
                 snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
         elif choice == "6":
-            cmd_upgrade(argparse.Namespace())
+            new = input("New name: ").strip()
+            if new:
+                rename_instance(current, new)
+                break
         elif choice == "7":
-            cmd_status(argparse.Namespace())
+            delete_instance(current)
+            break
         elif choice == "8":
+            cmd_upgrade(argparse.Namespace())
+        elif choice == "9":
+            cmd_status(argparse.Namespace())
+        elif choice == "10":
             svc = input("Service (blank=all): ").strip() or None
             cmd_logs(argparse.Namespace(service=svc))
-        elif choice == "9":
+        elif choice == "11":
             cmd_doctor(argparse.Namespace())
-        elif choice == "10":
+        elif choice == "12":
             cmd_schedule(argparse.Namespace(full=None, incr=None, archive=None))
         elif choice == "1":
-            up_instance(Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ))
+            up_instance(current)
         elif choice == "2":
-            down_instance(Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ))
-        elif choice == "11":
+            down_instance(current)
+        elif choice == "13":
             break
         else:
             print("Invalid choice")

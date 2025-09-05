@@ -212,11 +212,11 @@ arguments launches an instance overview showing status and backup schedules.
 
 From the menu you can:
 
-- Add, delete, or rename instances
-- Back up a single instance or all at once
- - Restore an instance or add a new one from a snapshot
- - Drop into a per‑instance menu for start/stop, snapshots, restores, upgrades,
-   logs, and scheduling
+- Add new instances from scratch or existing snapshots
+- Back up all instances at once, or dive into a specific instance to start/stop,
+  back up, restore, rename, or delete it
+- Start or stop every instance, or wipe them all (remote backups remain)
+- Drop into a per‑instance menu for upgrades, logs, and scheduling
 
 Manual backups still prompt for **Full** or **Incremental** when no mode is
 provided.
