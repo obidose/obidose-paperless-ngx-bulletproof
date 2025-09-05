@@ -211,7 +211,11 @@ def install_instance(name: str) -> None:
     data_dir = BASE_DIR / name
     if stack_dir.exists() or data_dir.exists():
         warn(f"Directories for '{name}' already exist")
-        return
+        if input("Remove and continue? (y/N): ").lower().startswith("y"):
+            subprocess.run(["rm", "-rf", str(stack_dir)], check=False)
+            subprocess.run(["rm", "-rf", str(data_dir)], check=False)
+        else:
+            return
     env = os.environ.copy()
     env.update(
         {
@@ -261,8 +265,8 @@ def delete_instance(inst: Instance) -> None:
             subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
         except Exception:
             pass
-        shutil.rmtree(inst.stack_dir, ignore_errors=True)
-        shutil.rmtree(inst.data_dir, ignore_errors=True)
+        subprocess.run(["rm", "-rf", str(inst.stack_dir)], check=False)
+        subprocess.run(["rm", "-rf", str(inst.data_dir)], check=False)
         ok(f"Deleted {inst.name}")
 
 
