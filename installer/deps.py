@@ -41,7 +41,7 @@ def apt(args: list[str], retries: int | None = None) -> None:
         output = bytearray()
         assert proc.stdout is not None  # for mypy/linters
         while True:
-            chunk = proc.stdout.read(1)
+            chunk = proc.stdout.read(4096)
             if not chunk:
                 break
             sys.stdout.buffer.write(chunk)

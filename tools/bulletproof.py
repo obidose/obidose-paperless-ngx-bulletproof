@@ -94,6 +94,38 @@ INSTANCE_SUFFIX = os.environ.get("BP_INSTANCE_SUFFIX", "-setup")
 BRANCH = os.environ.get("BP_BRANCH", "main")
 
 
+def _cron_desc(expr: str) -> str:
+    parts = expr.split()
+    if len(parts) != 5:
+        return expr
+    minute, hour, dom, mon, dow = parts
+    try:
+        h_i, m_i = int(hour), int(minute)
+    except ValueError:
+        return expr
+    time = f"{h_i:02d}:{m_i:02d}"
+    if dom == mon == "*" and dow == "*":
+        return f"every day at {time}"
+    if dom == "*" and mon == "*" and dow != "*":
+        names = [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]
+        try:
+            dow_name = names[int(dow)]
+        except Exception:
+            dow_name = dow
+        return f"every {dow_name} at {time}"
+    if dom != "*" and mon == "*" and dow == "*":
+        return f"day {int(dom)} every month at {time}"
+    return expr
+
+
 @dataclass
 class Instance:
     name: str
@@ -134,9 +166,13 @@ class Instance:
         return "up" if len(lines) > 1 else "down"
 
     def schedule(self) -> str:
-        full = self.env.get("CRON_FULL_TIME", "?")
-        incr = self.env.get("CRON_INCR_TIME", "?")
-        return f"full {full} | incr {incr}"
+        full = _cron_desc(self.env.get("CRON_FULL_TIME", "?"))
+        incr = _cron_desc(self.env.get("CRON_INCR_TIME", "?"))
+        arch = self.env.get("CRON_ARCHIVE_TIME")
+        parts = [f"Full: {full}", f"Incr: {incr}"]
+        if arch:
+            parts.append(f"Archive: {_cron_desc(arch)}")
+        return ", ".join(parts)
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -213,6 +249,22 @@ def delete_instance(inst: Instance) -> None:
         ok(f"Deleted {inst.name}")
 
 
+def down_instance(inst: Instance) -> None:
+    subprocess.run(
+        ["docker", "compose", "-f", str(inst.compose_file), "down"],
+        env=inst.env_for_subprocess(),
+        check=False,
+    )
+
+
+def up_instance(inst: Instance) -> None:
+    subprocess.run(
+        ["docker", "compose", "-f", str(inst.compose_file), "up", "-d"],
+        env=inst.env_for_subprocess(),
+        check=False,
+    )
+
+
 def rename_instance(inst: Instance, new: str) -> None:
     if new == inst.name:
         warn("New name is the same as the current name")
@@ -225,6 +277,10 @@ def rename_instance(inst: Instance, new: str) -> None:
     if new_stack.exists() or new_data.exists():
         warn(f"Directories for '{new}' already exist")
         return
+    was_up = inst.status() == "up"
+    if was_up:
+        down_instance(inst)
+
     inst.stack_dir.rename(new_stack)
     inst.data_dir.rename(new_data)
     env = inst.env
@@ -236,6 +292,10 @@ def rename_instance(inst: Instance, new: str) -> None:
     lines = [f"{k}={v}" for k, v in env.items()]
     (new_stack / ".env").write_text("\n".join(lines) + "\n")
     ok(f"Renamed to {new}")
+    if was_up:
+        up_instance(
+            Instance(new, new_stack, new_data, env)
+        )
 
 
 def multi_main() -> None:
@@ -250,7 +310,7 @@ def multi_main() -> None:
             install_instance(name)
             continue
         print()
-        print(f"{COLOR_BLUE}=== Bulletproof Instances ==={COLOR_OFF}")
+        print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
         print(f"{'#':>2} {'NAME':<20} {'STAT':<4} SCHEDULE")
         for idx, inst in enumerate(insts, 1):
             status = inst.status()
@@ -267,6 +327,10 @@ def multi_main() -> None:
         print(" 4) Add instance")
         print(" 5) Rename instance")
         print(" 6) Delete instance")
+        print(" 7) Start instance")
+        print(" 8) Stop instance")
+        print(" 9) Start all")
+        print("10) Stop all")
         print(" 0) Quit")
 
         choice = input("Select action: ").strip()
@@ -300,6 +364,20 @@ def multi_main() -> None:
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
+        elif choice == "7":
+            idx = input("Instance number to start: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                up_instance(insts[int(idx) - 1])
+        elif choice == "8":
+            idx = input("Instance number to stop: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                down_instance(insts[int(idx) - 1])
+        elif choice == "9":
+            for inst in insts:
+                up_instance(inst)
+        elif choice == "10":
+            for inst in insts:
+                down_instance(inst)
         elif choice == "0":
             break
         else:

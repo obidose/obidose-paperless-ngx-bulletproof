@@ -8,6 +8,39 @@ from .common import cfg, say, log, ok, warn, confirm, prompt
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _traefik_running() -> bool:
+    """Return True if a traefik service is already running."""
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-q",
+                "--filter",
+                "label=com.docker.compose.service=traefik",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
+
+
+def _network_exists(name: str) -> bool:
+    try:
+        res = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return name in res.stdout.splitlines()
+    except Exception:
+        return False
+
+
 def copy_helper_scripts() -> None:
     """Copy helper scripts and install bulletproof CLI."""
     log("Copying helper scripts and installing CLI")
@@ -122,8 +155,12 @@ def write_env_file() -> None:
 def write_compose_file() -> None:
     log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik})")
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
+    traefik_running = _traefik_running()
+    net_exists = _network_exists("paperless_net")
+    net_ext = "\n    external: true" if net_exists else ""
+
     if cfg.enable_traefik == "yes":
-        compose = textwrap.dedent(
+        services = textwrap.dedent(
             f"""
             services:
               redis:
@@ -189,7 +226,13 @@ def write_compose_file() -> None:
                   - traefik.http.routers.paperless.tls.certresolver=le
                   - traefik.http.services.paperless.loadbalancer.server.port=8000
                 networks: [paperless]
-
+            """
+        )
+        if traefik_running:
+            warn("Traefik already running; reusing existing instance")
+        else:
+            traefik_block = textwrap.dedent(
+                f"""
               traefik:
                 image: traefik:v3.0
                 restart: unless-stopped
@@ -209,17 +252,14 @@ def write_compose_file() -> None:
                   - /var/run/docker.sock:/var/run/docker.sock:ro
                   - {cfg.stack_dir}/letsencrypt:/letsencrypt
                 networks: [paperless]
-
-            networks:
-              paperless:
-                name: paperless_net
-            """
-        ).strip() + "\n"
-        Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
+                """
+            )
+            services += traefik_block
+            Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
+            Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
+            Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
     else:
-        compose = textwrap.dedent(
+        services = textwrap.dedent(
             f"""
             services:
               redis:
@@ -281,13 +321,17 @@ def write_compose_file() -> None:
                   - {cfg.dir_export}:/usr/src/paperless/export
                   - {cfg.dir_consume}:/usr/src/paperless/consume
                 networks: [paperless]
-
-            networks:
-              paperless:
-                name: paperless_net
             """
-        ).strip() + "\n"
-    Path(cfg.compose_file).write_text(compose)
+        )
+
+    compose = services + textwrap.dedent(
+        f"""
+        networks:
+          paperless:
+            name: paperless_net{net_ext}
+        """
+    )
+    Path(cfg.compose_file).write_text(compose.strip() + "\n")
 
 
 def bring_up_stack() -> None:
