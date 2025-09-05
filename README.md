@@ -214,9 +214,9 @@ From the menu you can:
 
 - Add, delete, or rename instances
 - Back up a single instance or all at once
-- Start or stop individual instances, or bring all instances up/down
-- Drop into a per‑instance menu for snapshots, restores, upgrades, logs, and
-  scheduling
+ - Restore an instance or add a new one from a snapshot
+ - Drop into a per‑instance menu for start/stop, snapshots, restores, upgrades,
+   logs, and scheduling
 
 Manual backups still prompt for **Full** or **Incremental** when no mode is
 provided.
