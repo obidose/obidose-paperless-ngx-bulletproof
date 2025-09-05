@@ -4,7 +4,7 @@ import sys
 import shutil
 import os
 from pathlib import Path
-from .common import cfg, say, log, ok, warn, confirm, prompt
+from .common import cfg, say, log, ok, warn
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -119,57 +119,6 @@ def cleanup_stack_dir() -> None:
             pass
         except Exception as e:
             warn(f"Failed to clean up {path}: {e}")
-
-
-def restore_existing_backup_if_present() -> bool:
-    remote = f"{cfg.rclone_remote_name}:{cfg.rclone_remote_path}"
-    try:
-        res = subprocess.run(
-            ["rclone", "lsd", remote], capture_output=True, text=True, check=False
-        )
-    except Exception:
-        return False
-    if res.returncode != 0:
-        return False
-    snaps = [line.split()[-1].rstrip("/") for line in res.stdout.splitlines() if line.strip()]
-    if not snaps:
-        return False
-    snaps = sorted(snaps)
-    if not confirm("Existing backups found. Restore now?", True):
-        return False
-    for idx, name in enumerate(snaps, 1):
-        say(f"  {idx}) {name}")
-    choice = prompt("Choose snapshot number", str(len(snaps)))
-    try:
-        snap = snaps[int(choice) - 1]
-    except Exception:
-        snap = snaps[-1]
-    say(f"Restoring chain: {snap}")
-    env = os.environ.copy()
-    env.update(
-        {
-            "INSTANCE_NAME": cfg.instance_name,
-            "STACK_DIR": cfg.stack_dir,
-            "DATA_ROOT": cfg.data_root,
-            "RCLONE_REMOTE_NAME": cfg.rclone_remote_name,
-            "RCLONE_REMOTE_PATH": cfg.rclone_remote_path,
-        }
-    )
-    subprocess.run(
-        [
-            sys.executable,
-            str(BASE_DIR / "tools" / "bulletproof.py"),
-            "--instance",
-            cfg.instance_name,
-            "restore",
-            snap,
-        ],
-        env=env,
-        check=True,
-    )
-    return True
-
-
 def write_env_file() -> None:
     log(f"Writing {cfg.env_file}")
     if cfg.enable_traefik == "yes":

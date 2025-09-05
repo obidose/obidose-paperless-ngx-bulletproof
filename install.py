@@ -68,6 +68,80 @@ warn = common.warn
 prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 
+def offer_initial_actions() -> bool:
+    """Return True if the script should exit early."""
+    from tools import bulletproof as bp
+
+    rem = bp.list_remote_instances()
+    opts: list[tuple[str, str]] = []
+    if rem:
+        opts.append(("Restore all backups", "restore"))
+    opts.append(("Install new instance", "install"))
+    opts.append(("Launch Bulletproof CLI", "cli"))
+    opts.append(("Quit", "quit"))
+
+    while True:
+        say("Select action:")
+        for idx, (label, _) in enumerate(opts, 1):
+            say(f" {idx}) {label}")
+        choice = common.prompt("Select", "1")
+        try:
+            action = opts[int(choice) - 1][1]
+            break
+        except Exception:
+            say("Invalid choice")
+
+    if action == "restore":
+        for name in rem:
+            cfg.instance_name = name
+            cfg.stack_dir = str(bp.BASE_DIR / f"{name}{bp.INSTANCE_SUFFIX}")
+            cfg.data_root = str(bp.BASE_DIR / name)
+            cfg.refresh_paths()
+            ensure_dir_tree(cfg)
+            inst = bp.Instance(name, Path(cfg.stack_dir), Path(cfg.data_root), {})
+            snaps = bp.fetch_snapshots_for(name)
+            if snaps:
+                bp.restore_instance(inst, snaps[-1][0], name)
+            if Path(cfg.env_file).exists():
+                for line in Path(cfg.env_file).read_text().splitlines():
+                    if line.startswith("CRON_FULL_TIME="):
+                        cfg.cron_full_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_INCR_TIME="):
+                        cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_ARCHIVE_TIME="):
+                        cfg.cron_archive_time = line.split("=", 1)[1].strip()
+            files.copy_helper_scripts()
+            files.install_cron_backup()
+        bp.multi_main()
+        return True
+
+    if action == "cli":
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        try:
+            with open("/dev/tty") as tty:
+                subprocess.run(
+                    [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
+                    stdin=tty,
+                    stdout=tty,
+                    stderr=tty,
+                    check=False,
+                    env=env,
+                )
+        except OSError:
+            subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
+                check=False,
+                env=env,
+            )
+        return True
+
+    if action == "quit":
+        return True
+
+    return False
+
+
 def main() -> None:
     need_root()
     say(f"Fetching assets from branch '{BRANCH}'")
@@ -123,22 +197,8 @@ def main() -> None:
         # pCloud
         pcloud.ensure_pcloud_remote_or_menu()
 
-        ensure_dir_tree(cfg)
-        restore_existing_backup_if_present = getattr(
-            files, "restore_existing_backup_if_present", lambda: False
-        )
-        if restore_existing_backup_if_present():
-            files.copy_helper_scripts()
-            if Path(cfg.env_file).exists():
-                for line in Path(cfg.env_file).read_text().splitlines():
-                    if line.startswith("CRON_FULL_TIME="):
-                        cfg.cron_full_time = line.split("=", 1)[1].strip()
-                    elif line.startswith("CRON_INCR_TIME="):
-                        cfg.cron_incr_time = line.split("=", 1)[1].strip()
-                    elif line.startswith("CRON_ARCHIVE_TIME="):
-                        cfg.cron_archive_time = line.split("=", 1)[1].strip()
-            files.install_cron_backup()
-            files.show_status()
+        # Offer to restore existing backups or jump straight into the CLI
+        if offer_initial_actions():
             return
 
         # Presets and prompts

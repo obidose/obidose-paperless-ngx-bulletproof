@@ -65,9 +65,20 @@ branch.
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
 
-If the **bulletproof** CLI is already present, running the command again will
-offer to restore all backed‑up instances when none are configured. Declining
-drops you into the manager for manual restores or other actions.
+On a fresh host the script installs prerequisites and, if remote backups are
+found, lets you quickly restore them, start a brand‑new instance, or jump
+straight into the Bulletproof manager.
+
+If the **bulletproof** CLI is already present, running the command again looks
+for remote snapshots when no instances are configured and offers the same three
+choices:
+
+1. **Restore all backups** (quick full restore)
+2. **Start a new instance**
+3. **Open the Bulletproof manager** without installing
+
+This mirrors the first‑run experience so you can quickly recover, start fresh,
+or explore backups.
 
 ### Dev branch example
 
