@@ -119,7 +119,7 @@ def offer_initial_actions() -> bool:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
         try:
-            with open("/dev/tty") as tty:
+            with open("/dev/tty", "r+") as tty:
                 subprocess.run(
                     [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
                     stdin=tty,
@@ -182,7 +182,7 @@ def main() -> None:
                 bp.multi_main()
                 return
         try:
-            with open("/dev/tty") as tty:
+            with open("/dev/tty", "r+") as tty:
                 subprocess.run(["bulletproof"], stdin=tty, stdout=tty, stderr=tty)
         except OSError:
             subprocess.run(["bulletproof"])
