@@ -244,6 +244,23 @@ def manage_instance(inst: Instance) -> None:
 
 def delete_instance(inst: Instance) -> None:
     if input(f"Delete instance '{inst.name}'? (y/N): ").lower().startswith("y"):
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(inst.compose_file),
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ],
+            env=inst.env_for_subprocess(),
+            check=False,
+        )
+        try:
+            subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+        except Exception:
+            pass
         shutil.rmtree(inst.stack_dir, ignore_errors=True)
         shutil.rmtree(inst.data_dir, ignore_errors=True)
         ok(f"Deleted {inst.name}")
