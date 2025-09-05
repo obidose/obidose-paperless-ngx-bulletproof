@@ -251,51 +251,56 @@ def multi_main() -> None:
             continue
         print()
         print(f"{COLOR_BLUE}=== Bulletproof Instances ==={COLOR_OFF}")
+        print(f"{'#':>2} {'NAME':<20} {'STAT':<4} SCHEDULE")
         for idx, inst in enumerate(insts, 1):
             status = inst.status()
             color = COLOR_GREEN if status == "up" else COLOR_RED
             print(
-                f"{idx}) {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
+                f"{idx:>2} {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
             )
-        print(f"{COLOR_GREEN}a{COLOR_OFF}) add instance")
-        print(f"{COLOR_RED}d{COLOR_OFF}) delete instance")
-        print(f"{COLOR_YELLOW}r{COLOR_OFF}) rename instance")
-        print(f"{COLOR_BLUE}b{COLOR_OFF}) backup instance")
-        print(f"{COLOR_BLUE}g{COLOR_OFF}) backup all")
-        print(f"{COLOR_BLUE}m{COLOR_OFF}) manage instance")
-        print(f"{COLOR_RED}q{COLOR_OFF}) quit")
-        choice = input("Choice: ").strip().lower()
-        if choice == "a":
+
+        print()
+        print("Actions:")
+        print(" 1) Manage instance")
+        print(" 2) Backup instance")
+        print(" 3) Backup all")
+        print(" 4) Add instance")
+        print(" 5) Rename instance")
+        print(" 6) Delete instance")
+        print(" 0) Quit")
+
+        choice = input("Select action: ").strip()
+        if choice == "4":
             name = input("New instance name: ").strip()
             if name:
                 install_instance(name)
-        elif choice == "d":
+        elif choice == "6":
             idx = input("Instance number to delete: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 delete_instance(insts[int(idx) - 1])
-        elif choice == "r":
+        elif choice == "5":
             idx = input("Instance number to rename: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 new = input("New name: ").strip()
                 if new:
                     rename_instance(insts[int(idx) - 1], new)
-        elif choice == "b":
+        elif choice == "2":
             idx = input("Instance number to backup: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 mode = input("Full or Incremental? [incr]: ").strip().lower()
                 mode = "full" if mode.startswith("f") else "incr"
                 backup_instance(insts[int(idx) - 1], mode)
-        elif choice == "g":
+        elif choice == "3":
             mode = input("Full or Incremental? [incr]: ").strip().lower()
             mode = "full" if mode.startswith("f") else "incr"
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
-        elif choice == "m":
+        elif choice == "1":
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
-        elif choice == "q":
+        elif choice == "0":
             break
         else:
             warn("Unknown choice")
