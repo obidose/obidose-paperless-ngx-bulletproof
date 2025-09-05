@@ -277,28 +277,28 @@ def write_compose_file() -> None:
         else:
             traefik_block = textwrap.dedent(
                 f"""
-              traefik:
-                image: traefik:v3.0
-                restart: unless-stopped
-                command:
-                  - --providers.docker=true
-                  - --providers.docker.exposedbydefault=false
-                  - --entrypoints.web.address=:80
-                  - --entrypoints.websecure.address=:443
-                  - --certificatesresolvers.le.acme.httpchallenge=true
-                  - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-                  - --certificatesresolvers.le.acme.email={cfg.letsencrypt_email}
-                  - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-                ports:
-                  - 80:80
-                  - 443:443
-                volumes:
-                  - /var/run/docker.sock:/var/run/docker.sock:ro
-                  - {cfg.stack_dir}/letsencrypt:/letsencrypt
-                networks: [paperless]
-                """
+traefik:
+  image: traefik:v3.0
+  restart: unless-stopped
+  command:
+    - --providers.docker=true
+    - --providers.docker.exposedbydefault=false
+    - --entrypoints.web.address=:80
+    - --entrypoints.websecure.address=:443
+    - --certificatesresolvers.le.acme.httpchallenge=true
+    - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    - --certificatesresolvers.le.acme.email={cfg.letsencrypt_email}
+    - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+  ports:
+    - 80:80
+    - 443:443
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - {cfg.stack_dir}/letsencrypt:/letsencrypt
+  networks: [paperless]
+"""
             )
-            services += traefik_block
+            services += textwrap.indent(traefik_block, "  ")
             Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
             Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
             Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
