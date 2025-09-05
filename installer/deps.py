@@ -34,18 +34,21 @@ def apt(args: list[str], retries: int | None = None) -> None:
     for attempt in range(1, retries + 1):
         proc = subprocess.Popen(
             ["apt-get", *args],
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
         )
-        output: list[str] = []
+        output = bytearray()
         assert proc.stdout is not None  # for mypy/linters
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            output.append(line)
+        while True:
+            chunk = proc.stdout.read(1)
+            if not chunk:
+                break
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.flush()
+            output.extend(chunk)
         rc = proc.wait()
-        combined = "".join(output)
+        combined = output.decode(errors="replace")
         if rc == 0:
             return
         if "403" in combined or "404" in combined:
