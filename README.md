@@ -65,6 +65,9 @@ branch.
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
 
+If the **bulletproof** CLI is already present, running the command again will
+skip the install and open the manager for existing stacks.
+
 ### Dev branch example
 
 ```bash

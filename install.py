@@ -9,6 +9,8 @@ from pathlib import Path
 import os
 import argparse
 import sys
+import shutil
+import subprocess
 
 
 def _parse_branch() -> str:
@@ -72,6 +74,15 @@ def main() -> None:
 
     say("Starting Paperless-ngx setup wizard...")
     preflight_ubuntu()
+
+    # If the Bulletproof CLI is already installed this one-liner acts as a
+    # convenience wrapper.  Skip the heavy installation routine and hand off to
+    # the multi-instance manager instead of re-running the wizard.
+    if shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists():
+        say("Bulletproof CLI detected; launching manager...")
+        subprocess.run(["bulletproof"])
+        return
+
     try:
         deps.install_prereqs()
         deps.ensure_user()
