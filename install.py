@@ -154,6 +154,7 @@ def main() -> None:
     # the multi-instance manager instead of re-running the wizard.
     if shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists():
         say("Bulletproof CLI detected; launching manager...")
+        files.install_global_cli()
         from tools import bulletproof as bp
         insts = bp.find_instances()
         if not insts:
