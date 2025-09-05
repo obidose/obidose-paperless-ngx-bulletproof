@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from modules.backup import verify_archives
+
 
 def load_env(path: Path) -> None:
     """Load environment variables from a .env file if present."""
@@ -302,6 +304,8 @@ def delete_all(insts: list[Instance]) -> None:
     if input("Delete ALL instances? (y/N): ").lower().startswith("y"):
         for inst in insts:
             delete_instance(inst)
+        subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+        ok("All instances removed")
 
 
 def rename_instance(inst: Instance, new: str) -> None:
@@ -352,12 +356,26 @@ def multi_main() -> None:
     while True:
         insts = find_instances()
         if not insts:
-            name = (
-                input("No instances found. Name for new instance [paperless]: ")
-                .strip()
-                or "paperless"
-            )
-            install_instance(name)
+            print()
+            print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
+            print("No instances found.")
+            print()
+            print("Actions:")
+            print(" 1) Add instance")
+            print(" 2) Explore backups")
+            print(" 0) Quit")
+            choice = input("Select action: ").strip()
+            if choice == "1":
+                name = (
+                    input("New instance name [paperless]: ").strip() or "paperless"
+                )
+                install_instance(name)
+            elif choice == "2":
+                explore_backups()
+            elif choice == "0":
+                break
+            else:
+                warn("Unknown choice")
             continue
         print()
         print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
@@ -372,37 +390,23 @@ def multi_main() -> None:
         print()
         print("Actions:")
         print(" 1) Manage instance")
-        print(" 2) Backup all")
-        print(" 3) Add instance")
-        print(" 4) Start all")
-        print(" 5) Stop all")
-        print(" 6) Delete all")
+        print(" 2) Backup instance")
+        print(" 3) Backup all")
+        print(" 4) Add instance")
+        print(" 5) Start all")
+        print(" 6) Stop all")
+        print(" 7) Delete all")
+        print(" 8) Explore backups")
         print(" 0) Quit")
 
         choice = input("Select action: ").strip()
-        if choice == "3":
+        if choice == "4":
             mode = input("Add from scratch or backup? (s/b) [s]: ").strip().lower()
             if mode.startswith("b"):
-                rem_insts = list_remote_instances()
-                if not rem_insts:
-                    warn("No backups found on remote")
+                picked = pick_remote_snapshot()
+                if not picked:
                     continue
-                for i, name in enumerate(rem_insts, 1):
-                    print(f"{i}) {name}")
-                sel = input("Source instance number or name: ").strip()
-                if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
-                    source = rem_insts[int(sel) - 1]
-                else:
-                    source = sel or rem_insts[0]
-                snaps = fetch_snapshots_for(source)
-                for i, (n, m, p) in enumerate(snaps, 1):
-                    detail = f"{m}" if m != "incr" else f"{m}<-{p}"
-                    print(f"{i}) {n} ({detail})")
-                sel_snap = input("Snapshot number or name (blank=latest): ").strip()
-                if sel_snap.isdigit() and 1 <= int(sel_snap) <= len(snaps):
-                    snap = snaps[int(sel_snap) - 1][0]
-                else:
-                    snap = sel_snap or (snaps[-1][0] if snaps else None)
+                source, snap = picked
                 default_name = source
                 existing = {i.name for i in insts}
                 while default_name in existing:
@@ -416,18 +420,26 @@ def multi_main() -> None:
                 name = input("New instance name: ").strip()
                 if name:
                     install_instance(name)
-        elif choice == "6":
+        elif choice == "7":
             delete_all(insts)
-        elif choice == "2":
+        elif choice == "3":
             mode = input("Full or Incremental? [incr]: ").strip().lower()
             mode = "full" if mode.startswith("f") else "incr"
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
-        elif choice == "4":
-            start_all(insts)
+        elif choice == "2":
+            idx = input("Instance number to back up: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                mode = input("Full or Incremental? [incr]: ").strip().lower()
+                mode = "full" if mode.startswith("f") else "incr"
+                backup_instance(insts[int(idx) - 1], mode)
         elif choice == "5":
+            start_all(insts)
+        elif choice == "6":
             stop_all(insts)
+        elif choice == "8":
+            explore_backups()
         elif choice == "1":
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
@@ -527,6 +539,85 @@ def fetch_snapshots_for(name: str) -> list[tuple[str, str, str]]:
                         parent = v
         snaps.append((snap_name, mode, parent))
     return sorted(snaps, key=lambda x: x[0])
+
+
+def pick_remote_snapshot() -> tuple[str, str] | None:
+    """Interactively choose a remote instance and snapshot."""
+    rem_insts = list_remote_instances()
+    if not rem_insts:
+        warn("No backups found on remote")
+        return None
+    for i, name in enumerate(rem_insts, 1):
+        print(f"{i}) {name}")
+    sel = input("Source instance number or name (blank=cancel): ").strip()
+    if not sel:
+        return None
+    if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
+        source = rem_insts[int(sel) - 1]
+    else:
+        source = sel
+    snaps = fetch_snapshots_for(source)
+    if not snaps:
+        warn("No snapshots for that instance")
+        return None
+    for i, (n, m, p) in enumerate(snaps, 1):
+        detail = m if m != "incr" else f"{m}<-{p}"
+        print(f"{i}) {n} ({detail})")
+    sel_snap = input("Snapshot number or name (blank=latest): ").strip()
+    if sel_snap.isdigit() and 1 <= int(sel_snap) <= len(snaps):
+        snap = snaps[int(sel_snap) - 1][0]
+    else:
+        snap = sel_snap or snaps[-1][0]
+    return source, snap
+
+
+def verify_snapshot(source: str, snap: str) -> None:
+    """Download a snapshot and run tar integrity checks."""
+    remote = f"{RCLONE_REMOTE_NAME}:backups/paperless/{source}/{snap}"
+    tmp = Path(tempfile.mkdtemp(prefix="paperless-verify."))
+    try:
+        say(f"Verifying {source}/{snap}…")
+        subprocess.run(["rclone", "sync", remote, str(tmp)], check=True)
+        if verify_archives(tmp):
+            ok("Archives verified")
+        else:
+            warn("Archive verification failed")
+    except subprocess.CalledProcessError:
+        warn("Failed to download snapshot for verification")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def explore_backups() -> None:
+    rem_insts = list_remote_instances()
+    if not rem_insts:
+        warn("No backups found on remote")
+        return
+    for i, name in enumerate(rem_insts, 1):
+        print(f"{i}) {name}")
+    sel = input("Instance number to inspect (blank=cancel): ").strip()
+    if not sel:
+        return
+    if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
+        inst = rem_insts[int(sel) - 1]
+    else:
+        inst = sel
+    snaps = fetch_snapshots_for(inst)
+    if not snaps:
+        warn("No snapshots for that instance")
+        return
+    print(f"{'#':>3} {'NAME':<32} {'MODE':<8} PARENT")
+    for idx, (name, mode, parent) in enumerate(snaps, 1):
+        parent_disp = parent if mode == 'incr' else '-'
+        print(f"{idx:>3} {name:<32} {mode:<8} {parent_disp}")
+    choice = input("Snapshot number to verify (blank=exit): ").strip()
+    if not choice:
+        return
+    if choice.isdigit() and 1 <= int(choice) <= len(snaps):
+        snap = snaps[int(choice) - 1][0]
+    else:
+        snap = choice
+    verify_snapshot(inst, snap)
 
 
 def run_stack_tests() -> bool:
