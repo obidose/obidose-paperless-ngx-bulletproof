@@ -66,7 +66,30 @@ def copy_helper_scripts() -> None:
 
 
 def cleanup_stack_dir() -> None:
-    """Remove stack directory after an aborted install."""
+    """Remove leftovers from an aborted install."""
+    project = Path(cfg.stack_dir).name
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        ids = res.stdout.split()
+        if ids:
+            subprocess.run(["docker", "rm", "-f", *ids], check=False)
+    except Exception as e:
+        warn(f"Failed to remove containers: {e}")
+    try:
+        subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+    except Exception:
+        pass
     try:
         shutil.rmtree(cfg.stack_dir)
         warn(f"Removed incomplete stack at {cfg.stack_dir}")
@@ -324,12 +347,12 @@ def write_compose_file() -> None:
             """
         )
 
-    compose = services + textwrap.dedent(
-        f"""
-        networks:
-          paperless:
-            name: paperless_net{net_ext}
-        """
+    compose = (
+        services
+        + "networks:\n"
+        + "  paperless:\n"
+        + "    name: paperless_net\n"
+        + ("    external: true\n" if net_exists else "")
     )
     Path(cfg.compose_file).write_text(compose.strip() + "\n")
 
