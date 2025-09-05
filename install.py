@@ -9,6 +9,8 @@ from pathlib import Path
 import os
 import argparse
 import sys
+import shutil
+import subprocess
 
 
 def _parse_branch() -> str:
@@ -66,59 +68,180 @@ warn = common.warn
 prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 
+def offer_initial_actions() -> bool:
+    """Return True if the script should exit early."""
+    from tools import bulletproof as bp
+
+    rem = bp.list_remote_instances()
+    opts: list[tuple[str, str]] = []
+    if rem:
+        opts.append(("Restore all backups", "restore"))
+    opts.append(("Install new instance", "install"))
+    opts.append(("Launch Bulletproof CLI", "cli"))
+    opts.append(("Quit", "quit"))
+
+    while True:
+        say("Select action:")
+        for idx, (label, _) in enumerate(opts, 1):
+            say(f" {idx}) {label}")
+        choice = common.prompt("Select", "1")
+        try:
+            action = opts[int(choice) - 1][1]
+            break
+        except Exception:
+            say("Invalid choice")
+
+    if action == "restore":
+        for name in rem:
+            cfg.instance_name = name
+            cfg.stack_dir = str(bp.BASE_DIR / f"{name}{bp.INSTANCE_SUFFIX}")
+            cfg.data_root = str(bp.BASE_DIR / name)
+            cfg.refresh_paths()
+            ensure_dir_tree(cfg)
+            inst = bp.Instance(name, Path(cfg.stack_dir), Path(cfg.data_root), {})
+            snaps = bp.fetch_snapshots_for(name)
+            if snaps:
+                bp.restore_instance(inst, snaps[-1][0], name)
+            if Path(cfg.env_file).exists():
+                for line in Path(cfg.env_file).read_text().splitlines():
+                    if line.startswith("CRON_FULL_TIME="):
+                        cfg.cron_full_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_INCR_TIME="):
+                        cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_ARCHIVE_TIME="):
+                        cfg.cron_archive_time = line.split("=", 1)[1].strip()
+            files.copy_helper_scripts()
+            files.install_cron_backup()
+        bp.multi_main()
+        return True
+
+    if action == "cli":
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        try:
+            with open("/dev/tty", "r+") as tty:
+                subprocess.run(
+                    [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
+                    stdin=tty,
+                    stdout=tty,
+                    stderr=tty,
+                    check=False,
+                    env=env,
+                )
+        except OSError:
+            subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
+                check=False,
+                env=env,
+            )
+        return True
+
+    if action == "quit":
+        return True
+
+    return False
+
+
 def main() -> None:
     need_root()
     say(f"Fetching assets from branch '{BRANCH}'")
 
     say("Starting Paperless-ngx setup wizard...")
     preflight_ubuntu()
-    deps.install_prereqs()
-    deps.ensure_user()
-    deps.install_docker()
-    deps.install_rclone()
 
-    # pCloud
-    pcloud.ensure_pcloud_remote_or_menu()
-
-    ensure_dir_tree(cfg)
-    restore_existing_backup_if_present = getattr(
-        files, "restore_existing_backup_if_present", lambda: False
-    )
-    if restore_existing_backup_if_present():
-        files.copy_helper_scripts()
-        if Path(cfg.env_file).exists():
-            for line in Path(cfg.env_file).read_text().splitlines():
-                if line.startswith("CRON_FULL_TIME="):
-                    cfg.cron_full_time = line.split("=", 1)[1].strip()
-                elif line.startswith("CRON_INCR_TIME="):
-                    cfg.cron_incr_time = line.split("=", 1)[1].strip()
-                elif line.startswith("CRON_ARCHIVE_TIME="):
-                    cfg.cron_archive_time = line.split("=", 1)[1].strip()
-        files.install_cron_backup()
-        files.show_status()
+    # If the Bulletproof CLI is already installed this one-liner acts as a
+    # convenience wrapper.  Skip the heavy installation routine and hand off to
+    # the multi-instance manager instead of re-running the wizard.
+    if shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists():
+        say("Bulletproof CLI detected; launching manager...")
+        files.install_global_cli()
+        from tools import bulletproof as bp
+        # Let the Bulletproof manager handle leftover cleanup when it starts.
+        insts = bp.find_instances()
+        if not insts:
+            rem = bp.list_remote_instances()
+            if rem and common.confirm("Remote backups found. Restore all now?", True):
+                for name in rem:
+                    cfg.instance_name = name
+                    cfg.stack_dir = str(bp.BASE_DIR / f"{name}{bp.INSTANCE_SUFFIX}")
+                    cfg.data_root = str(bp.BASE_DIR / name)
+                    cfg.refresh_paths()
+                    ensure_dir_tree(cfg)
+                    inst = bp.Instance(name, Path(cfg.stack_dir), Path(cfg.data_root), {})
+                    snaps = bp.fetch_snapshots_for(name)
+                    if snaps:
+                        bp.restore_instance(inst, snaps[-1][0], name)
+                    if Path(cfg.env_file).exists():
+                        for line in Path(cfg.env_file).read_text().splitlines():
+                            if line.startswith("CRON_FULL_TIME="):
+                                cfg.cron_full_time = line.split("=", 1)[1].strip()
+                            elif line.startswith("CRON_INCR_TIME="):
+                                cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                            elif line.startswith("CRON_ARCHIVE_TIME="):
+                                cfg.cron_archive_time = line.split("=", 1)[1].strip()
+                    files.copy_helper_scripts()
+                    files.install_cron_backup()
+        # Hand control to the bundled Bulletproof manager.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        cli_path = Path(__file__).resolve().parent / "tools" / "bulletproof.py"
+        tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+        try:
+            with open(tty_path, "r+") as tty:
+                subprocess.run(
+                    [sys.executable, str(cli_path)],
+                    check=False,
+                    env=env,
+                    stdin=tty,
+                    stdout=tty,
+                    stderr=tty,
+                )
+        except OSError:
+            subprocess.run([sys.executable, str(cli_path)], check=False, env=env)
         return
 
-    # Presets and prompts
-    pick_and_merge_preset(
-        f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
-    )
-    prompt_core_values()
-    prompt_backup_plan()
+    try:
+        deps.install_prereqs()
+        deps.ensure_user()
+        deps.install_docker()
+        deps.install_rclone()
 
-    # Directories and files
-    ensure_dir_tree(cfg)
-    files.write_env_file()
-    files.write_compose_file()
-    files.copy_helper_scripts()
-    files.bring_up_stack()
+        # pCloud
+        pcloud.ensure_pcloud_remote_or_menu()
 
-    if run_stack_tests(Path(cfg.compose_file), Path(cfg.env_file)):
-        ok("Self-test passed")
-    else:
-        warn("Self-test failed; check container logs")
+        # Offer to restore existing backups or jump straight into the CLI
+        if offer_initial_actions():
+            return
 
-    files.install_cron_backup()
-    files.show_status()
+        # Presets and prompts
+        pick_and_merge_preset(
+            f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
+        )
+        prompt_core_values()
+        prompt_backup_plan()
+
+        # Directories and files
+        ensure_dir_tree(cfg)
+        files.write_env_file()
+        files.write_compose_file()
+        files.copy_helper_scripts()
+        files.bring_up_stack()
+
+        if run_stack_tests(Path(cfg.compose_file), Path(cfg.env_file)):
+            ok("Self-test passed")
+        else:
+            warn("Self-test failed; check container logs")
+
+        files.install_cron_backup()
+        files.show_status()
+    except KeyboardInterrupt:
+        warn("Installation cancelled; cleaning up")
+        files.cleanup_stack_dir()
+        raise
+    except Exception as e:
+        warn(f"Installation failed: {e}")
+        files.cleanup_stack_dir()
+        raise
 
 
 if __name__ == "__main__":

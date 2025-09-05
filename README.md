@@ -35,9 +35,10 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
   - `/home/docker/paperless` — data, media, export, db, etc.
   - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
-- `backup.py` and `restore.py` scripts placed into the stack dir
+- `backup.py` script and `bulletproof` CLI placed into the stack dir
 -  Cron job for nightly snapshots with retention
-- `bulletproof` command for backups, safe upgrades, listing snapshots, restores, health, and logs
+- `bulletproof` command for managing multiple instances, backups, safe upgrades,
+  listing snapshots, restores, health, and logs
 
 ---
 
@@ -63,6 +64,21 @@ branch.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
+
+On a fresh host the script installs prerequisites and, if remote backups are
+found, lets you quickly restore them, start a brand‑new instance, or jump
+straight into the Bulletproof manager.
+
+If the **bulletproof** CLI is already present, running the command again looks
+for remote snapshots when no instances are configured and offers the same three
+choices:
+
+1. **Restore all backups** (quick full restore)
+2. **Start a new instance**
+3. **Open the Bulletproof manager** without installing
+
+This mirrors the first‑run experience so you can quickly recover, start fresh,
+or explore backups.
 
 ### Dev branch example
 
@@ -145,7 +161,7 @@ You’ll be prompted for:
 The wizard writes:
 - `.env` → `/home/docker/paperless-setup/.env`
 - `docker-compose.yml` (Traefik on/off version)
-- Helper scripts: `backup.py`, `restore.py`
+- Helper script: `backup.py`
 - Installs `bulletproof` CLI
 
 Then it runs: `docker compose up -d` and performs a quick self-test
@@ -169,13 +185,16 @@ Automated cron jobs upload snapshots to pCloud:
   - Paperless-NGX version
   - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, mode & parent
   - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
-- Retention: keep last **N** days (configurable)
+ - Retention: keep last **N** full snapshots and **M** incrementals (`KEEP_FULLS`, `KEEP_INCS`)
+  Pruning removes older full snapshots along with their incremental chains; for the latest full snapshot only the newest `KEEP_INCS` incrementals are retained.
 
-You can also trigger a backup manually (see **Bulletproof CLI**).
+ You can also trigger a backup manually (see **Bulletproof CLI**). Manual backups prompt for **Full** or **Incremental**.
 
 During installation you're guided through choosing the full/incremental cadence
 and whether to enable a monthly archive. Adjust these later with
 `bulletproof schedule`.
+Times may be entered as `HH:MM` or `HHMM` (e.g., `2330` for 23:30); invalid
+values prompt again with an error.
 
 ---
 
@@ -203,29 +222,22 @@ image.
 
 ## Bulletproof CLI
 
-A tiny helper wrapped around the installed scripts.
+`bulletproof` now manages **multiple** Paperless‑ngx instances. Running it with
+no arguments launches an overview showing status and backup schedules.
 
-```bash
-bulletproof          # interactive menu
-bulletproof backup [mode]    # run a backup now (full|incr|archive)
-bulletproof snapshots            # list snapshots (pick number to show manifest)
-bulletproof restore  # guided restore (choose snapshot)
-bulletproof upgrade  # backup + pull images + up -d with rollback
-bulletproof status   # container & health overview
-bulletproof logs     # tail paperless logs
-bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
-bulletproof schedule [--full CRON] [--incr CRON] [--archive CRON]  # adjust backup times
-```
+From the menu you can:
 
-**Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
+- Back up one instance or all at once
+- Add new instances from scratch or by cloning an existing snapshot (remote
+  backups are listed so you don’t need to remember names)
+- Explore backup folders, inspect snapshots, and verify their integrity before
+  restoring
+- Start or stop every instance, or wipe them all (remote backups remain)
+- Drop into a per‑instance menu for upgrades, logs, scheduling, restore, rename,
+  or delete
 
-**Status** shows:
-- `docker compose ps` (state/ports)
-- `docker stats --no-stream` (CPU/MEM)
-- `df -h` for disk
-- rclone remote health
-
-**Doctor** runs common checks and prints actionable tips.
+Manual backups still prompt for **Full** or **Incremental** when no mode is
+provided.
 
 ---
 
@@ -244,8 +256,10 @@ bulletproof schedule [--full CRON] [--incr CRON] [--archive CRON]  # adjust back
   Confirm DNS points to this host and ports 80/443 are reachable. Traefik will retry challenges.
 
 - **Backup shows “No snapshots found”**
-  Run `bulletproof backup` then `bulletproof snapshots`. Verify the path shown matches
-  `pcloud:backups/paperless/${INSTANCE_NAME}`. Check rclone with `rclone about pcloud:`.
+  Run `bulletproof`, choose your instance, then run a **Backup** followed by
+  **Snapshots**. Verify the path shown matches
+  `pcloud:backups/paperless/${INSTANCE_NAME}`. Check rclone with
+  `rclone about pcloud:`.
 
 - **Running without root**  
   Use `sudo` for the installer and for `bulletproof` if your Docker requires it.

@@ -1,16 +1,62 @@
-from pathlib import Path
 import textwrap
 import subprocess
 import sys
-from .common import cfg, say, log, ok, warn, confirm, prompt
+import shutil
+import os
+from pathlib import Path
+from .common import cfg, say, log, ok, warn
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _traefik_running() -> bool:
+    """Return True if a traefik service is already running."""
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-q",
+                "--filter",
+                "label=com.docker.compose.service=traefik",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
+
+
+def _network_exists(name: str) -> bool:
+    try:
+        res = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return name in res.stdout.splitlines()
+    except Exception:
+        return False
+
+
+def install_global_cli() -> None:
+    """Install or update the global bulletproof CLI."""
+    bp_src = BASE_DIR / "tools" / "bulletproof.py"
+    global_cli = Path("/usr/local/bin/bulletproof")
+    if bp_src.exists():
+        global_cli.write_text(bp_src.read_text())
+        global_cli.chmod(0o755)
+    else:
+        warn(f"Missing bulletproof CLI: {bp_src}")
 
 
 def copy_helper_scripts() -> None:
     """Copy helper scripts and install bulletproof CLI."""
     log("Copying helper scripts and installing CLI")
-    for name in ("backup.py", "restore.py"):
+    for name in ("backup.py",):
         src = BASE_DIR / "modules" / name
         dst = Path(cfg.stack_dir) / name
         if src.exists():
@@ -20,45 +66,69 @@ def copy_helper_scripts() -> None:
             warn(f"Missing helper script: {src}")
 
     bp_src = BASE_DIR / "tools" / "bulletproof.py"
-    bp_dst = Path("/usr/local/bin/bulletproof")
+    stack_cli = Path(cfg.stack_dir) / "bulletproof.py"
     if bp_src.exists():
-        bp_dst.write_text(bp_src.read_text())
-        bp_dst.chmod(0o755)
+        stack_cli.write_text(bp_src.read_text())
+        stack_cli.chmod(0o755)
     else:
         warn(f"Missing bulletproof CLI: {bp_src}")
 
+    install_global_cli()
 
-def restore_existing_backup_if_present() -> bool:
-    remote = f"{cfg.rclone_remote_name}:{cfg.rclone_remote_path}"
+
+def cleanup_stack_dir() -> None:
+    """Remove leftovers from an aborted install."""
+    project = Path(cfg.stack_dir).name
+    try:
+        subprocess.run(
+            ["docker", "compose", "-p", project, "down", "--volumes", "--remove-orphans"],
+            check=False,
+        )
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        warn(f"Failed to stop containers: {e}")
+
+    # Force-remove any straggler containers
     try:
         res = subprocess.run(
-            ["rclone", "lsd", remote], capture_output=True, text=True, check=False
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    except Exception:
-        return False
-    if res.returncode != 0:
-        return False
-    snaps = [line.split()[-1].rstrip("/") for line in res.stdout.splitlines() if line.strip()]
-    if not snaps:
-        return False
-    snaps = sorted(snaps)
-    if not confirm("Existing backups found. Restore now?", True):
-        return False
-    for idx, name in enumerate(snaps, 1):
-        say(f"  {idx}) {name}")
-    choice = prompt("Choose snapshot number", str(len(snaps)))
+        ids = res.stdout.split()
+        if ids:
+            subprocess.run(["docker", "rm", "-f", *ids], check=False)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        warn(f"Failed to force-remove containers: {e}")
     try:
-        snap = snaps[int(choice) - 1]
+        res = subprocess.run(
+            ["docker", "network", "inspect", "paperless_net", "-f", "{{len .Containers}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip() == "0":
+            subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
     except Exception:
-        snap = snaps[-1]
-    say(f"Restoring chain: {snap}")
-    subprocess.run(
-        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), snap],
-        check=True,
-    )
-    return True
-
-
+        pass
+    for path in (cfg.stack_dir, cfg.data_root):
+        try:
+            shutil.rmtree(path)
+            warn(f"Removed leftover directory {path}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            warn(f"Failed to clean up {path}: {e}")
 def write_env_file() -> None:
     log(f"Writing {cfg.env_file}")
     if cfg.enable_traefik == "yes":
@@ -94,7 +164,8 @@ def write_env_file() -> None:
 
         RCLONE_REMOTE_NAME={cfg.rclone_remote_name}
         RCLONE_REMOTE_PATH={cfg.rclone_remote_path}
-        RETENTION_DAYS={cfg.retention_days}
+        KEEP_FULLS={cfg.keep_fulls}
+        KEEP_INCS={cfg.keep_incs}
         CRON_FULL_TIME={cfg.cron_full_time}
         CRON_INCR_TIME={cfg.cron_incr_time}
         CRON_ARCHIVE_TIME={cfg.cron_archive_time}
@@ -106,8 +177,12 @@ def write_env_file() -> None:
 def write_compose_file() -> None:
     log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik})")
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
+    traefik_running = _traefik_running()
+    net_exists = _network_exists("paperless_net")
+    net_ext = "\n    external: true" if net_exists else ""
+
     if cfg.enable_traefik == "yes":
-        compose = textwrap.dedent(
+        services = textwrap.dedent(
             f"""
             services:
               redis:
@@ -173,37 +248,40 @@ def write_compose_file() -> None:
                   - traefik.http.routers.paperless.tls.certresolver=le
                   - traefik.http.services.paperless.loadbalancer.server.port=8000
                 networks: [paperless]
-
-              traefik:
-                image: traefik:v3.0
-                restart: unless-stopped
-                command:
-                  - --providers.docker=true
-                  - --providers.docker.exposedbydefault=false
-                  - --entrypoints.web.address=:80
-                  - --entrypoints.websecure.address=:443
-                  - --certificatesresolvers.le.acme.httpchallenge=true
-                  - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-                  - --certificatesresolvers.le.acme.email={cfg.letsencrypt_email}
-                  - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-                ports:
-                  - 80:80
-                  - 443:443
-                volumes:
-                  - /var/run/docker.sock:/var/run/docker.sock:ro
-                  - {cfg.stack_dir}/letsencrypt:/letsencrypt
-                networks: [paperless]
-
-            networks:
-              paperless:
-                name: paperless_net
             """
-        ).strip() + "\n"
-        Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
+        )
+        if traefik_running:
+            warn("Traefik already running; reusing existing instance")
+        else:
+            traefik_block = textwrap.dedent(
+                f"""
+traefik:
+  image: traefik:v3.0
+  restart: unless-stopped
+  command:
+    - --providers.docker=true
+    - --providers.docker.exposedbydefault=false
+    - --entrypoints.web.address=:80
+    - --entrypoints.websecure.address=:443
+    - --certificatesresolvers.le.acme.httpchallenge=true
+    - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+    - --certificatesresolvers.le.acme.email={cfg.letsencrypt_email}
+    - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+  ports:
+    - 80:80
+    - 443:443
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    - {cfg.stack_dir}/letsencrypt:/letsencrypt
+  networks: [paperless]
+"""
+            )
+            services += textwrap.indent(traefik_block, "  ")
+            Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
+            Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
+            Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
     else:
-        compose = textwrap.dedent(
+        services = textwrap.dedent(
             f"""
             services:
               redis:
@@ -265,13 +343,17 @@ def write_compose_file() -> None:
                   - {cfg.dir_export}:/usr/src/paperless/export
                   - {cfg.dir_consume}:/usr/src/paperless/consume
                 networks: [paperless]
-
-            networks:
-              paperless:
-                name: paperless_net
             """
-        ).strip() + "\n"
-    Path(cfg.compose_file).write_text(compose)
+        )
+
+    compose = (
+        services
+        + "networks:\n"
+        + "  paperless:\n"
+        + "    name: paperless_net\n"
+        + ("    external: true\n" if net_exists else "")
+    )
+    Path(cfg.compose_file).write_text(compose.strip() + "\n")
 
 
 def bring_up_stack() -> None:
