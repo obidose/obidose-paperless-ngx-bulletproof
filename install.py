@@ -181,9 +181,24 @@ def main() -> None:
                                 cfg.cron_archive_time = line.split("=", 1)[1].strip()
                     files.copy_helper_scripts()
                     files.install_cron_backup()
-        # Hand control to the bundled Bulletproof manager directly so prompts
-        # remain interactive even when this script is launched via a pipe.
-        bp.multi_main()
+        # Hand control to the bundled Bulletproof manager in a fresh process
+        # with its stdio attached to the real TTY so prompts remain interactive
+        # even when this script itself is piped through curl.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        cli_path = Path(__file__).resolve().parent / "tools" / "bulletproof.py"
+        try:
+            with open("/dev/tty", "r+") as tty:
+                subprocess.run(
+                    [sys.executable, str(cli_path)],
+                    stdin=tty,
+                    stdout=tty,
+                    stderr=tty,
+                    check=False,
+                    env=env,
+                )
+        except OSError:
+            subprocess.run([sys.executable, str(cli_path)], check=False, env=env)
         return
 
     try:
