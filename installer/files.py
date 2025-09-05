@@ -44,7 +44,7 @@ def _network_exists(name: str) -> bool:
 def copy_helper_scripts() -> None:
     """Copy helper scripts and install bulletproof CLI."""
     log("Copying helper scripts and installing CLI")
-    for name in ("backup.py", "restore.py"):
+    for name in ("backup.py",):
         src = BASE_DIR / "modules" / name
         dst = Path(cfg.stack_dir) / name
         if src.exists():
@@ -145,7 +145,14 @@ def restore_existing_backup_if_present() -> bool:
         snap = snaps[-1]
     say(f"Restoring chain: {snap}")
     subprocess.run(
-        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), snap],
+        [
+            sys.executable,
+            str(BASE_DIR / "tools" / "bulletproof.py"),
+            "--instance",
+            cfg.instance_name,
+            "restore",
+            snap,
+        ],
         check=True,
     )
     return True
