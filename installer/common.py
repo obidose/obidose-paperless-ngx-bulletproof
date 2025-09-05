@@ -243,7 +243,7 @@ def prompt_backup_plan() -> None:
     elif freq_incr.startswith("c"):
         cfg.cron_incr_time = prompt("Cron expression", cfg.cron_incr_time)
 
-    if confirm("Enable monthly archive backup?", False):
+    if confirm("Enable monthly archive backup?", True):
         dom = prompt("Day of month for archive", "1")
         h, m = prompt_time("Time for archive (HH:MM)", "04:00")
         cfg.cron_archive_time = f"{m} {h} {dom} * *"

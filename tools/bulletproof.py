@@ -103,17 +103,26 @@ def _cron_desc(expr: str) -> str:
         h_i, m_i = int(hour), int(minute)
     except ValueError:
         return expr
+    time = f"{h_i:02d}:{m_i:02d}"
     if dom == mon == "*" and dow == "*":
-        return f"daily {h_i:02d}:{m_i:02d}"
+        return f"every day at {time}"
     if dom == "*" and mon == "*" and dow != "*":
-        names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        names = [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ]
         try:
             dow_name = names[int(dow)]
         except Exception:
             dow_name = dow
-        return f"weekly {dow_name} {h_i:02d}:{m_i:02d}"
+        return f"every {dow_name} at {time}"
     if dom != "*" and mon == "*" and dow == "*":
-        return f"monthly {int(dom)} {h_i:02d}:{m_i:02d}"
+        return f"day {int(dom)} every month at {time}"
     return expr
 
 
@@ -160,10 +169,10 @@ class Instance:
         full = _cron_desc(self.env.get("CRON_FULL_TIME", "?"))
         incr = _cron_desc(self.env.get("CRON_INCR_TIME", "?"))
         arch = self.env.get("CRON_ARCHIVE_TIME")
+        parts = [f"Full: {full}", f"Incr: {incr}"]
         if arch:
-            arch_desc = _cron_desc(arch)
-            return f"full {full}, incr {incr}, archive {arch_desc}"
-        return f"full {full}, incr {incr}"
+            parts.append(f"Archive: {_cron_desc(arch)}")
+        return ", ".join(parts)
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -301,7 +310,7 @@ def multi_main() -> None:
             install_instance(name)
             continue
         print()
-        print(f"{COLOR_BLUE}=== Bulletproof Instances ==={COLOR_OFF}")
+        print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
         print(f"{'#':>2} {'NAME':<20} {'STAT':<4} SCHEDULE")
         for idx, inst in enumerate(insts, 1):
             status = inst.status()
