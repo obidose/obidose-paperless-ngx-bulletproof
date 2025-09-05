@@ -42,6 +42,17 @@ def _network_exists(name: str) -> bool:
         return False
 
 
+def install_global_cli() -> None:
+    """Install or update the global bulletproof CLI."""
+    bp_src = BASE_DIR / "tools" / "bulletproof.py"
+    global_cli = Path("/usr/local/bin/bulletproof")
+    if bp_src.exists():
+        global_cli.write_text(bp_src.read_text())
+        global_cli.chmod(0o755)
+    else:
+        warn(f"Missing bulletproof CLI: {bp_src}")
+
+
 def copy_helper_scripts() -> None:
     """Copy helper scripts and install bulletproof CLI."""
     log("Copying helper scripts and installing CLI")
@@ -56,14 +67,13 @@ def copy_helper_scripts() -> None:
 
     bp_src = BASE_DIR / "tools" / "bulletproof.py"
     stack_cli = Path(cfg.stack_dir) / "bulletproof.py"
-    global_cli = Path("/usr/local/bin/bulletproof")
     if bp_src.exists():
         stack_cli.write_text(bp_src.read_text())
         stack_cli.chmod(0o755)
-        global_cli.write_text(bp_src.read_text())
-        global_cli.chmod(0o755)
     else:
         warn(f"Missing bulletproof CLI: {bp_src}")
+
+    install_global_cli()
 
 
 def cleanup_stack_dir() -> None:
