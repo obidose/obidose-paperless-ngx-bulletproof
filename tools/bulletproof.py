@@ -364,11 +364,18 @@ def multi_main() -> None:
             print(" 1) Add instance")
             print(" 2) Explore backups")
             print(" 0) Quit")
-            choice = input("Select action: ").strip()
+            try:
+                choice = input("Select action: ").strip()
+            except EOFError:
+                print()
+                return
             if choice == "1":
-                name = (
-                    input("New instance name [paperless]: ").strip() or "paperless"
-                )
+                try:
+                    name = (
+                        input("New instance name [paperless]: ").strip() or "paperless"
+                    )
+                except EOFError:
+                    return
                 install_instance(name)
             elif choice == "2":
                 explore_backups()
@@ -399,7 +406,11 @@ def multi_main() -> None:
         print(" 8) Explore backups")
         print(" 0) Quit")
 
-        choice = input("Select action: ").strip()
+        try:
+            choice = input("Select action: ").strip()
+        except EOFError:
+            print()
+            return
         if choice == "4":
             mode = input("Add from scratch or backup? (s/b) [s]: ").strip().lower()
             if mode.startswith("b"):

@@ -107,7 +107,11 @@ def main() -> None:
                     files.install_cron_backup()
                 bp.multi_main()
                 return
-        subprocess.run(["bulletproof"])
+        try:
+            with open("/dev/tty") as tty:
+                subprocess.run(["bulletproof"], stdin=tty, stdout=tty, stderr=tty)
+        except OSError:
+            subprocess.run(["bulletproof"])
         return
 
     try:
