@@ -32,8 +32,9 @@ def apt(args: list[str], retries: int | None = None) -> None:
         retries = int(os.environ.get("APT_RETRIES", "3"))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
     for attempt in range(1, retries + 1):
+        cmd = ["apt-get", "-o", "Acquire::ForceIPv4=true", *args]
         proc = subprocess.Popen(
-            ["apt-get", *args],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
@@ -61,7 +62,7 @@ def apt(args: list[str], retries: int | None = None) -> None:
             )
             time.sleep(2 * attempt)
         else:
-            raise subprocess.CalledProcessError(rc, ["apt-get", *args], combined)
+            raise subprocess.CalledProcessError(rc, cmd, combined)
 
 
 def install_prereqs() -> None:
