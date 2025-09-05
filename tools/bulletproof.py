@@ -385,11 +385,16 @@ def rename_instance(inst: Instance, new: str) -> None:
         env["RCLONE_REMOTE_PATH"] = f"backups/paperless/{new}"
     lines = [f"{k}={v}" for k, v in env.items()]
     (new_stack / ".env").write_text("\n".join(lines) + "\n")
+
+    # update instance in-place so callers can continue using the same object
+    inst.name = new
+    inst.stack_dir = new_stack
+    inst.data_dir = new_data
+    inst.env = env
+
     ok(f"Renamed to {new}")
     if was_up:
-        up_instance(
-            Instance(new, new_stack, new_data, env)
-        )
+        up_instance(inst)
 
 
 def restore_instance(inst: Instance, snap: str | None = None, source: str | None = None) -> None:
