@@ -1,6 +1,7 @@
 import textwrap
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 from .common import cfg, say, log, ok, warn, confirm, prompt
 
@@ -29,6 +30,17 @@ def copy_helper_scripts() -> None:
         global_cli.chmod(0o755)
     else:
         warn(f"Missing bulletproof CLI: {bp_src}")
+
+
+def cleanup_stack_dir() -> None:
+    """Remove stack directory after an aborted install."""
+    try:
+        shutil.rmtree(cfg.stack_dir)
+        warn(f"Removed incomplete stack at {cfg.stack_dir}")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        warn(f"Failed to clean up {cfg.stack_dir}: {e}")
 
 
 def restore_existing_backup_if_present() -> bool:

@@ -251,51 +251,56 @@ def multi_main() -> None:
             continue
         print()
         print(f"{COLOR_BLUE}=== Bulletproof Instances ==={COLOR_OFF}")
+        print(f"{'#':>2} {'NAME':<20} {'STAT':<4} SCHEDULE")
         for idx, inst in enumerate(insts, 1):
             status = inst.status()
             color = COLOR_GREEN if status == "up" else COLOR_RED
             print(
-                f"{idx}) {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
+                f"{idx:>2} {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
             )
-        print(f"{COLOR_GREEN}a{COLOR_OFF}) add instance")
-        print(f"{COLOR_RED}d{COLOR_OFF}) delete instance")
-        print(f"{COLOR_YELLOW}r{COLOR_OFF}) rename instance")
-        print(f"{COLOR_BLUE}b{COLOR_OFF}) backup instance")
-        print(f"{COLOR_BLUE}g{COLOR_OFF}) backup all")
-        print(f"{COLOR_BLUE}m{COLOR_OFF}) manage instance")
-        print(f"{COLOR_RED}q{COLOR_OFF}) quit")
-        choice = input("Choice: ").strip().lower()
-        if choice == "a":
+
+        print()
+        print("Actions:")
+        print(" 1) Manage instance")
+        print(" 2) Backup instance")
+        print(" 3) Backup all")
+        print(" 4) Add instance")
+        print(" 5) Rename instance")
+        print(" 6) Delete instance")
+        print(" 0) Quit")
+
+        choice = input("Select action: ").strip()
+        if choice == "4":
             name = input("New instance name: ").strip()
             if name:
                 install_instance(name)
-        elif choice == "d":
+        elif choice == "6":
             idx = input("Instance number to delete: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 delete_instance(insts[int(idx) - 1])
-        elif choice == "r":
+        elif choice == "5":
             idx = input("Instance number to rename: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 new = input("New name: ").strip()
                 if new:
                     rename_instance(insts[int(idx) - 1], new)
-        elif choice == "b":
+        elif choice == "2":
             idx = input("Instance number to backup: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 mode = input("Full or Incremental? [incr]: ").strip().lower()
                 mode = "full" if mode.startswith("f") else "incr"
                 backup_instance(insts[int(idx) - 1], mode)
-        elif choice == "g":
+        elif choice == "3":
             mode = input("Full or Incremental? [incr]: ").strip().lower()
             mode = "full" if mode.startswith("f") else "incr"
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
-        elif choice == "m":
+        elif choice == "1":
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
-        elif choice == "q":
+        elif choice == "0":
             break
         else:
             warn("Unknown choice")
@@ -470,9 +475,30 @@ def install_cron(full: str, incr: str, archive: str) -> None:
     ok("Backup schedule updated")
 
 
-def _hhmm_to_cron(hhmm: str) -> str:
-    h, m = hhmm.split(":", 1)
-    return f"{int(m)} {int(h)} * * *"
+def _normalize_time(t: str) -> tuple[int, int]:
+    """Return (hour, minute) from 'HH:MM' or 'HHMM' input."""
+    t = t.strip()
+    if ":" in t:
+        h, m = t.split(":", 1)
+    elif t.isdigit() and len(t) in (3, 4):
+        h, m = t[:-2], t[-2:]
+    else:
+        raise ValueError("Use HH:MM or HHMM")
+    h_i, m_i = int(h), int(m)
+    if not (0 <= h_i <= 23 and 0 <= m_i <= 59):
+        raise ValueError("Hour 0-23 and minute 0-59")
+    return h_i, m_i
+
+
+def _prompt_time(msg: str, default: str) -> tuple[int, int]:
+    while True:
+        raw = input(f"{msg} [{default}]: ").strip() or default
+        try:
+            return _normalize_time(raw)
+        except ValueError as e:
+            print(f"Invalid time: {e}")
+
+
 
 
 def prompt_full_schedule(current: str) -> str:
@@ -484,18 +510,16 @@ def prompt_full_schedule(current: str) -> str:
     if " " in freq:
         return freq
     if freq.startswith("d"):
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        return _hhmm_to_cron(t)
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * *"
     if freq.startswith("w"):
         dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} * * {dow}"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * {dow}"
     if freq.startswith("m"):
         dom = input("Day of month (1-31) [1]: ").strip() or "1"
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} {dom} * *"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} {dom} * *"
     if freq.startswith("c"):
         return input(f"Cron expression [{current}]: ").strip() or current
     return freq
@@ -513,13 +537,12 @@ def prompt_incr_schedule(current: str) -> str:
         n = input("Every how many hours? [1]: ").strip() or "1"
         return f"0 */{int(n)} * * *"
     if freq.startswith("d"):
-        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
-        return _hhmm_to_cron(t)
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * *"
     if freq.startswith("w"):
         dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
-        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} * * {dow}"
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * {dow}"
     if freq.startswith("c"):
         return input(f"Cron expression [{current}]: ").strip() or current
     return freq
@@ -529,9 +552,8 @@ def prompt_archive_schedule(current: str) -> str:
     enable = input("Enable monthly archive backup? (y/N): ").strip().lower()
     if enable.startswith("y"):
         dom = input("Day of month [1]: ").strip() or "1"
-        t = input("Time (HH:MM) [04:00]: ").strip() or "04:00"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} {dom} * *"
+        h, m = _prompt_time("Time (HH:MM)", "04:00")
+        return f"{m} {h} {dom} * *"
     return ""
 
 

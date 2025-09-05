@@ -72,53 +72,62 @@ def main() -> None:
 
     say("Starting Paperless-ngx setup wizard...")
     preflight_ubuntu()
-    deps.install_prereqs()
-    deps.ensure_user()
-    deps.install_docker()
-    deps.install_rclone()
+    try:
+        deps.install_prereqs()
+        deps.ensure_user()
+        deps.install_docker()
+        deps.install_rclone()
 
-    # pCloud
-    pcloud.ensure_pcloud_remote_or_menu()
+        # pCloud
+        pcloud.ensure_pcloud_remote_or_menu()
 
-    ensure_dir_tree(cfg)
-    restore_existing_backup_if_present = getattr(
-        files, "restore_existing_backup_if_present", lambda: False
-    )
-    if restore_existing_backup_if_present():
+        ensure_dir_tree(cfg)
+        restore_existing_backup_if_present = getattr(
+            files, "restore_existing_backup_if_present", lambda: False
+        )
+        if restore_existing_backup_if_present():
+            files.copy_helper_scripts()
+            if Path(cfg.env_file).exists():
+                for line in Path(cfg.env_file).read_text().splitlines():
+                    if line.startswith("CRON_FULL_TIME="):
+                        cfg.cron_full_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_INCR_TIME="):
+                        cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                    elif line.startswith("CRON_ARCHIVE_TIME="):
+                        cfg.cron_archive_time = line.split("=", 1)[1].strip()
+            files.install_cron_backup()
+            files.show_status()
+            return
+
+        # Presets and prompts
+        pick_and_merge_preset(
+            f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
+        )
+        prompt_core_values()
+        prompt_backup_plan()
+
+        # Directories and files
+        ensure_dir_tree(cfg)
+        files.write_env_file()
+        files.write_compose_file()
         files.copy_helper_scripts()
-        if Path(cfg.env_file).exists():
-            for line in Path(cfg.env_file).read_text().splitlines():
-                if line.startswith("CRON_FULL_TIME="):
-                    cfg.cron_full_time = line.split("=", 1)[1].strip()
-                elif line.startswith("CRON_INCR_TIME="):
-                    cfg.cron_incr_time = line.split("=", 1)[1].strip()
-                elif line.startswith("CRON_ARCHIVE_TIME="):
-                    cfg.cron_archive_time = line.split("=", 1)[1].strip()
+        files.bring_up_stack()
+
+        if run_stack_tests(Path(cfg.compose_file), Path(cfg.env_file)):
+            ok("Self-test passed")
+        else:
+            warn("Self-test failed; check container logs")
+
         files.install_cron_backup()
         files.show_status()
-        return
-
-    # Presets and prompts
-    pick_and_merge_preset(
-        f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
-    )
-    prompt_core_values()
-    prompt_backup_plan()
-
-    # Directories and files
-    ensure_dir_tree(cfg)
-    files.write_env_file()
-    files.write_compose_file()
-    files.copy_helper_scripts()
-    files.bring_up_stack()
-
-    if run_stack_tests(Path(cfg.compose_file), Path(cfg.env_file)):
-        ok("Self-test passed")
-    else:
-        warn("Self-test failed; check container logs")
-
-    files.install_cron_backup()
-    files.show_status()
+    except KeyboardInterrupt:
+        warn("Installation cancelled; cleaning up")
+        files.cleanup_stack_dir()
+        raise
+    except Exception as e:
+        warn(f"Installation failed: {e}")
+        files.cleanup_stack_dir()
+        raise
 
 
 if __name__ == "__main__":
