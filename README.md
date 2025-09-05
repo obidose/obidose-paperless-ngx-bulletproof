@@ -66,7 +66,8 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 ```
 
 If the **bulletproof** CLI is already present, running the command again will
-skip the install and open the manager for existing stacks.
+offer to restore all backed‑up instances when none are configured. Declining
+drops you into the manager for manual restores or other actions.
 
 ### Dev branch example
 
