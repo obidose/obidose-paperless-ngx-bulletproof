@@ -5,6 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -319,6 +321,13 @@ def rename_instance(inst: Instance, new: str) -> None:
         )
 
 
+def restore_instance(inst: Instance, snap: str | None = None) -> None:
+    cmd = [str(Path(__file__)), "--instance", inst.name, "restore"]
+    if snap:
+        cmd.append(snap)
+    subprocess.run(cmd, env=inst.env_for_subprocess(), check=False)
+
+
 def multi_main() -> None:
     while True:
         insts = find_instances()
@@ -345,25 +354,26 @@ def multi_main() -> None:
         print(" 1) Manage instance")
         print(" 2) Backup instance")
         print(" 3) Backup all")
-        print(" 4) Add instance")
-        print(" 5) Rename instance")
-        print(" 6) Delete instance")
-        print(" 7) Start instance")
-        print(" 8) Stop instance")
-        print(" 9) Start all")
-        print("10) Stop all")
+        print(" 4) Restore instance")
+        print(" 5) Add instance")
+        print(" 6) Rename instance")
+        print(" 7) Delete instance")
         print(" 0) Quit")
 
         choice = input("Select action: ").strip()
-        if choice == "4":
+        if choice == "5":
             name = input("New instance name: ").strip()
             if name:
                 install_instance(name)
-        elif choice == "6":
+                new_inst = next((i for i in find_instances() if i.name == name), None)
+                if new_inst and input("Restore from snapshot? (y/N): ").lower().startswith("y"):
+                    snap = input("Snapshot name (blank=latest): ").strip() or None
+                    restore_instance(new_inst, snap)
+        elif choice == "7":
             idx = input("Instance number to delete: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 delete_instance(insts[int(idx) - 1])
-        elif choice == "5":
+        elif choice == "6":
             idx = input("Instance number to rename: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 new = input("New name: ").strip()
@@ -381,24 +391,15 @@ def multi_main() -> None:
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
+        elif choice == "4":
+            idx = input("Instance number to restore: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                snap = input("Snapshot name (blank=latest): ").strip() or None
+                restore_instance(insts[int(idx) - 1], snap)
         elif choice == "1":
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
-        elif choice == "7":
-            idx = input("Instance number to start: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                up_instance(insts[int(idx) - 1])
-        elif choice == "8":
-            idx = input("Instance number to stop: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                down_instance(insts[int(idx) - 1])
-        elif choice == "9":
-            for inst in insts:
-                up_instance(inst)
-        elif choice == "10":
-            for inst in insts:
-                down_instance(inst)
         elif choice == "0":
             break
         else:
@@ -444,6 +445,82 @@ def fetch_snapshots() -> list[tuple[str, str, str]]:
     return sorted(snaps, key=lambda x: x[0])
 
 
+def run_stack_tests() -> bool:
+    ok = True
+    try:
+        subprocess.run(dc("ps"), check=True)
+    except Exception:
+        ok = False
+    try:
+        subprocess.run(
+            dc("exec", "-T", "paperless", "python", "manage.py", "check"),
+            check=True,
+        )
+    except Exception:
+        ok = False
+    return ok
+
+
+def extract_tar(tar_path: Path, dest: Path) -> None:
+    subprocess.run(
+        ["tar", "--listed-incremental=/dev/null", "-xpf", str(tar_path), "-C", str(dest)],
+        check=True,
+    )
+
+
+def restore_db(dump: Path) -> None:
+    say("Restoring database…")
+    subprocess.run(dc("up", "-d", "db"), check=True)
+    time.sleep(5)
+    subprocess.run(
+        dc(
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            os.environ.get("POSTGRES_USER", "paperless"),
+            "-d",
+            os.environ.get("POSTGRES_DB", "paperless"),
+            "-c",
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        ),
+        check=False,
+    )
+    if dump.suffix == ".gz":
+        proc = subprocess.Popen(["gunzip", "-c", str(dump)], stdout=subprocess.PIPE)
+        subprocess.run(
+            dc(
+                "exec",
+                "-T",
+                "db",
+                "psql",
+                "-U",
+                os.environ.get("POSTGRES_USER", "paperless"),
+                "-d",
+                os.environ.get("POSTGRES_DB", "paperless"),
+            ),
+            stdin=proc.stdout,
+            check=False,
+        )
+    else:
+        with open(dump, "rb") as fh:
+            subprocess.run(
+                dc(
+                    "exec",
+                    "-T",
+                    "db",
+                    "psql",
+                    "-U",
+                    os.environ.get("POSTGRES_USER", "paperless"),
+                    "-d",
+                    os.environ.get("POSTGRES_DB", "paperless"),
+                ),
+                stdin=fh,
+                check=False,
+            )
+
+
 def cmd_backup(args: argparse.Namespace) -> None:
     script = STACK_DIR / "backup.py"
     if not script.exists():
@@ -476,21 +553,70 @@ def cmd_snapshots(args: argparse.Namespace) -> None:
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
-    script = STACK_DIR / "restore.py"
-    if not script.exists():
-        die(f"Restore script not found at {script}")
-    run = [str(script)]
     snap = args.snapshot
+    snaps = fetch_snapshots()
+    if not snaps:
+        die(f"No snapshots found in {REMOTE}")
+    names = [n for n, _, _ in snaps]
     if not snap:
-        snaps = fetch_snapshots()
-        if snaps:
-            print("Available snapshots:")
-            for name, mode, parent in snaps:
-                detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
-                print(f"- {name} ({detail})")
+        snap = names[-1]
+    if snap not in names:
+        die(f"Snapshot {snap} not found")
+    meta = {n: (m, p) for n, m, p in snaps}
+    chain: list[str] = []
+    cur = snap
+    while True:
+        chain.append(cur)
+        mode, parent = meta.get(cur, (None, None))
+        if mode == "full":
+            break
+        if not parent or parent not in meta:
+            die(f"Required parent snapshot {parent} for {cur} not found")
+        cur = parent
+    chain.reverse()
+    say("Restoring chain: " + " -> ".join(chain))
+    subprocess.run(dc("down"), check=False)
+    dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
+    final_dump: Path | None = None
+    try:
+        first = True
+        for item in chain:
+            tmp = Path(tempfile.mkdtemp(prefix="paperless-restore."))
+            subprocess.run(["rclone", "sync", f"{REMOTE}/{item}", str(tmp)], check=True)
+            if first:
+                if (tmp / ".env").exists():
+                    (STACK_DIR / ".env").write_text((tmp / ".env").read_text())
+                    ok("Restored .env")
+                for name in ["data", "media", "export"]:
+                    dest = DATA_ROOT / name
+                    if dest.exists():
+                        subprocess.run(["rm", "-rf", str(dest)], check=False)
+                    tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
+                    if tarfile_path:
+                        extract_tar(tarfile_path, DATA_ROOT)
+                compose_snap = tmp / "compose.snapshot.yml"
+                if compose_snap.exists():
+                    compose_snap.replace(COMPOSE_FILE)
+                first = False
+            else:
+                for name in ["data", "media", "export"]:
+                    tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
+                    if tarfile_path:
+                        extract_tar(tarfile_path, DATA_ROOT)
+            dump = next(tmp.glob("postgres.sql*"), None)
+            if dump:
+                final_dump = dump_dir / dump.name
+                shutil.move(str(dump), final_dump)
+            shutil.rmtree(tmp)
+        if final_dump:
+            restore_db(final_dump)
+    finally:
+        shutil.rmtree(dump_dir, ignore_errors=True)
+    subprocess.run(dc("up", "-d"), check=False)
+    if run_stack_tests():
+        ok("Restore complete")
     else:
-        run.append(snap)
-    subprocess.run(run, check=True)
+        warn("Restore complete, but self-test failed")
 
 
 def cmd_upgrade(_: argparse.Namespace) -> None:
@@ -714,17 +840,19 @@ def menu() -> None:
             return f"full {full_txt}, incr {incr_txt}"
 
         print(f"Schedule: {desc(CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME)}\n")
-        print("1) Backup")
-        print("2) Snapshots")
-        print("3) Restore snapshot")
-        print("4) Upgrade")
-        print("5) Status")
-        print("6) Logs")
-        print("7) Doctor")
-        print("8) Backup schedule")
-        print("9) Quit")
-        choice = input("Choose [1-9]: ").strip()
-        if choice == "1":
+        print("1) Start")
+        print("2) Stop")
+        print("3) Backup")
+        print("4) Snapshots")
+        print("5) Restore snapshot")
+        print("6) Upgrade")
+        print("7) Status")
+        print("8) Logs")
+        print("9) Doctor")
+        print("10) Backup schedule")
+        print("11) Quit")
+        choice = input("Choose [1-11]: ").strip()
+        if choice == "3":
             mode_in = input("Full, Incremental, or Archive? [incr]: ").strip().lower()
             if mode_in.startswith("f"):
                 mode = "full"
@@ -733,9 +861,9 @@ def menu() -> None:
             else:
                 mode = "incr"
             cmd_backup(argparse.Namespace(mode=mode))
-        elif choice == "2":
+        elif choice == "4":
             cmd_snapshots(argparse.Namespace(snapshot=None))
-        elif choice == "3":
+        elif choice == "5":
             snaps = fetch_snapshots()
             for idx, (name, mode, parent) in enumerate(snaps, 1):
                 detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
@@ -747,18 +875,22 @@ def menu() -> None:
             else:
                 snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
-        elif choice == "4":
-            cmd_upgrade(argparse.Namespace())
-        elif choice == "5":
-            cmd_status(argparse.Namespace())
         elif choice == "6":
+            cmd_upgrade(argparse.Namespace())
+        elif choice == "7":
+            cmd_status(argparse.Namespace())
+        elif choice == "8":
             svc = input("Service (blank=all): ").strip() or None
             cmd_logs(argparse.Namespace(service=svc))
-        elif choice == "7":
-            cmd_doctor(argparse.Namespace())
-        elif choice == "8":
-            cmd_schedule(argparse.Namespace(full=None, incr=None, archive=None))
         elif choice == "9":
+            cmd_doctor(argparse.Namespace())
+        elif choice == "10":
+            cmd_schedule(argparse.Namespace(full=None, incr=None, archive=None))
+        elif choice == "1":
+            up_instance(Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ))
+        elif choice == "2":
+            down_instance(Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ))
+        elif choice == "11":
             break
         else:
             print("Invalid choice")

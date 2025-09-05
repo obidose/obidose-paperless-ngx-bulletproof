@@ -35,7 +35,7 @@ A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu
   - `/home/docker/paperless` — data, media, export, db, etc.
   - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
 - **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
-- `backup.py` and `restore.py` scripts placed into the stack dir
+- `backup.py` script and `bulletproof` CLI placed into the stack dir
 -  Cron job for nightly snapshots with retention
 - `bulletproof` command for managing multiple instances, backups, safe upgrades,
   listing snapshots, restores, health, and logs
@@ -146,7 +146,7 @@ You’ll be prompted for:
 The wizard writes:
 - `.env` → `/home/docker/paperless-setup/.env`
 - `docker-compose.yml` (Traefik on/off version)
-- Helper scripts: `backup.py`, `restore.py`
+- Helper script: `backup.py`
 - Installs `bulletproof` CLI
 
 Then it runs: `docker compose up -d` and performs a quick self-test
@@ -214,9 +214,9 @@ From the menu you can:
 
 - Add, delete, or rename instances
 - Back up a single instance or all at once
-- Start or stop individual instances, or bring all instances up/down
-- Drop into a per‑instance menu for snapshots, restores, upgrades, logs, and
-  scheduling
+ - Restore an instance or add a new one from a snapshot
+ - Drop into a per‑instance menu for start/stop, snapshots, restores, upgrades,
+   logs, and scheduling
 
 Manual backups still prompt for **Full** or **Incremental** when no mode is
 provided.
