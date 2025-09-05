@@ -180,13 +180,7 @@ def main() -> None:
                                 cfg.cron_archive_time = line.split("=", 1)[1].strip()
                     files.copy_helper_scripts()
                     files.install_cron_backup()
-                bp.multi_main()
-                return
-        try:
-            with open("/dev/tty", "r+") as tty:
-                subprocess.run(["bulletproof"], stdin=tty, stdout=tty, stderr=tty)
-        except OSError:
-            subprocess.run(["bulletproof"])
+        bp.multi_main()
         return
 
     try:
