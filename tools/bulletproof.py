@@ -470,9 +470,30 @@ def install_cron(full: str, incr: str, archive: str) -> None:
     ok("Backup schedule updated")
 
 
-def _hhmm_to_cron(hhmm: str) -> str:
-    h, m = hhmm.split(":", 1)
-    return f"{int(m)} {int(h)} * * *"
+def _normalize_time(t: str) -> tuple[int, int]:
+    """Return (hour, minute) from 'HH:MM' or 'HHMM' input."""
+    t = t.strip()
+    if ":" in t:
+        h, m = t.split(":", 1)
+    elif t.isdigit() and len(t) in (3, 4):
+        h, m = t[:-2], t[-2:]
+    else:
+        raise ValueError("Use HH:MM or HHMM")
+    h_i, m_i = int(h), int(m)
+    if not (0 <= h_i <= 23 and 0 <= m_i <= 59):
+        raise ValueError("Hour 0-23 and minute 0-59")
+    return h_i, m_i
+
+
+def _prompt_time(msg: str, default: str) -> tuple[int, int]:
+    while True:
+        raw = input(f"{msg} [{default}]: ").strip() or default
+        try:
+            return _normalize_time(raw)
+        except ValueError as e:
+            print(f"Invalid time: {e}")
+
+
 
 
 def prompt_full_schedule(current: str) -> str:
@@ -484,18 +505,16 @@ def prompt_full_schedule(current: str) -> str:
     if " " in freq:
         return freq
     if freq.startswith("d"):
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        return _hhmm_to_cron(t)
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * *"
     if freq.startswith("w"):
         dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} * * {dow}"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * {dow}"
     if freq.startswith("m"):
         dom = input("Day of month (1-31) [1]: ").strip() or "1"
-        t = input("Time (HH:MM) [03:30]: ").strip() or "03:30"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} {dom} * *"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} {dom} * *"
     if freq.startswith("c"):
         return input(f"Cron expression [{current}]: ").strip() or current
     return freq
@@ -513,13 +532,12 @@ def prompt_incr_schedule(current: str) -> str:
         n = input("Every how many hours? [1]: ").strip() or "1"
         return f"0 */{int(n)} * * *"
     if freq.startswith("d"):
-        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
-        return _hhmm_to_cron(t)
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * *"
     if freq.startswith("w"):
         dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
-        t = input("Time (HH:MM) [00:00]: ").strip() or "00:00"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} * * {dow}"
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * {dow}"
     if freq.startswith("c"):
         return input(f"Cron expression [{current}]: ").strip() or current
     return freq
@@ -529,9 +547,8 @@ def prompt_archive_schedule(current: str) -> str:
     enable = input("Enable monthly archive backup? (y/N): ").strip().lower()
     if enable.startswith("y"):
         dom = input("Day of month [1]: ").strip() or "1"
-        t = input("Time (HH:MM) [04:00]: ").strip() or "04:00"
-        h, m = t.split(":", 1)
-        return f"{int(m)} {int(h)} {dom} * *"
+        h, m = _prompt_time("Time (HH:MM)", "04:00")
+        return f"{m} {h} {dom} * *"
     return ""
 
 

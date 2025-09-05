@@ -178,6 +178,8 @@ Automated cron jobs upload snapshots to pCloud:
 During installation you're guided through choosing the full/incremental cadence
 and whether to enable a monthly archive. Adjust these later with
 `bulletproof schedule`.
+Times may be entered as `HH:MM` or `HHMM` (e.g., `2330` for 23:30); invalid
+values prompt again with an error.
 
 ---
 
