@@ -94,6 +94,29 @@ INSTANCE_SUFFIX = os.environ.get("BP_INSTANCE_SUFFIX", "-setup")
 BRANCH = os.environ.get("BP_BRANCH", "main")
 
 
+def _cron_desc(expr: str) -> str:
+    parts = expr.split()
+    if len(parts) != 5:
+        return expr
+    minute, hour, dom, mon, dow = parts
+    try:
+        h_i, m_i = int(hour), int(minute)
+    except ValueError:
+        return expr
+    if dom == mon == "*" and dow == "*":
+        return f"daily {h_i:02d}:{m_i:02d}"
+    if dom == "*" and mon == "*" and dow != "*":
+        names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        try:
+            dow_name = names[int(dow)]
+        except Exception:
+            dow_name = dow
+        return f"weekly {dow_name} {h_i:02d}:{m_i:02d}"
+    if dom != "*" and mon == "*" and dow == "*":
+        return f"monthly {int(dom)} {h_i:02d}:{m_i:02d}"
+    return expr
+
+
 @dataclass
 class Instance:
     name: str
@@ -134,9 +157,13 @@ class Instance:
         return "up" if len(lines) > 1 else "down"
 
     def schedule(self) -> str:
-        full = self.env.get("CRON_FULL_TIME", "?")
-        incr = self.env.get("CRON_INCR_TIME", "?")
-        return f"full {full} | incr {incr}"
+        full = _cron_desc(self.env.get("CRON_FULL_TIME", "?"))
+        incr = _cron_desc(self.env.get("CRON_INCR_TIME", "?"))
+        arch = self.env.get("CRON_ARCHIVE_TIME")
+        if arch:
+            arch_desc = _cron_desc(arch)
+            return f"full {full}, incr {incr}, archive {arch_desc}"
+        return f"full {full}, incr {incr}"
 
 
 def parse_env(path: Path) -> dict[str, str]:
