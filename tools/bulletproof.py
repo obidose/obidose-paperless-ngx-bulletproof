@@ -240,6 +240,22 @@ def delete_instance(inst: Instance) -> None:
         ok(f"Deleted {inst.name}")
 
 
+def down_instance(inst: Instance) -> None:
+    subprocess.run(
+        ["docker", "compose", "-f", str(inst.compose_file), "down"],
+        env=inst.env_for_subprocess(),
+        check=False,
+    )
+
+
+def up_instance(inst: Instance) -> None:
+    subprocess.run(
+        ["docker", "compose", "-f", str(inst.compose_file), "up", "-d"],
+        env=inst.env_for_subprocess(),
+        check=False,
+    )
+
+
 def rename_instance(inst: Instance, new: str) -> None:
     if new == inst.name:
         warn("New name is the same as the current name")
@@ -252,6 +268,10 @@ def rename_instance(inst: Instance, new: str) -> None:
     if new_stack.exists() or new_data.exists():
         warn(f"Directories for '{new}' already exist")
         return
+    was_up = inst.status() == "up"
+    if was_up:
+        down_instance(inst)
+
     inst.stack_dir.rename(new_stack)
     inst.data_dir.rename(new_data)
     env = inst.env
@@ -263,6 +283,10 @@ def rename_instance(inst: Instance, new: str) -> None:
     lines = [f"{k}={v}" for k, v in env.items()]
     (new_stack / ".env").write_text("\n".join(lines) + "\n")
     ok(f"Renamed to {new}")
+    if was_up:
+        up_instance(
+            Instance(new, new_stack, new_data, env)
+        )
 
 
 def multi_main() -> None:
@@ -294,6 +318,10 @@ def multi_main() -> None:
         print(" 4) Add instance")
         print(" 5) Rename instance")
         print(" 6) Delete instance")
+        print(" 7) Start instance")
+        print(" 8) Stop instance")
+        print(" 9) Start all")
+        print("10) Stop all")
         print(" 0) Quit")
 
         choice = input("Select action: ").strip()
@@ -327,6 +355,20 @@ def multi_main() -> None:
             idx = input("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
+        elif choice == "7":
+            idx = input("Instance number to start: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                up_instance(insts[int(idx) - 1])
+        elif choice == "8":
+            idx = input("Instance number to stop: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                down_instance(insts[int(idx) - 1])
+        elif choice == "9":
+            for inst in insts:
+                up_instance(inst)
+        elif choice == "10":
+            for inst in insts:
+                down_instance(inst)
         elif choice == "0":
             break
         else:
