@@ -15,12 +15,14 @@ try:
     if not sys.stdin.isatty():
         sys.stdin = sys.stdout = sys.stderr = TTY
 except OSError:
-    TTY = sys.stdin
+    TTY = None
 
 
 def _read(prompt: str) -> str:
-    print(prompt, end="", flush=True, file=TTY)
-    return TTY.readline().strip()
+    out = TTY if TTY else sys.stdout
+    print(prompt, end="", flush=True, file=out)
+    stream = TTY if TTY else sys.stdin
+    return stream.readline().strip()
 
 
 
