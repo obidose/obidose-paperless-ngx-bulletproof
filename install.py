@@ -80,6 +80,33 @@ def main() -> None:
     # the multi-instance manager instead of re-running the wizard.
     if shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists():
         say("Bulletproof CLI detected; launching manager...")
+        from tools import bulletproof as bp
+        insts = bp.find_instances()
+        if not insts:
+            rem = bp.list_remote_instances()
+            if rem and common.confirm("Remote backups found. Restore all now?", True):
+                for name in rem:
+                    cfg.instance_name = name
+                    cfg.stack_dir = str(bp.BASE_DIR / f"{name}{bp.INSTANCE_SUFFIX}")
+                    cfg.data_root = str(bp.BASE_DIR / name)
+                    cfg.refresh_paths()
+                    ensure_dir_tree(cfg)
+                    inst = bp.Instance(name, Path(cfg.stack_dir), Path(cfg.data_root), {})
+                    snaps = bp.fetch_snapshots_for(name)
+                    if snaps:
+                        bp.restore_instance(inst, snaps[-1][0], name)
+                    if Path(cfg.env_file).exists():
+                        for line in Path(cfg.env_file).read_text().splitlines():
+                            if line.startswith("CRON_FULL_TIME="):
+                                cfg.cron_full_time = line.split("=", 1)[1].strip()
+                            elif line.startswith("CRON_INCR_TIME="):
+                                cfg.cron_incr_time = line.split("=", 1)[1].strip()
+                            elif line.startswith("CRON_ARCHIVE_TIME="):
+                                cfg.cron_archive_time = line.split("=", 1)[1].strip()
+                    files.copy_helper_scripts()
+                    files.install_cron_backup()
+                bp.multi_main()
+                return
         subprocess.run(["bulletproof"])
         return
 
