@@ -156,6 +156,8 @@ def main() -> None:
         say("Bulletproof CLI detected; launching manager...")
         files.install_global_cli()
         from tools import bulletproof as bp
+        # Clean up any aborted installs so we don't mis-detect instances.
+        bp.cleanup_orphans()
         insts = bp.find_instances()
         if not insts:
             rem = bp.list_remote_instances()
@@ -180,7 +182,17 @@ def main() -> None:
                                 cfg.cron_archive_time = line.split("=", 1)[1].strip()
                     files.copy_helper_scripts()
                     files.install_cron_backup()
-        bp.multi_main()
+        # Run the manager as a separate process attached to the real TTY so
+        # prompts remain interactive even though the installer is launched via a
+        # pipe.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        cli = Path(__file__).resolve().parent / "tools" / "bulletproof.py"
+        try:
+            with open("/dev/tty", "r+") as tty:
+                subprocess.run([sys.executable, str(cli)], stdin=tty, stdout=tty, stderr=tty, check=False, env=env)
+        except OSError:
+            subprocess.run([sys.executable, str(cli)], check=False, env=env)
         return
 
     try:
