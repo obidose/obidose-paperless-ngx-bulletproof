@@ -21,55 +21,24 @@ def run(cmd: list[str], **kwargs) -> None:
 
 
 def apt(args: list[str], retries: int | None = None) -> None:
-    """Run ``apt-get`` with basic retry logic.
+    """Run apt-get with basic retry logic.
 
-    Retries are controlled by the ``APT_RETRIES`` environment variable (default
-    3). HTTP 403/404 errors are surfaced with a helpful hint so the user can
-    switch to another mirror if needed.
+    Retries are controlled by the `APT_RETRIES` environment variable (default 3).
     """
 
     if retries is None:
         retries = int(os.environ.get("APT_RETRIES", "3"))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    cmd = ["apt-get", "-o", "Acquire::ForceIPv4=true", *args]
     for attempt in range(1, retries + 1):
-        cmd = ["apt-get", "-o", "Acquire::ForceIPv4=true", *args]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-        output = bytearray()
-        assert proc.stdout is not None  # for mypy/linters
-        while True:
-            # ``read`` blocks until the buffer is completely filled which can
-            # make long running ``apt-get`` calls appear to hang.  ``read1``
-            # returns any currently available bytes without waiting for the
-            # full amount, allowing progress lines to stream through in real
-            # time even when the command emits output slowly.
-            chunk = proc.stdout.read1(4096)
-            if not chunk:
-                break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.flush()
-            output.extend(chunk)
-        rc = proc.wait()
-        combined = output.decode(errors="replace")
+        rc = subprocess.run(cmd, env=env).returncode
         if rc == 0:
             return
-        if "403" in combined or "404" in combined:
-            warn(
-                "apt-get returned HTTP error; you may need to choose a different mirror"
-            )
         if attempt < retries:
-            say(
-                f"apt-get {' '.join(args)} failed (attempt {attempt}/{retries}); retrying…"
-            )
+            say(f"apt-get {' '.join(args)} failed (attempt {attempt}/{retries}); retrying...")
             time.sleep(2 * attempt)
         else:
-            raise subprocess.CalledProcessError(rc, cmd, combined)
-
-
+            raise subprocess.CalledProcessError(rc, cmd)
 def install_prereqs() -> None:
     say("Installing prerequisites…")
 
