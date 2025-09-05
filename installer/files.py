@@ -2,6 +2,7 @@ import textwrap
 import subprocess
 import sys
 import shutil
+import os
 from pathlib import Path
 from .common import cfg, say, log, ok, warn, confirm, prompt
 
@@ -144,6 +145,16 @@ def restore_existing_backup_if_present() -> bool:
     except Exception:
         snap = snaps[-1]
     say(f"Restoring chain: {snap}")
+    env = os.environ.copy()
+    env.update(
+        {
+            "INSTANCE_NAME": cfg.instance_name,
+            "STACK_DIR": cfg.stack_dir,
+            "DATA_ROOT": cfg.data_root,
+            "RCLONE_REMOTE_NAME": cfg.rclone_remote_name,
+            "RCLONE_REMOTE_PATH": cfg.rclone_remote_path,
+        }
+    )
     subprocess.run(
         [
             sys.executable,
@@ -153,6 +164,7 @@ def restore_existing_backup_if_present() -> bool:
             "restore",
             snap,
         ],
+        env=env,
         check=True,
     )
     return True
