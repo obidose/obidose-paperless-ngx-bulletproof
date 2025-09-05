@@ -11,11 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
+    TTY = open("/dev/tty", "r+")
     if not sys.stdin.isatty():
-        _tty = open("/dev/tty", "r+")
-        sys.stdin = sys.stdout = sys.stderr = _tty
+        sys.stdin = sys.stdout = sys.stderr = TTY
 except OSError:
-    pass
+    TTY = sys.stdin
+
+
+def _read(prompt: str) -> str:
+    print(prompt, end="", flush=True, file=TTY)
+    return TTY.readline().strip()
 
 
 
@@ -221,7 +226,7 @@ def install_instance(name: str) -> None:
     data_dir = BASE_DIR / name
     if stack_dir.exists() or data_dir.exists():
         warn(f"Directories for '{name}' already exist")
-        if input("Remove and continue? (y/N): ").lower().startswith("y"):
+        if _read("Remove and continue? (y/N): ").lower().startswith("y"):
             subprocess.run(["rm", "-rf", str(stack_dir)], check=False)
             subprocess.run(["rm", "-rf", str(data_dir)], check=False)
         else:
@@ -257,7 +262,7 @@ def manage_instance(inst: Instance) -> None:
 
 
 def delete_instance(inst: Instance) -> None:
-    if input(f"Delete instance '{inst.name}'? (y/N): ").lower().startswith("y"):
+    if _read(f"Delete instance '{inst.name}'? (y/N): ").lower().startswith("y"):
         subprocess.run(
             [
                 "docker",
@@ -307,7 +312,7 @@ def stop_all(insts: list[Instance]) -> None:
 
 
 def delete_all(insts: list[Instance]) -> None:
-    if input("Delete ALL instances? (y/N): ").lower().startswith("y"):
+    if _read("Delete ALL instances? (y/N): ").lower().startswith("y"):
         for inst in insts:
             delete_instance(inst)
         subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
@@ -371,14 +376,14 @@ def multi_main() -> None:
             print(" 2) Explore backups")
             print(" 0) Quit")
             try:
-                choice = input("Select action: ").strip()
+                choice = _read("Select action: ").strip()
             except EOFError:
                 print()
                 return
             if choice == "1":
                 try:
                     name = (
-                        input("New instance name [paperless]: ").strip() or "paperless"
+                        _read("New instance name [paperless]: ").strip() or "paperless"
                     )
                 except EOFError:
                     return
@@ -413,12 +418,12 @@ def multi_main() -> None:
         print(" 0) Quit")
 
         try:
-            choice = input("Select action: ").strip()
+            choice = _read("Select action: ").strip()
         except EOFError:
             print()
             return
         if choice == "4":
-            mode = input("Add from scratch or backup? (s/b) [s]: ").strip().lower()
+            mode = _read("Add from scratch or backup? (s/b) [s]: ").strip().lower()
             if mode.startswith("b"):
                 picked = pick_remote_snapshot()
                 if not picked:
@@ -428,27 +433,27 @@ def multi_main() -> None:
                 existing = {i.name for i in insts}
                 while default_name in existing:
                     default_name += "-copy"
-                name = input(f"New instance name [{default_name}]: ").strip() or default_name
+                name = _read(f"New instance name [{default_name}]: ").strip() or default_name
                 install_instance(name)
                 new_inst = next((i for i in find_instances() if i.name == name), None)
                 if new_inst:
                     restore_instance(new_inst, snap, source)
             else:
-                name = input("New instance name: ").strip()
+                name = _read("New instance name: ").strip()
                 if name:
                     install_instance(name)
         elif choice == "7":
             delete_all(insts)
         elif choice == "3":
-            mode = input("Full or Incremental? [incr]: ").strip().lower()
+            mode = _read("Full or Incremental? [incr]: ").strip().lower()
             mode = "full" if mode.startswith("f") else "incr"
             for inst in insts:
                 say(f"Backing up {inst.name}")
                 backup_instance(inst, mode)
         elif choice == "2":
-            idx = input("Instance number to back up: ").strip()
+            idx = _read("Instance number to back up: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                mode = input("Full or Incremental? [incr]: ").strip().lower()
+                mode = _read("Full or Incremental? [incr]: ").strip().lower()
                 mode = "full" if mode.startswith("f") else "incr"
                 backup_instance(insts[int(idx) - 1], mode)
         elif choice == "5":
@@ -458,7 +463,7 @@ def multi_main() -> None:
         elif choice == "8":
             explore_backups()
         elif choice == "1":
-            idx = input("Instance number to manage: ").strip()
+            idx = _read("Instance number to manage: ").strip()
             if idx.isdigit() and 1 <= int(idx) <= len(insts):
                 manage_instance(insts[int(idx) - 1])
         elif choice == "0":
@@ -566,7 +571,7 @@ def pick_remote_snapshot() -> tuple[str, str] | None:
         return None
     for i, name in enumerate(rem_insts, 1):
         print(f"{i}) {name}")
-    sel = input("Source instance number or name (blank=cancel): ").strip()
+    sel = _read("Source instance number or name (blank=cancel): ").strip()
     if not sel:
         return None
     if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
@@ -580,7 +585,7 @@ def pick_remote_snapshot() -> tuple[str, str] | None:
     for i, (n, m, p) in enumerate(snaps, 1):
         detail = m if m != "incr" else f"{m}<-{p}"
         print(f"{i}) {n} ({detail})")
-    sel_snap = input("Snapshot number or name (blank=latest): ").strip()
+    sel_snap = _read("Snapshot number or name (blank=latest): ").strip()
     if sel_snap.isdigit() and 1 <= int(sel_snap) <= len(snaps):
         snap = snaps[int(sel_snap) - 1][0]
     else:
@@ -614,7 +619,7 @@ def explore_backups() -> None:
         return
     for i, name in enumerate(rem_insts, 1):
         print(f"{i}) {name}")
-    sel = input("Instance number to inspect (blank=cancel): ").strip()
+    sel = _read("Instance number to inspect (blank=cancel): ").strip()
     if not sel:
         return
     if sel.isdigit() and 1 <= int(sel) <= len(rem_insts):
@@ -629,7 +634,7 @@ def explore_backups() -> None:
     for idx, (name, mode, parent) in enumerate(snaps, 1):
         parent_disp = parent if mode == 'incr' else '-'
         print(f"{idx:>3} {name:<32} {mode:<8} {parent_disp}")
-    choice = input("Snapshot number to verify (blank=exit): ").strip()
+    choice = _read("Snapshot number to verify (blank=exit): ").strip()
     if not choice:
         return
     if choice.isdigit() and 1 <= int(choice) <= len(snaps):
@@ -752,7 +757,7 @@ def cmd_snapshots(args: argparse.Namespace) -> None:
 
     snap = args.snapshot
     if snap is None and sys.stdin.isatty():
-        snap = input("Snapshot number for manifest (blank=exit): ").strip() or None
+        snap = _read("Snapshot number for manifest (blank=exit): ").strip() or None
     if not snap:
         return
     if snap.isdigit() and 1 <= int(snap) <= len(snaps):
@@ -928,7 +933,7 @@ def _normalize_time(t: str) -> tuple[int, int]:
 
 def _prompt_time(msg: str, default: str) -> tuple[int, int]:
     while True:
-        raw = input(f"{msg} [{default}]: ").strip() or default
+        raw = _read(f"{msg} [{default}]: ").strip() or default
         try:
             return _normalize_time(raw)
         except ValueError as e:
@@ -938,7 +943,7 @@ def _prompt_time(msg: str, default: str) -> tuple[int, int]:
 
 
 def prompt_full_schedule(current: str) -> str:
-    freq = input(
+    freq = _read(
         "Full backup frequency (daily/weekly/monthly/cron) [weekly]: "
     ).strip().lower()
     if not freq:
@@ -949,20 +954,20 @@ def prompt_full_schedule(current: str) -> str:
         h, m = _prompt_time("Time (HH:MM)", "03:30")
         return f"{m} {h} * * *"
     if freq.startswith("w"):
-        dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        dow = _read("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
         h, m = _prompt_time("Time (HH:MM)", "03:30")
         return f"{m} {h} * * {dow}"
     if freq.startswith("m"):
-        dom = input("Day of month (1-31) [1]: ").strip() or "1"
+        dom = _read("Day of month (1-31) [1]: ").strip() or "1"
         h, m = _prompt_time("Time (HH:MM)", "03:30")
         return f"{m} {h} {dom} * *"
     if freq.startswith("c"):
-        return input(f"Cron expression [{current}]: ").strip() or current
+        return _read(f"Cron expression [{current}]: ").strip() or current
     return freq
 
 
 def prompt_incr_schedule(current: str) -> str:
-    freq = input(
+    freq = _read(
         "Incremental backup frequency (hourly/daily/weekly/cron) [daily]: "
     ).strip().lower()
     if not freq:
@@ -970,24 +975,24 @@ def prompt_incr_schedule(current: str) -> str:
     if " " in freq:
         return freq
     if freq.startswith("h"):
-        n = input("Every how many hours? [1]: ").strip() or "1"
+        n = _read("Every how many hours? [1]: ").strip() or "1"
         return f"0 */{int(n)} * * *"
     if freq.startswith("d"):
         h, m = _prompt_time("Time (HH:MM)", "00:00")
         return f"{m} {h} * * *"
     if freq.startswith("w"):
-        dow = input("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        dow = _read("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
         h, m = _prompt_time("Time (HH:MM)", "00:00")
         return f"{m} {h} * * {dow}"
     if freq.startswith("c"):
-        return input(f"Cron expression [{current}]: ").strip() or current
+        return _read(f"Cron expression [{current}]: ").strip() or current
     return freq
 
 
 def prompt_archive_schedule(current: str) -> str:
-    enable = input("Enable monthly archive backup? (y/N): ").strip().lower()
+    enable = _read("Enable monthly archive backup? (y/N): ").strip().lower()
     if enable.startswith("y"):
-        dom = input("Day of month [1]: ").strip() or "1"
+        dom = _read("Day of month [1]: ").strip() or "1"
         h, m = _prompt_time("Time (HH:MM)", "04:00")
         return f"{m} {h} {dom} * *"
     return ""
@@ -1064,10 +1069,10 @@ def menu() -> None:
         print("11) Doctor")
         print("12) Backup schedule")
         print("13) Quit")
-        choice = input("Choose [1-13]: ").strip()
+        choice = _read("Choose [1-13]: ").strip()
         current = Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ)
         if choice == "3":
-            mode_in = input("Full, Incremental, or Archive? [incr]: ").strip().lower()
+            mode_in = _read("Full, Incremental, or Archive? [incr]: ").strip().lower()
             if mode_in.startswith("f"):
                 mode = "full"
             elif mode_in.startswith("a"):
@@ -1082,7 +1087,7 @@ def menu() -> None:
             for idx, (name, mode, parent) in enumerate(snaps, 1):
                 detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
                 print(f"{idx}) {name} ({detail})")
-            choice_snap = input("Snapshot number or name (blank=latest): ").strip()
+            choice_snap = _read("Snapshot number or name (blank=latest): ").strip()
             if choice_snap.isdigit():
                 idx = int(choice_snap)
                 snap = snaps[idx - 1][0] if 1 <= idx <= len(snaps) else None
@@ -1090,7 +1095,7 @@ def menu() -> None:
                 snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
         elif choice == "6":
-            new = input("New name: ").strip()
+            new = _read("New name: ").strip()
             if new:
                 rename_instance(current, new)
                 break
@@ -1102,7 +1107,7 @@ def menu() -> None:
         elif choice == "9":
             cmd_status(argparse.Namespace())
         elif choice == "10":
-            svc = input("Service (blank=all): ").strip() or None
+            svc = _read("Service (blank=all): ").strip() or None
             cmd_logs(argparse.Namespace(service=svc))
         elif choice == "11":
             cmd_doctor(argparse.Namespace())
