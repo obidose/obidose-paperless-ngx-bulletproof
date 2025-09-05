@@ -116,7 +116,8 @@ class Config:
 
     rclone_remote_name: str = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     rclone_remote_path: str = os.environ.get("RCLONE_REMOTE_PATH", "backups/paperless/paperless")
-    retention_days: str = os.environ.get("RETENTION_DAYS", "30")
+    keep_fulls: str = os.environ.get("KEEP_FULLS", "3")
+    keep_incs: str = os.environ.get("KEEP_INCS", "7")
     cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
     cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
     cron_archive_time: str = os.environ.get("CRON_ARCHIVE_TIME", "")
