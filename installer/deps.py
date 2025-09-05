@@ -42,7 +42,12 @@ def apt(args: list[str], retries: int | None = None) -> None:
         output = bytearray()
         assert proc.stdout is not None  # for mypy/linters
         while True:
-            chunk = proc.stdout.read(4096)
+            # ``read`` blocks until the buffer is completely filled which can
+            # make long running ``apt-get`` calls appear to hang.  ``read1``
+            # returns any currently available bytes without waiting for the
+            # full amount, allowing progress lines to stream through in real
+            # time even when the command emits output slowly.
+            chunk = proc.stdout.read1(4096)
             if not chunk:
                 break
             sys.stdout.buffer.write(chunk)
