@@ -32,14 +32,23 @@ def apt(args: list[str], retries: int | None = None) -> None:
         retries = int(os.environ.get("APT_RETRIES", "3"))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
     for attempt in range(1, retries + 1):
-        proc = subprocess.run(
-            ["apt-get", *args], text=True, capture_output=True, env=env
+        proc = subprocess.Popen(
+            ["apt-get", *args],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
         )
-        if proc.returncode == 0:
-            sys.stdout.write(proc.stdout)
-            sys.stderr.write(proc.stderr)
+        output: list[str] = []
+        assert proc.stdout is not None  # for mypy/linters
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            output.append(line)
+        rc = proc.wait()
+        combined = "".join(output)
+        if rc == 0:
             return
-        if "403" in proc.stderr or "404" in proc.stderr:
+        if "403" in combined or "404" in combined:
             warn(
                 "apt-get returned HTTP error; you may need to choose a different mirror"
             )
@@ -49,9 +58,7 @@ def apt(args: list[str], retries: int | None = None) -> None:
             )
             time.sleep(2 * attempt)
         else:
-            sys.stdout.write(proc.stdout)
-            sys.stderr.write(proc.stderr)
-            proc.check_returncode()
+            raise subprocess.CalledProcessError(rc, ["apt-get", *args], combined)
 
 
 def install_prereqs() -> None:
