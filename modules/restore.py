@@ -220,9 +220,13 @@ def main() -> None:
     cur = target
     while True:
         chain.append(cur)
-        mode, parent = meta.get(cur, ("full", ""))
-        if mode == "full" or not parent:
+        mode, parent = meta.get(cur, (None, None))
+        if mode == "full":
             break
+        if not parent:
+            die(f"Snapshot {cur} missing parent metadata; aborting")
+        if parent not in meta:
+            die(f"Required parent snapshot {parent} for {cur} not found")
         cur = parent
     chain.reverse()
     say("Restoring chain: " + " -> ".join(chain))

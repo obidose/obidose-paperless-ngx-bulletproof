@@ -1,7 +1,7 @@
-from pathlib import Path
 import textwrap
 import subprocess
 import sys
+from pathlib import Path
 from .common import cfg, say, log, ok, warn, confirm, prompt
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,10 +20,13 @@ def copy_helper_scripts() -> None:
             warn(f"Missing helper script: {src}")
 
     bp_src = BASE_DIR / "tools" / "bulletproof.py"
-    bp_dst = Path("/usr/local/bin/bulletproof")
+    stack_cli = Path(cfg.stack_dir) / "bulletproof.py"
+    global_cli = Path("/usr/local/bin/bulletproof")
     if bp_src.exists():
-        bp_dst.write_text(bp_src.read_text())
-        bp_dst.chmod(0o755)
+        stack_cli.write_text(bp_src.read_text())
+        stack_cli.chmod(0o755)
+        global_cli.write_text(bp_src.read_text())
+        global_cli.chmod(0o755)
     else:
         warn(f"Missing bulletproof CLI: {bp_src}")
 
@@ -94,7 +97,8 @@ def write_env_file() -> None:
 
         RCLONE_REMOTE_NAME={cfg.rclone_remote_name}
         RCLONE_REMOTE_PATH={cfg.rclone_remote_path}
-        RETENTION_DAYS={cfg.retention_days}
+        KEEP_FULLS={cfg.keep_fulls}
+        KEEP_INCS={cfg.keep_incs}
         CRON_FULL_TIME={cfg.cron_full_time}
         CRON_INCR_TIME={cfg.cron_incr_time}
         CRON_ARCHIVE_TIME={cfg.cron_archive_time}

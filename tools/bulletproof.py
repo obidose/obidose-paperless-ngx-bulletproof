@@ -2,8 +2,10 @@
 """Bulletproof helper CLI implemented in Python."""
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -42,22 +44,261 @@ def die(msg: str) -> None:
     raise SystemExit(1)
 
 
-STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
-DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/home/docker/paperless"))
-ENV_FILE = Path(os.environ.get("ENV_FILE", STACK_DIR / ".env"))
-COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
+STACK_DIR: Path | None = None
+DATA_ROOT: Path | None = None
+ENV_FILE: Path | None = None
+COMPOSE_FILE: Path | None = None
 
-load_env(ENV_FILE)
+INSTANCE_NAME = ""
+RCLONE_REMOTE_NAME = ""
+RCLONE_REMOTE_PATH = ""
+REMOTE = ""
+CRON_FULL_TIME = ""
+CRON_INCR_TIME = ""
+CRON_ARCHIVE_TIME = ""
 
-INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
-RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
-RCLONE_REMOTE_PATH = os.environ.get(
-    "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
-)
-REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
-CRON_FULL_TIME = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
-CRON_INCR_TIME = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
-CRON_ARCHIVE_TIME = os.environ.get("CRON_ARCHIVE_TIME", "")
+
+def init_from_env() -> None:
+    global INSTANCE_NAME, DATA_ROOT, ENV_FILE, COMPOSE_FILE
+    global RCLONE_REMOTE_NAME, RCLONE_REMOTE_PATH, REMOTE
+    global CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME
+
+    INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
+    DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
+    ENV_FILE = Path(os.environ.get("ENV_FILE", STACK_DIR / ".env"))
+    COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
+    RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+    RCLONE_REMOTE_PATH = os.environ.get(
+        "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
+    )
+    REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+    CRON_FULL_TIME = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
+    CRON_INCR_TIME = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
+    CRON_ARCHIVE_TIME = os.environ.get("CRON_ARCHIVE_TIME", "")
+
+
+if "STACK_DIR" in os.environ:
+    STACK_DIR = Path(os.environ["STACK_DIR"])
+elif Path(".env").exists():
+    STACK_DIR = Path.cwd()
+else:
+    STACK_DIR = None
+
+if STACK_DIR:
+    ENV_FILE = Path(os.environ.get("ENV_FILE", STACK_DIR / ".env"))
+    load_env(ENV_FILE)
+    init_from_env()
+
+BASE_DIR = Path(os.environ.get("BP_BASE_DIR", "/home/docker"))
+INSTANCE_SUFFIX = os.environ.get("BP_INSTANCE_SUFFIX", "-setup")
+BRANCH = os.environ.get("BP_BRANCH", "main")
+
+
+@dataclass
+class Instance:
+    name: str
+    stack_dir: Path
+    data_dir: Path
+    env: dict[str, str]
+
+    @property
+    def env_file(self) -> Path:
+        return self.stack_dir / ".env"
+
+    @property
+    def compose_file(self) -> Path:
+        return self.stack_dir / "docker-compose.yml"
+
+    def env_for_subprocess(self) -> dict[str, str]:
+        e = os.environ.copy()
+        e.update(
+            {
+                "INSTANCE_NAME": self.name,
+                "STACK_DIR": str(self.stack_dir),
+                "DATA_ROOT": str(self.data_dir),
+                "ENV_FILE": str(self.env_file),
+                "COMPOSE_FILE": str(self.compose_file),
+            }
+        )
+        e.update(self.env)
+        return e
+
+    def status(self) -> str:
+        res = subprocess.run(
+            ["docker", "compose", "-f", str(self.compose_file), "ps", "--status", "running"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        lines = [l for l in res.stdout.splitlines() if l.strip()]
+        return "up" if len(lines) > 1 else "down"
+
+    def schedule(self) -> str:
+        full = self.env.get("CRON_FULL_TIME", "?")
+        incr = self.env.get("CRON_INCR_TIME", "?")
+        return f"full {full} | incr {incr}"
+
+
+def parse_env(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if not path.exists():
+        return env
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        env[k] = v
+    return env
+
+
+def find_instances() -> list[Instance]:
+    insts: list[Instance] = []
+    for stack in BASE_DIR.glob(f"*{INSTANCE_SUFFIX}"):
+        env_file = stack / ".env"
+        compose = stack / "docker-compose.yml"
+        if not env_file.exists() or not compose.exists():
+            continue
+        env = parse_env(env_file)
+        name = env.get("INSTANCE_NAME", stack.name.replace(INSTANCE_SUFFIX, ""))
+        data_root = Path(env.get("DATA_ROOT", str(BASE_DIR / name)))
+        insts.append(Instance(name=name, stack_dir=stack, data_dir=data_root, env=env))
+    return sorted(insts, key=lambda i: i.name)
+
+
+def install_instance(name: str) -> None:
+    insts = find_instances()
+    if any(i.name == name for i in insts):
+        warn(f"Instance '{name}' already exists")
+        return
+    stack_dir = BASE_DIR / f"{name}{INSTANCE_SUFFIX}"
+    data_dir = BASE_DIR / name
+    if stack_dir.exists() or data_dir.exists():
+        warn(f"Directories for '{name}' already exist")
+        return
+    env = os.environ.copy()
+    env.update(
+        {
+            "INSTANCE_NAME": name,
+            "STACK_DIR": str(stack_dir),
+            "DATA_ROOT": str(data_dir),
+            "BP_BRANCH": BRANCH,
+        }
+    )
+    url = (
+        "https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/"
+        f"{BRANCH}/install.py"
+    )
+    cmd = f"curl -fsSL {url} | python3 - --branch {BRANCH}"
+    say(f"Installing instance '{name}' from branch {BRANCH}")
+    subprocess.run(["bash", "-lc", cmd], env=env, check=True)
+
+
+def backup_instance(inst: Instance, mode: str) -> None:
+    script = inst.stack_dir / "backup.py"
+    if not script.exists():
+        warn(f"No backup script for {inst.name}")
+        return
+    subprocess.run([str(script), mode], env=inst.env_for_subprocess(), check=False)
+
+
+def manage_instance(inst: Instance) -> None:
+    subprocess.run([str(Path(__file__)), "--instance", inst.name])
+
+
+def delete_instance(inst: Instance) -> None:
+    if input(f"Delete instance '{inst.name}'? (y/N): ").lower().startswith("y"):
+        shutil.rmtree(inst.stack_dir, ignore_errors=True)
+        shutil.rmtree(inst.data_dir, ignore_errors=True)
+        ok(f"Deleted {inst.name}")
+
+
+def rename_instance(inst: Instance, new: str) -> None:
+    if new == inst.name:
+        warn("New name is the same as the current name")
+        return
+    if any(i.name == new for i in find_instances()):
+        warn(f"Instance '{new}' already exists")
+        return
+    new_stack = BASE_DIR / f"{new}{INSTANCE_SUFFIX}"
+    new_data = BASE_DIR / new
+    if new_stack.exists() or new_data.exists():
+        warn(f"Directories for '{new}' already exist")
+        return
+    inst.stack_dir.rename(new_stack)
+    inst.data_dir.rename(new_data)
+    env = inst.env
+    env["INSTANCE_NAME"] = new
+    env["STACK_DIR"] = str(new_stack)
+    env["DATA_ROOT"] = str(new_data)
+    if "RCLONE_REMOTE_PATH" in env:
+        env["RCLONE_REMOTE_PATH"] = f"backups/paperless/{new}"
+    lines = [f"{k}={v}" for k, v in env.items()]
+    (new_stack / ".env").write_text("\n".join(lines) + "\n")
+    ok(f"Renamed to {new}")
+
+
+def multi_main() -> None:
+    while True:
+        insts = find_instances()
+        if not insts:
+            name = (
+                input("No instances found. Name for new instance [paperless]: ")
+                .strip()
+                or "paperless"
+            )
+            install_instance(name)
+            continue
+        print()
+        print(f"{COLOR_BLUE}=== Bulletproof Instances ==={COLOR_OFF}")
+        for idx, inst in enumerate(insts, 1):
+            status = inst.status()
+            color = COLOR_GREEN if status == "up" else COLOR_RED
+            print(
+                f"{idx}) {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
+            )
+        print(f"{COLOR_GREEN}a{COLOR_OFF}) add instance")
+        print(f"{COLOR_RED}d{COLOR_OFF}) delete instance")
+        print(f"{COLOR_YELLOW}r{COLOR_OFF}) rename instance")
+        print(f"{COLOR_BLUE}b{COLOR_OFF}) backup instance")
+        print(f"{COLOR_BLUE}g{COLOR_OFF}) backup all")
+        print(f"{COLOR_BLUE}m{COLOR_OFF}) manage instance")
+        print(f"{COLOR_RED}q{COLOR_OFF}) quit")
+        choice = input("Choice: ").strip().lower()
+        if choice == "a":
+            name = input("New instance name: ").strip()
+            if name:
+                install_instance(name)
+        elif choice == "d":
+            idx = input("Instance number to delete: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                delete_instance(insts[int(idx) - 1])
+        elif choice == "r":
+            idx = input("Instance number to rename: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                new = input("New name: ").strip()
+                if new:
+                    rename_instance(insts[int(idx) - 1], new)
+        elif choice == "b":
+            idx = input("Instance number to backup: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                mode = input("Full or Incremental? [incr]: ").strip().lower()
+                mode = "full" if mode.startswith("f") else "incr"
+                backup_instance(insts[int(idx) - 1], mode)
+        elif choice == "g":
+            mode = input("Full or Incremental? [incr]: ").strip().lower()
+            mode = "full" if mode.startswith("f") else "incr"
+            for inst in insts:
+                say(f"Backing up {inst.name}")
+                backup_instance(inst, mode)
+        elif choice == "m":
+            idx = input("Instance number to manage: ").strip()
+            if idx.isdigit() and 1 <= int(idx) <= len(insts):
+                manage_instance(insts[int(idx) - 1])
+        elif choice == "q":
+            break
+        else:
+            warn("Unknown choice")
 
 
 def dc(*args: str) -> list[str]:
@@ -403,6 +644,7 @@ def menu() -> None:
 
 
 parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")
+parser.add_argument("--instance", help="instance name to operate on")
 sub = parser.add_subparsers(dest="command")
 
 p = sub.add_parser("backup", help="run backup script")
@@ -445,10 +687,22 @@ p.set_defaults(func=cmd_schedule)
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    if not hasattr(args, "func"):
-        if sys.stdin.isatty():
-            menu()
-        else:
-            parser.print_help()
+    if STACK_DIR is None and not args.instance:
+        multi_main()
     else:
-        args.func(args)
+        if args.instance and STACK_DIR is None:
+            insts = find_instances()
+            inst = next((i for i in insts if i.name == args.instance), None)
+            if not inst:
+                die(f"Instance '{args.instance}' not found")
+            os.environ.update(inst.env_for_subprocess())
+            STACK_DIR = inst.stack_dir
+            load_env(inst.env_file)
+            init_from_env()
+        if not hasattr(args, "func"):
+            if sys.stdin.isatty():
+                menu()
+            else:
+                parser.print_help()
+        else:
+            args.func(args)
