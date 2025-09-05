@@ -362,6 +362,7 @@ def multi_main() -> None:
             print()
             print("Actions:")
             print(" 1) Add instance")
+            print(" 2) Explore backups")
             print(" 0) Quit")
             choice = input("Select action: ").strip()
             if choice == "1":
@@ -369,6 +370,8 @@ def multi_main() -> None:
                     input("New instance name [paperless]: ").strip() or "paperless"
                 )
                 install_instance(name)
+            elif choice == "2":
+                explore_backups()
             elif choice == "0":
                 break
             else:
