@@ -185,7 +185,19 @@ def main() -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
         cli_path = Path(__file__).resolve().parent / "tools" / "bulletproof.py"
-        subprocess.run([sys.executable, str(cli_path)], check=False, env=env)
+        tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+        try:
+            with open(tty_path, "r+") as tty:
+                subprocess.run(
+                    [sys.executable, str(cli_path)],
+                    check=False,
+                    env=env,
+                    stdin=tty,
+                    stdout=tty,
+                    stderr=tty,
+                )
+        except OSError:
+            subprocess.run([sys.executable, str(cli_path)], check=False, env=env)
         return
 
     try:
