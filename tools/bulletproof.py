@@ -552,8 +552,22 @@ def extract_tar(tar_path: Path, dest: Path) -> None:
     )
 
 
+def ensure_network() -> None:
+    """Ensure the shared docker network exists."""
+    try:
+        subprocess.run(
+            ["docker", "network", "inspect", "paperless_net"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.run(["docker", "network", "create", "paperless_net"], check=False)
+
+
 def restore_db(dump: Path) -> None:
     say("Restoring database…")
+    ensure_network()
     subprocess.run(dc("up", "-d", "db"), check=True)
     time.sleep(5)
     subprocess.run(
@@ -659,7 +673,9 @@ def cmd_restore(args: argparse.Namespace) -> None:
         cur = parent
     chain.reverse()
     say("Restoring chain: " + " -> ".join(chain))
-    subprocess.run(dc("down"), check=False)
+    if COMPOSE_FILE.exists():
+        subprocess.run(dc("down"), check=False)
+    ensure_network()
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     try:
@@ -696,6 +712,7 @@ def cmd_restore(args: argparse.Namespace) -> None:
             restore_db(final_dump)
     finally:
         shutil.rmtree(dump_dir, ignore_errors=True)
+    ensure_network()
     subprocess.run(dc("up", "-d"), check=False)
     if run_stack_tests():
         ok("Restore complete")
