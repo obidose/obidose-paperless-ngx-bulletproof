@@ -156,8 +156,7 @@ def main() -> None:
         say("Bulletproof CLI detected; launching manager...")
         files.install_global_cli()
         from tools import bulletproof as bp
-        # Clean up any aborted installs so we don't mis-detect instances.
-        bp.cleanup_orphans()
+        # Let the Bulletproof manager handle leftover cleanup when it starts.
         insts = bp.find_instances()
         if not insts:
             rem = bp.list_remote_instances()
