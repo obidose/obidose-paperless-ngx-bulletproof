@@ -304,6 +304,8 @@ def delete_all(insts: list[Instance]) -> None:
     if input("Delete ALL instances? (y/N): ").lower().startswith("y"):
         for inst in insts:
             delete_instance(inst)
+        subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+        ok("All instances removed")
 
 
 def rename_instance(inst: Instance, new: str) -> None:
@@ -354,12 +356,23 @@ def multi_main() -> None:
     while True:
         insts = find_instances()
         if not insts:
-            name = (
-                input("No instances found. Name for new instance [paperless]: ")
-                .strip()
-                or "paperless"
-            )
-            install_instance(name)
+            print()
+            print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
+            print("No instances found.")
+            print()
+            print("Actions:")
+            print(" 1) Add instance")
+            print(" 0) Quit")
+            choice = input("Select action: ").strip()
+            if choice == "1":
+                name = (
+                    input("New instance name [paperless]: ").strip() or "paperless"
+                )
+                install_instance(name)
+            elif choice == "0":
+                break
+            else:
+                warn("Unknown choice")
             continue
         print()
         print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
