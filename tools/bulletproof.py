@@ -233,6 +233,30 @@ def find_instances() -> list[Instance]:
     return sorted(insts, key=lambda i: i.name)
 
 
+def cleanup_orphans() -> None:
+    """Remove stack/data dirs left from aborted installs."""
+    leftovers: list[tuple[str, Path, Path]] = []
+    for stack in BASE_DIR.glob(f"*{INSTANCE_SUFFIX}"):
+        env_file = stack / ".env"
+        compose = stack / "docker-compose.yml"
+        if env_file.exists() and compose.exists():
+            continue
+        name = stack.name.replace(INSTANCE_SUFFIX, "")
+        data = BASE_DIR / name
+        leftovers.append((name, stack, data))
+    if leftovers:
+        warn("Found incomplete installs:")
+        for name, _, _ in leftovers:
+            warn(f" - {name}")
+        try:
+            if _read("Remove these leftovers? (y/N): ").lower().startswith("y"):
+                for _, stack, data in leftovers:
+                    subprocess.run(["rm", "-rf", str(stack)], check=False)
+                    subprocess.run(["rm", "-rf", str(data)], check=False)
+        except EOFError:
+            pass
+
+
 def install_instance(name: str) -> None:
     insts = find_instances()
     if any(i.name == name for i in insts):
@@ -382,6 +406,9 @@ def restore_instance(inst: Instance, snap: str | None = None, source: str | None
 def multi_main() -> None:
     while True:
         insts = find_instances()
+        if not insts:
+            cleanup_orphans()
+            insts = find_instances()
         if not insts:
             print()
             print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
