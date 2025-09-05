@@ -13,7 +13,7 @@ from pathlib import Path
 
 def _tty_path() -> str:
     """Best-effort path to a readable/writable TTY."""
-    for key in ("TTY", "SSH_TTY"):
+    for key in ("TTY", "SSH_TTY", "SUDO_TTY"):
         path = os.environ.get(key)
         if path:
             return path
