@@ -69,25 +69,21 @@ def cleanup_stack_dir() -> None:
     """Remove leftovers from an aborted install."""
     project = Path(cfg.stack_dir).name
     try:
+        subprocess.run(
+            ["docker", "compose", "-p", project, "down", "--volumes", "--remove-orphans"],
+            check=False,
+        )
+    except Exception as e:
+        warn(f"Failed to stop containers: {e}")
+    try:
         res = subprocess.run(
-            [
-                "docker",
-                "ps",
-                "-aq",
-                "--filter",
-                f"label=com.docker.compose.project={project}",
-            ],
+            ["docker", "network", "inspect", "paperless_net", "-f", "{{len .Containers}}"],
             capture_output=True,
             text=True,
             check=False,
         )
-        ids = res.stdout.split()
-        if ids:
-            subprocess.run(["docker", "rm", "-f", *ids], check=False)
-    except Exception as e:
-        warn(f"Failed to remove containers: {e}")
-    try:
-        subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+        if res.returncode == 0 and res.stdout.strip() == "0":
+            subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
     except Exception:
         pass
     try:
