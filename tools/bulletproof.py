@@ -10,6 +10,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    if not sys.stdin.isatty():
+        _tty = open("/dev/tty", "r+")
+        sys.stdin = sys.stdout = sys.stderr = _tty
+except OSError:
+    pass
+
 
 
 def load_env(path: Path) -> None:
