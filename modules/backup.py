@@ -260,7 +260,7 @@ def main() -> None:
     parent = snaps[-1] if snaps else ""
     if mode == "incr" and not snaps:
         mode = "full"
-    snap = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    snap = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{mode}"
     work = Path(tempfile.mkdtemp(prefix="paperless-backup."))
     if mode == "incr" and parent:
         subprocess.run(
