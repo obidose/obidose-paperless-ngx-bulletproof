@@ -18,11 +18,25 @@ except OSError:
     TTY = None
 
 
+def _ensure_tty() -> None:
+    global TTY
+    if TTY:
+        return
+    try:
+        TTY = open("/dev/tty", "r+")
+    except OSError:
+        TTY = None
+
+
 def _read(prompt: str) -> str:
+    _ensure_tty()
     out = TTY if TTY else sys.stdout
     print(prompt, end="", flush=True, file=out)
     stream = TTY if TTY else sys.stdin
-    return stream.readline().strip()
+    line = stream.readline()
+    if not line:
+        raise EOFError
+    return line.strip()
 
 
 
