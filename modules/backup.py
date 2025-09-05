@@ -123,8 +123,6 @@ def die(msg: str) -> None:
 
 ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 load_env(ENV_FILE)
-if not ENV_FILE.exists():
-    warn(f"No .env at {ENV_FILE} — falling back to defaults.")
 
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
 STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))

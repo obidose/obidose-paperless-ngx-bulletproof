@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from modules.backup import verify_archives
 
 
 def load_env(path: Path) -> None:
@@ -589,6 +588,8 @@ def verify_snapshot(source: str, snap: str) -> None:
     try:
         say(f"Verifying {source}/{snap}…")
         subprocess.run(["rclone", "sync", remote, str(tmp)], check=True)
+        from modules.backup import verify_archives
+
         if verify_archives(tmp):
             ok("Archives verified")
         else:
