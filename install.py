@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 """Lightweight installer for Paperless-ngx Bulletproof CLI.
 
-This installer only:
+This installer:
 1. Installs basic prerequisites (Docker, rclone) 
-2. Downloads and installs the bulletproof CLI
-3. Launches bulletproof for all actual functionality
-
-All pCloud setup, instance management, etc. is handled by bulletproof itself.
+2. Downloads and installs the bulletproof CLI with all modules
+3. Launches bulletproof for configuration
 """
 
-from pathlib import Path
 import os
-import argparse
 import sys
 import shutil
 import subprocess
-import tempfile
 import urllib.request
-import tarfile
-import io
+from pathlib import Path
 
 
 def _parse_branch() -> str:
+    """Parse branch from command line or environment."""
+    import argparse
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--branch")
     args, unknown = parser.parse_known_args()
@@ -38,27 +34,33 @@ COLOR_YELLOW = "\033[1;33m"
 COLOR_RED = "\033[1;31m"
 COLOR_OFF = "\033[0m"
 
+
 def say(msg: str) -> None:
     print(f"{COLOR_BLUE}[*]{COLOR_OFF} {msg}")
+
 
 def ok(msg: str) -> None:
     print(f"{COLOR_GREEN}[✓]{COLOR_OFF} {msg}")
 
+
 def warn(msg: str) -> None:
     print(f"{COLOR_YELLOW}[!]{COLOR_OFF} {msg}")
+
 
 def die(msg: str, code: int = 1) -> None:
     print(f"{COLOR_RED}[✗]{COLOR_OFF} {msg}")
     sys.exit(code)
 
 
-def run_command(cmd: list[str], description: str | None = None) -> bool:
-    """Run a command and return success/failure."""
+def run_command(cmd: list, capture_output=False) -> bool:
+    """Run a command and return success status."""
     try:
-        if description:
-            say(description)
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
+        if capture_output:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return result.returncode == 0
+        else:
+            result = subprocess.run(cmd, check=True)
+            return result.returncode == 0
     except subprocess.CalledProcessError:
         return False
     except FileNotFoundError:
@@ -66,37 +68,44 @@ def run_command(cmd: list[str], description: str | None = None) -> bool:
 
 
 def install_prerequisites() -> None:
-    """Install basic prerequisites."""
+    """Install basic system packages."""
     say("Installing prerequisites...")
     
-    # Update package lists
-    run_command(["apt", "update"], "Updating package lists")
+    say("Updating package lists")
+    if not run_command(["apt", "update"]):
+        die("Failed to update package lists")
     
-    # Install basic tools
-    basic_packages = [
-        "ca-certificates", "curl", "gnupg", "lsb-release", "tar", 
-        "cron", "software-properties-common", "jq", "dos2unix", "unzip"
-    ]
-    
-    cmd = ["apt", "install", "-y"] + basic_packages
-    if not run_command(cmd, "Installing basic packages"):
+    say("Installing basic packages")
+    basic_packages = ["curl", "wget", "unzip", "cron", "lsb-release", "ca-certificates", "gnupg"]
+    if not run_command(["apt", "install", "-y"] + basic_packages):
         die("Failed to install basic packages")
+
+
+def ensure_docker_user() -> None:
+    """Ensure docker user exists."""
+    if run_command(["id", "docker"], capture_output=True):
+        ok("User 'docker' already exists")
+    else:
+        say("Creating 'docker' user...")
+        if not run_command(["useradd", "-r", "-s", "/bin/false", "docker"]):
+            die("Failed to create docker user")
+        ok("Created 'docker' user")
 
 
 def install_docker() -> None:
     """Install Docker if not present."""
-    if run_command(["docker", "--version"], None):
+    if run_command(["docker", "--version"], capture_output=True):
         ok("Docker already installed")
         return
-        
+    
     say("Installing Docker...")
     
     # Add Docker GPG key
-    run_command(["curl", "-fsSL", "https://download.docker.com/linux/ubuntu/gpg", 
-                "-o", "/usr/share/keyrings/docker-archive-keyring.asc"])
-    run_command(["gpg", "--dearmor", "/usr/share/keyrings/docker-archive-keyring.asc"])
-    run_command(["mv", "/usr/share/keyrings/docker-archive-keyring.asc.gpg", 
-                "/usr/share/keyrings/docker-archive-keyring.gpg"])
+    run_command(["mkdir", "-p", "/usr/share/keyrings"])
+    cmd = ["curl", "-fsSL", "https://download.docker.com/linux/ubuntu/gpg"]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE) as p1:
+        subprocess.run(["gpg", "--dearmor", "-o", "/usr/share/keyrings/docker-archive-keyring.gpg"], 
+                      stdin=p1.stdout, check=True)
     
     # Add Docker repository
     lsb_release = subprocess.check_output(["lsb_release", "-cs"], text=True).strip()
@@ -122,69 +131,99 @@ def install_docker() -> None:
 
 def install_rclone() -> None:
     """Install rclone if not present."""
-    if run_command(["rclone", "version"], None):
+    if run_command(["rclone", "version"], capture_output=True):
         ok("rclone already installed")
         return
         
     say("Installing rclone...")
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        zip_path = os.path.join(tmpdir, "rclone.zip")
-        extract_dir = os.path.join(tmpdir, "extract")
-        
-        # Download rclone
-        url = "https://downloads.rclone.org/rclone-current-linux-amd64.zip"
-        urllib.request.urlretrieve(url, zip_path)
-        
-        # Extract
-        import zipfile
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_dir)
-        
-        # Find the rclone binary and install it
-        for root, dirs, files in os.walk(extract_dir):
-            if "rclone" in files:
-                rclone_path = os.path.join(root, "rclone")
-                shutil.copy2(rclone_path, "/usr/local/bin/rclone")
-                os.chmod("/usr/local/bin/rclone", 0o755)
-                break
-        else:
-            die("Could not find rclone binary in download")
-    
-    if not run_command(["rclone", "version"], None):
-        die("Failed to install rclone")
+    # Use rclone's official install script
+    cmd = ["curl", "https://rclone.org/install.sh"]
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE) as p1:
+        subprocess.run(["bash"], stdin=p1.stdout, check=True)
     
     ok("rclone installed successfully")
-
-
-def ensure_docker_user() -> None:
-    """Create docker user if it doesn't exist."""
-    try:
-        subprocess.run(["id", "docker"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        ok("User 'docker' already exists")
-    except subprocess.CalledProcessError:
-        say("Creating 'docker' user...")
-        subprocess.run(["useradd", "-r", "-s", "/bin/false", "-c", "Docker user", "-u", "1001", "docker"], check=True)
-        ok("Created user 'docker'")
 
 
 def download_and_install_bulletproof() -> None:
     """Download the latest bulletproof CLI and install it."""
     say("Installing bulletproof CLI...")
     
-    # Download bulletproof.py
-    url = f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}/tools/bulletproof.py"
+    # Create bulletproof directory for modules
+    bulletproof_dir = "/usr/local/lib/bulletproof"
+    os.makedirs(bulletproof_dir, exist_ok=True)
+    
+    # List of files to download
+    files_to_download = [
+        "tools/bulletproof.py",
+        "tools/ui.py", 
+        "tools/cloud_storage.py",
+        "tools/instance.py",
+        "tools/backup_restore.py"
+    ]
     
     try:
-        with urllib.request.urlopen(url) as response:
-            content = response.read().decode('utf-8')
+        # Download all required files
+        for file_path in files_to_download:
+            url = f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}/{file_path}"
+            
+            with urllib.request.urlopen(url) as response:
+                content = response.read().decode('utf-8')
+            
+            # Determine destination
+            if file_path == "tools/bulletproof.py":
+                # Main script goes to /usr/local/bin/bulletproof
+                dest_path = "/usr/local/bin/bulletproof"
+                chmod_mode = 0o755
+            else:
+                # Modules go to /usr/local/lib/bulletproof/
+                filename = os.path.basename(file_path)
+                dest_path = os.path.join(bulletproof_dir, filename)
+                chmod_mode = 0o644
+            
+            with open(dest_path, "w") as f:
+                f.write(content)
+            
+            os.chmod(dest_path, chmod_mode)
         
-        # Install to /usr/local/bin/bulletproof
+        # Update the main bulletproof script to add the module directory to Python path
+        with open("/usr/local/bin/bulletproof", "r") as f:
+            content = f.read()
+        
+        # Add the bulletproof module directory to sys.path at the beginning
+        import_insert = '''import sys
+sys.path.insert(0, '/usr/local/lib/bulletproof')
+
+'''
+        
+        # Insert after the shebang and docstring
+        lines = content.split('\n')
+        insert_index = 0
+        for i, line in enumerate(lines):
+            if line.strip().startswith('"""') and '"""' in line[line.find('"""') + 3:]:
+                # Single line docstring
+                insert_index = i + 1
+                break
+            elif line.strip().startswith('"""'):
+                # Multi-line docstring start, find the end
+                for j in range(i + 1, len(lines)):
+                    if '"""' in lines[j]:
+                        insert_index = j + 1
+                        break
+                break
+            elif line.strip() and not line.startswith('#'):
+                # First non-comment, non-empty line
+                insert_index = i
+                break
+        
+        # Insert the path modification
+        lines.insert(insert_index, import_insert.rstrip())
+        
         with open("/usr/local/bin/bulletproof", "w") as f:
-            f.write(content)
+            f.write('\n'.join(lines))
         
-        os.chmod("/usr/local/bin/bulletproof", 0o755)
         ok("bulletproof CLI installed to /usr/local/bin/bulletproof")
+        ok(f"Supporting modules installed to {bulletproof_dir}")
         
     except Exception as e:
         die(f"Failed to download bulletproof CLI: {e}")
@@ -207,7 +246,7 @@ def main() -> None:
         ok("Installation complete!")
         print()
         say("Next steps:")
-        print("  1. Run 'bulletproof' to set up pCloud and manage instances")
+        print("  1. Run 'bulletproof' to set up cloud storage and manage instances")
         print("  2. Use 'bulletproof --help' to see all available options")
         print()
         say("Launching bulletproof now...")
@@ -220,249 +259,6 @@ def main() -> None:
         sys.exit(1)
     except Exception as e:
         die(f"Installation failed: {e}")
-
-
-if __name__ == "__main__":
-    main()
-
-from pathlib import Path
-import os
-import argparse
-import sys
-import shutil
-import subprocess
-
-
-def _parse_branch() -> str:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--branch")
-    args, unknown = parser.parse_known_args()
-    sys.argv[1:] = unknown
-    return args.branch or os.environ.get("BP_BRANCH", "main")
-
-
-BRANCH = _parse_branch()
-
-
-def _bootstrap() -> None:
-    """Download repository sources into a temporary directory and load them."""
-    import io
-    import sys
-    import tarfile
-    import tempfile
-    import urllib.request
-
-    url = (
-        "https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof/"
-        f"tar.gz/refs/heads/{BRANCH}"
-    )
-    tmpdir = tempfile.mkdtemp(prefix="paperless-inst-")
-    with urllib.request.urlopen(url) as resp:
-        with tarfile.open(fileobj=io.BytesIO(resp.read()), mode="r:gz") as tf:
-            root = tf.getmembers()[0].name.split("/", 1)[0]
-            tf.extractall(tmpdir)
-    repo = os.path.join(tmpdir, root)
-    os.chdir(repo)
-    sys.path.insert(0, repo)
-
-
-try:  # first attempt to import locally present modules
-    from installer import common, deps, files, pcloud
-    from utils.selftest import run_stack_tests
-except ModuleNotFoundError:
-    _bootstrap()
-    from installer import common, deps, files, pcloud
-    from utils.selftest import run_stack_tests
-
-cfg = common.cfg
-say = common.say
-need_root = common.need_root
-ensure_dir_tree = common.ensure_dir_tree
-preflight_ubuntu = common.preflight_ubuntu
-prompt_core_values = common.prompt_core_values
-pick_and_merge_preset = common.pick_and_merge_preset
-ok = common.ok
-warn = common.warn
-# ``prompt_backup_plan`` was added in newer releases; fall back to a no-op if
-# running against an older checkout that lacks it.
-prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
-
-
-def offer_initial_actions() -> bool:
-    """Return True if the script should exit early."""
-    from tools import bulletproof as bp
-
-    rem = bp.list_remote_instances()
-    
-    if rem:
-        say(f"Found remote backups for {len(rem)} instance(s): {', '.join(rem)}")
-        opts: list[tuple[str, str]] = [
-            ("Restore all backups (full restore)", "restore"),
-            ("Install new instance", "install"),
-            ("Launch Bulletproof CLI (advanced)", "cli"),
-            ("Quit", "quit")
-        ]
-    else:
-        say("No remote backups found.")
-        opts: list[tuple[str, str]] = [
-            ("Install new instance", "install"),
-            ("Launch Bulletproof CLI (advanced)", "cli"),
-            ("Quit", "quit")
-        ]
-
-    while True:
-        print()
-        say("Select action:")
-        for idx, (label, _) in enumerate(opts, 1):
-            say(f" {idx}) {label}")
-        choice = common.prompt("Select", "1")
-        try:
-            action = opts[int(choice) - 1][1]
-            break
-        except Exception:
-            say("Invalid choice")
-
-    if action == "restore":
-        say("Restoring all instances from backups...")
-        for name in rem:
-            cfg.instance_name = name
-            cfg.stack_dir = str(bp.BASE_DIR / f"{name}{bp.INSTANCE_SUFFIX}")
-            cfg.data_root = str(bp.BASE_DIR / name)
-            cfg.refresh_paths()
-            ensure_dir_tree(cfg)
-            inst = bp.Instance(name, Path(cfg.stack_dir), Path(cfg.data_root), {})
-            snaps = bp.fetch_snapshots_for(name)
-            if snaps:
-                say(f"Restoring '{name}' from latest backup...")
-                bp.restore_instance(inst, snaps[-1][0], name)
-            if Path(cfg.env_file).exists():
-                for line in Path(cfg.env_file).read_text().splitlines():
-                    if line.startswith("CRON_FULL_TIME="):
-                        cfg.cron_full_time = line.split("=", 1)[1].strip()
-                    elif line.startswith("CRON_INCR_TIME="):
-                        cfg.cron_incr_time = line.split("=", 1)[1].strip()
-                    elif line.startswith("CRON_ARCHIVE_TIME="):
-                        cfg.cron_archive_time = line.split("=", 1)[1].strip()
-            files.copy_helper_scripts()
-            files.install_cron_backup()
-        ok("All instances restored! Launching Bulletproof CLI...")
-        bp.multi_main()
-        return True
-
-    if action == "cli":
-        say("Launching Bulletproof CLI...")
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
-        try:
-            with open("/dev/tty", "r+") as tty:
-                subprocess.run(
-                    [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
-                    stdin=tty,
-                    stdout=tty,
-                    stderr=tty,
-                    check=False,
-                    env=env,
-                )
-        except OSError:
-            subprocess.run(
-                [sys.executable, str(Path(__file__).resolve().parent / "tools" / "bulletproof.py")],
-                check=False,
-                env=env,
-            )
-        return True
-
-    if action == "quit":
-        return True
-
-    # action == "install" - continue with normal installation flow
-    return False
-
-
-def main() -> None:
-    need_root()
-    say(f"Fetching assets from branch '{BRANCH}'")
-
-    say("Starting Paperless-ngx setup wizard...")
-    preflight_ubuntu()
-
-    # If the Bulletproof CLI is already installed this one-liner acts as a
-    # convenience wrapper.  Skip the heavy installation routine and hand off to
-    # the multi-instance manager instead of re-running the wizard.
-    # But if BP_FORCE_INSTALL is set, proceed with normal installation
-    if (shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists() 
-        and not os.environ.get("BP_FORCE_INSTALL")):
-        say("Bulletproof CLI detected; launching manager...")
-        files.install_global_cli()
-        
-        # Ensure pCloud is configured even when CLI is already installed
-        pcloud.ensure_pcloud_remote_or_menu()
-        
-        # Always offer initial actions when CLI is already installed
-        if offer_initial_actions():
-            return
-        
-        # If they chose to continue with CLI, launch it
-        from tools import bulletproof as bp
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
-        cli_path = Path(__file__).resolve().parent / "tools" / "bulletproof.py"
-        tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
-        try:
-            with open(tty_path, "r+") as tty:
-                subprocess.run(
-                    [sys.executable, str(cli_path)],
-                    check=False,
-                    env=env,
-                    stdin=tty,
-                    stdout=tty,
-                    stderr=tty,
-                )
-        except OSError:
-            subprocess.run([sys.executable, str(cli_path)], check=False, env=env)
-        return
-
-    try:
-        deps.install_prereqs()
-        deps.ensure_user()
-        deps.install_docker()
-        deps.install_rclone()
-
-        # pCloud
-        pcloud.ensure_pcloud_remote_or_menu()
-
-        # Offer to restore existing backups or jump straight into the CLI
-        if offer_initial_actions():
-            return
-
-        # Presets and prompts
-        pick_and_merge_preset(
-            f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
-        )
-        prompt_core_values()
-        prompt_backup_plan()
-
-        # Directories and files
-        ensure_dir_tree(cfg)
-        files.write_env_file()
-        files.write_compose_file()
-        files.copy_helper_scripts()
-        files.bring_up_stack()
-
-        if run_stack_tests(Path(cfg.compose_file), Path(cfg.env_file)):
-            ok("Self-test passed")
-        else:
-            warn("Self-test failed; check container logs")
-
-        files.install_cron_backup()
-        files.show_status()
-    except KeyboardInterrupt:
-        warn("Installation cancelled; cleaning up")
-        files.cleanup_stack_dir()
-        raise
-    except Exception as e:
-        warn(f"Installation failed: {e}")
-        files.cleanup_stack_dir()
-        raise
 
 
 if __name__ == "__main__":
