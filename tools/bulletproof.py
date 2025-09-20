@@ -561,10 +561,27 @@ def cmd_create_instance(args: argparse.Namespace) -> None:
     
     # Generate .env file
     env_content = f"""# Paperless-ngx Configuration for {name}
+INSTANCE_NAME={name}
+DATA_ROOT={data_root}
+STACK_DIR={stack_dir}
+
+# Paperless Configuration
 PAPERLESS_TIME_ZONE={timezone}
 PAPERLESS_ADMIN_USER={admin_user}
 PAPERLESS_ADMIN_PASSWORD={admin_password}
+
+# Database Configuration
 POSTGRES_PASSWORD={db_password}
+
+# Backup Configuration
+RCLONE_REMOTE_NAME={RCLONE_REMOTE_NAME}
+RCLONE_REMOTE_PATH=backups/paperless/{name}
+REMOTE={RCLONE_REMOTE_NAME}:backups/paperless/{name}
+
+# Backup Schedule
+CRON_FULL_TIME=30 3 * * 0
+CRON_INCR_TIME=0 0 * * *
+CRON_ARCHIVE_TIME=
 """
     
     if use_https:
@@ -577,15 +594,73 @@ TRAEFIK_ENABLED=yes
     env_file.write_text(env_content)
     say(f"Created configuration file: {env_file}")
     
-    # TODO: Generate docker-compose.yml based on configuration
-    # TODO: Start the stack
-    # TODO: Set up backup schedule
+    # Generate docker-compose.yml based on configuration
+    compose_template = "traefik" if use_https else "direct"
+    compose_source = Path(__file__).parent.parent / "compose" / f"docker-compose-{compose_template}.yml"
+    compose_dest = stack_path / "docker-compose.yml"
+    
+    if compose_source.exists():
+        # Copy the appropriate compose file
+        import shutil
+        shutil.copy2(compose_source, compose_dest)
+        say(f"Created docker-compose.yml from {compose_template} template")
+    else:
+        # Fallback: create a basic compose file if templates don't exist
+        basic_compose = f"""version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}
+    volumes:
+      - {data_root}/pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_ADMIN_USER: ${{PAPERLESS_ADMIN_USER}}
+      PAPERLESS_ADMIN_PASSWORD: ${{PAPERLESS_ADMIN_PASSWORD}}
+      PAPERLESS_TIME_ZONE: ${{PAPERLESS_TIME_ZONE}}
+    volumes:
+      - {data_root}/data:/usr/src/paperless/data
+      - {data_root}/media:/usr/src/paperless/media
+      - {data_root}/export:/usr/src/paperless/export
+    ports:
+      - "8000:8000"
+"""
+        compose_dest.write_text(basic_compose)
+        say("Created basic docker-compose.yml")
+    
+    # Copy backup script
+    backup_script_source = Path(__file__).parent.parent / "modules" / "backup.py"
+    backup_script_dest = stack_path / "backup.py"
+    
+    if backup_script_source.exists():
+        import shutil
+        shutil.copy2(backup_script_source, backup_script_dest)
+        backup_script_dest.chmod(0o755)  # Make executable
+        say("Installed backup script")
     
     ok(f"Instance '{name}' created successfully!")
     say("Next steps:")
     say(f"  1. cd {stack_dir}")
     say("  2. Review the configuration in .env")
-    say("  3. Run 'bulletproof' to manage this instance")
+    say("  3. Start with: docker compose up -d")
+    say("  4. Or use 'bulletproof' to manage this instance")
 
 
 # ===== Enhanced Multi-Instance Management =====
