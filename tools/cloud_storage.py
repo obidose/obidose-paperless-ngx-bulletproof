@@ -237,8 +237,29 @@ def setup_pcloud_remote() -> bool:
             warn("No authorization code provided")
             return False
         
+        # Handle both raw code and JSON response
+        import json
+        access_token = None
+        
+        try:
+            # Try to parse as JSON first (in case user pasted full response)
+            parsed = json.loads(code)
+            if "access_token" in parsed:
+                access_token = parsed["access_token"]
+                say("Detected JSON response, extracting access_token")
+            else:
+                warn("JSON response missing access_token field")
+                return False
+        except json.JSONDecodeError:
+            # Not JSON, treat as raw authorization code
+            access_token = _sanitize_oneline(code)
+        
+        if not access_token:
+            warn("Could not extract access token")
+            return False
+        
         # Convert to token JSON format expected by rclone
-        token_json = f'{{"access_token":"{_sanitize_oneline(code)}","token_type":"bearer"}}'
+        token_json = f'{{"access_token":"{access_token}","token_type":"bearer"}}'
         
         if _pcloud_set_oauth_token_autoregion(token_json):
             ok("OAuth setup completed successfully!")

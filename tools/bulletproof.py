@@ -747,6 +747,9 @@ def _handle_multi_instance_menu(insts) -> bool:
 def _handle_instance_selection_menu(insts) -> None:
     """Handle instance selection submenu."""
     while True:
+        # Refresh instance list to handle deletions
+        insts = find_instances()
+        
         print()
         say("Select an instance to manage:")
         print()
@@ -776,6 +779,8 @@ def _handle_instance_selection_menu(insts) -> None:
             idx = int(choice) - 1
             if 0 <= idx < len(insts):
                 _handle_single_instance_menu(insts[idx])
+                # Refresh instance list after returning from single instance menu
+                # (in case instance was deleted)
             else:
                 warn("Invalid instance number")
         else:
