@@ -1050,6 +1050,82 @@ def multi_main() -> None:
         except EOFError:
             print()
             return
+        
+        # Handle menu choices when instances exist
+        if choice == "0":
+            break
+        elif choice == "1":
+            # Manage instance
+            if len(insts) == 1:
+                # Auto-select the single instance
+                inst = insts[0]
+                manage_instance(inst)
+            else:
+                # Let user choose which instance to manage
+                try:
+                    inst_choice = _read("Instance number to manage: ").strip()
+                    inst_num = int(inst_choice)
+                    if 1 <= inst_num <= len(insts):
+                        inst = insts[inst_num - 1]
+                        manage_instance(inst)
+                    else:
+                        warn("Invalid instance number")
+                except ValueError:
+                    warn("Invalid input")
+        elif choice == "2":
+            # Backup instance
+            if len(insts) == 1:
+                inst = insts[0]
+                backup_instance(inst, "full")
+            else:
+                try:
+                    inst_choice = _read("Instance number to backup: ").strip()
+                    inst_num = int(inst_choice)
+                    if 1 <= inst_num <= len(insts):
+                        inst = insts[inst_num - 1]
+                        backup_instance(inst, "full")
+                    else:
+                        warn("Invalid instance number")
+                except ValueError:
+                    warn("Invalid input")
+        elif choice == "3":
+            # Backup all
+            for inst in insts:
+                say(f"Backing up {inst.name}...")
+                backup_instance(inst, "full")
+        elif choice == "4":
+            # Add instance
+            cmd_create_instance(argparse.Namespace())
+        elif choice == "5":
+            # Start all
+            for inst in insts:
+                say(f"Starting {inst.name}...")
+                try:
+                    subprocess.run(["docker", "compose", "-f", str(inst.stack_dir / "docker-compose.yml"), "up", "-d"], 
+                                 cwd=str(inst.stack_dir), env=inst.env_for_subprocess(), check=True)
+                except subprocess.CalledProcessError:
+                    warn(f"Failed to start {inst.name}")
+        elif choice == "6":
+            # Stop all
+            for inst in insts:
+                say(f"Stopping {inst.name}...")
+                try:
+                    subprocess.run(["docker", "compose", "-f", str(inst.stack_dir / "docker-compose.yml"), "down"], 
+                                 cwd=str(inst.stack_dir), env=inst.env_for_subprocess(), check=True)
+                except subprocess.CalledProcessError:
+                    warn(f"Failed to stop {inst.name}")
+        elif choice == "7":
+            # Delete all
+            confirm = _read("Are you sure you want to delete ALL instances? [y/N]: ").strip().lower()
+            if confirm.startswith('y'):
+                for inst in insts:
+                    say(f"Deleting {inst.name}...")
+                    delete_instance(inst)
+        elif choice == "8":
+            # Explore backups
+            explore_backups()
+        else:
+            warn("Invalid choice")
 def print_instances_table(insts: list[Instance]) -> None:
     """Print a beautiful table of instances with enhanced formatting."""
     if not insts:
