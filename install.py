@@ -190,24 +190,30 @@ def download_and_install_bulletproof() -> None:
         with open("/usr/local/bin/bulletproof", "r") as f:
             content = f.read()
         
-        # Add the bulletproof module directory to sys.path before any imports
+        # Add the bulletproof module directory to sys.path after importing sys
         lines = content.split('\n')
         
-        # Check if 'import sys' already exists
-        has_sys_import = any('import sys' in line and line.strip().startswith('import sys') for line in lines)
-        
-        insert_index = 0
-        # Find the first import statement
+        # Find where 'import sys' is located
+        sys_import_line = -1
         for i, line in enumerate(lines):
-            if line.strip().startswith('import ') or line.strip().startswith('from '):
-                insert_index = i
+            if line.strip() == 'import sys':
+                sys_import_line = i
                 break
         
-        # Insert the path modification before imports
-        if not has_sys_import:
+        if sys_import_line >= 0:
+            # Insert after the existing 'import sys' line
+            insert_index = sys_import_line + 1
+        else:
+            # If no 'import sys' found, find first import and add both
+            insert_index = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith('import ') or line.strip().startswith('from '):
+                    insert_index = i
+                    break
             lines.insert(insert_index, 'import sys')
             insert_index += 1
         
+        # Insert the path modification after sys is imported
         lines.insert(insert_index, "sys.path.insert(0, '/usr/local/lib/bulletproof')")
         lines.insert(insert_index + 1, '')  # Empty line for spacing
         
