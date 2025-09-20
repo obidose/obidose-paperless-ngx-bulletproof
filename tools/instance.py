@@ -50,18 +50,66 @@ def _cron_desc(expr: str) -> str:
         
         minute, hour, day, month, weekday = parts
         
-        # Simple patterns
+        # Specific common patterns first
         if expr == "0 0 * * *":
             return "daily at midnight"
         elif expr == "0 3 * * 0":
             return "weekly on Sunday at 3 AM"
         elif expr == "30 3 * * 0":
             return "weekly on Sunday at 3:30 AM"
-        elif hour.isdigit() and minute.isdigit():
-            return f"daily at {hour}:{minute.zfill(2)}"
+        elif expr == "0 0 1 * *":
+            return "monthly on 1st at midnight"
+        elif expr == "30 3 1 * *":
+            return "monthly on 1st at 3:30 AM"
+        
+        # Weekly patterns (weekday specified)
+        elif weekday != "*":
+            weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            if weekday.isdigit() and 0 <= int(weekday) <= 6:
+                day_name = weekdays[int(weekday)]
+                if hour.isdigit() and minute.isdigit():
+                    time_str = f"{hour}:{minute.zfill(2)}"
+                    return f"weekly on {day_name} at {time_str}"
+                else:
+                    return f"weekly on {day_name}"
+            else:
+                return f"weekly on day {weekday}"
+        
+        # Monthly patterns (day of month specified)
+        elif day != "*":
+            if day.isdigit():
+                day_num = int(day)
+                if 1 <= day_num <= 31:
+                    if hour.isdigit() and minute.isdigit():
+                        time_str = f"{hour}:{minute.zfill(2)}"
+                        suffix = "st" if day_num == 1 or day_num == 21 or day_num == 31 else \
+                                "nd" if day_num == 2 or day_num == 22 else \
+                                "rd" if day_num == 3 or day_num == 23 else "th"
+                        return f"monthly on {day_num}{suffix} at {time_str}"
+                    else:
+                        return f"monthly on {day_num}"
+            return f"monthly on day {day}"
+        
+        # Daily patterns (hour and minute specified, no specific day/weekday)
+        elif hour != "*" and minute != "*":
+            if hour.isdigit() and minute.isdigit():
+                time_str = f"{hour}:{minute.zfill(2)}"
+                return f"daily at {time_str}"
+            else:
+                return "daily (complex schedule)"
+        
+        # Hourly patterns
+        elif minute != "*":
+            if minute.isdigit():
+                return f"hourly at :{minute.zfill(2)}"
+            else:
+                return "hourly (complex schedule)"
+        
+        # Default fallback - show the raw expression
         else:
-            return expr
-    except:
+            return f"custom: {expr}"
+            
+    except Exception:
         return "invalid"
 
 

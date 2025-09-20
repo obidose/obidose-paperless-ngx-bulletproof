@@ -1506,6 +1506,8 @@ def _handle_multi_instance_menu(insts) -> bool:
         ("5", "Delete all instances"),
         ("6", "Explore backups"),
         ("7", "Configure cloud storage"),
+        ("8", "System diagnostics"),
+        ("9", "Connection troubleshooting"),
         ("0", "Quit")
     ], "Multi-Instance Actions")
     
@@ -1532,6 +1534,10 @@ def _handle_multi_instance_menu(insts) -> bool:
         explore_backups()
     elif choice == "7":
         setup_pcloud_remote()
+    elif choice == "8":
+        cmd_doctor(argparse.Namespace())
+    elif choice == "9":
+        cmd_troubleshoot_connection(argparse.Namespace())
     elif choice == "0":
         return False
     else:
