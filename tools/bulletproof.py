@@ -530,7 +530,7 @@ ENV_FILE: Path | None = None
 COMPOSE_FILE: Path | None = None
 
 INSTANCE_NAME = ""
-RCLONE_REMOTE_NAME = ""
+RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")  # Initialize with default
 RCLONE_REMOTE_PATH = ""
 REMOTE = ""
 CRON_FULL_TIME = ""
