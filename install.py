@@ -191,15 +191,12 @@ def download_and_install_bulletproof() -> None:
             content = f.read()
         
         # Add the bulletproof module directory to sys.path before any imports
-        path_insert = '''import sys
-sys.path.insert(0, '/usr/local/lib/bulletproof')
-
-'''
-        
-        # Insert before the first import statement
         lines = content.split('\n')
-        insert_index = 0
         
+        # Check if 'import sys' already exists
+        has_sys_import = any('import sys' in line and line.strip().startswith('import sys') for line in lines)
+        
+        insert_index = 0
         # Find the first import statement
         for i, line in enumerate(lines):
             if line.strip().startswith('import ') or line.strip().startswith('from '):
@@ -207,7 +204,12 @@ sys.path.insert(0, '/usr/local/lib/bulletproof')
                 break
         
         # Insert the path modification before imports
-        lines.insert(insert_index, path_insert.rstrip())
+        if not has_sys_import:
+            lines.insert(insert_index, 'import sys')
+            insert_index += 1
+        
+        lines.insert(insert_index, "sys.path.insert(0, '/usr/local/lib/bulletproof')")
+        lines.insert(insert_index + 1, '')  # Empty line for spacing
         
         with open("/usr/local/bin/bulletproof", "w") as f:
             f.write('\n'.join(lines))
