@@ -432,8 +432,79 @@ def cmd_create_instance(args: argparse.Namespace) -> None:
         if restore_choice.startswith('y'):
             # Restore from backup
             say(f"Restoring instance '{name}' from backup...")
-            # TODO: Implement restore functionality
-            say("Restore functionality will be implemented here")
+            
+            # Get available snapshots
+            snapshots = fetch_snapshots_for(name)
+            if not snapshots:
+                warn(f"No snapshots found for instance '{name}'")
+                return
+            
+            # Show available snapshots and let user choose
+            say("Available snapshots:")
+            for i, (snap_name, mode, parent) in enumerate(snapshots, 1):
+                print(f"  {i}) {snap_name} ({mode})")
+            
+            latest_snap = snapshots[-1][0]  # Get latest snapshot name
+            snap_choice = _read(f"Choose snapshot [1-{len(snapshots)}] or press Enter for latest ({latest_snap}): ").strip()
+            
+            if snap_choice:
+                try:
+                    snap_index = int(snap_choice) - 1
+                    if 0 <= snap_index < len(snapshots):
+                        selected_snap = snapshots[snap_index][0]
+                    else:
+                        warn("Invalid selection, using latest snapshot")
+                        selected_snap = latest_snap
+                except ValueError:
+                    warn("Invalid input, using latest snapshot")
+                    selected_snap = latest_snap
+            else:
+                selected_snap = latest_snap
+            
+            # Set up paths and ensure directories exist
+            stack_dir = Path(f"/home/docker/{name}-setup")
+            data_dir = Path(f"/home/docker/{name}")
+            
+            # Create directories if they don't exist
+            stack_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Set up global environment variables for this restore operation
+            global STACK_DIR, DATA_ROOT, ENV_FILE, COMPOSE_FILE, REMOTE
+            
+            STACK_DIR = stack_dir
+            DATA_ROOT = data_dir
+            ENV_FILE = stack_dir / ".env"
+            COMPOSE_FILE = stack_dir / "docker-compose.yml"
+            
+            # Update environment variables
+            os.environ.update({
+                "INSTANCE_NAME": name,
+                "STACK_DIR": str(stack_dir),
+                "DATA_ROOT": str(data_dir),
+                "RCLONE_REMOTE_PATH": f"backups/paperless/{name}"
+            })
+            
+            # Re-initialize from updated environment
+            init_from_env()
+            
+            # Create argparse namespace for cmd_restore
+            restore_args = argparse.Namespace()
+            restore_args.snapshot = selected_snap
+            
+            # Perform the restore
+            say(f"Restoring snapshot '{selected_snap}'...")
+            try:
+                cmd_restore(restore_args)
+                ok(f"Instance '{name}' restored from backup!")
+            except Exception as e:
+                warn(f"Restore failed: {e}")
+                # Clean up any partially created files
+                import shutil
+                if stack_dir.exists():
+                    shutil.rmtree(stack_dir, ignore_errors=True)
+                if data_dir.exists():
+                    shutil.rmtree(data_dir, ignore_errors=True)
             return
     
     say("Creating new instance from scratch...")
