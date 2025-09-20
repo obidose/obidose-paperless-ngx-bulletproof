@@ -190,34 +190,24 @@ def download_and_install_bulletproof() -> None:
         with open("/usr/local/bin/bulletproof", "r") as f:
             content = f.read()
         
-        # Add the bulletproof module directory to sys.path at the beginning
-        import_insert = '''import sys
+        # Add the bulletproof module directory to sys.path before any imports
+        path_insert = '''import sys
 sys.path.insert(0, '/usr/local/lib/bulletproof')
 
 '''
         
-        # Insert after the shebang and docstring
+        # Insert before the first import statement
         lines = content.split('\n')
         insert_index = 0
+        
+        # Find the first import statement
         for i, line in enumerate(lines):
-            if line.strip().startswith('"""') and '"""' in line[line.find('"""') + 3:]:
-                # Single line docstring
-                insert_index = i + 1
-                break
-            elif line.strip().startswith('"""'):
-                # Multi-line docstring start, find the end
-                for j in range(i + 1, len(lines)):
-                    if '"""' in lines[j]:
-                        insert_index = j + 1
-                        break
-                break
-            elif line.strip() and not line.startswith('#'):
-                # First non-comment, non-empty line
+            if line.strip().startswith('import ') or line.strip().startswith('from '):
                 insert_index = i
                 break
         
-        # Insert the path modification
-        lines.insert(insert_index, import_insert.rstrip())
+        # Insert the path modification before imports
+        lines.insert(insert_index, path_insert.rstrip())
         
         with open("/usr/local/bin/bulletproof", "w") as f:
             f.write('\n'.join(lines))
