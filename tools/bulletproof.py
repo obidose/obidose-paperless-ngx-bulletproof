@@ -522,229 +522,302 @@ def cmd_doctor(_: argparse.Namespace) -> None:
     print_header("System Diagnostics")
     
     try:
-        # Basic environment check
-        say("Environment Configuration:")
-        print(f"- INSTANCE_NAME: {INSTANCE_NAME or 'Not set'}")
-        print(f"- STACK_DIR: {STACK_DIR or 'Not set'}")
-        print(f"- DATA_ROOT: {DATA_ROOT or 'Not set'}")
-        
-        if COMPOSE_FILE:
-            compose_status = "[ok]" if COMPOSE_FILE.exists() else "[missing]"
-            print(f"- COMPOSE_FILE: {COMPOSE_FILE} {compose_status}")
-        
-        if ENV_FILE:
-            env_status = "[ok]" if ENV_FILE.exists() else "[missing]"
-            print(f"- ENV_FILE: {ENV_FILE} {env_status}")
-        
-        print()
-        
-        # System dependencies check
-        say("System Dependencies:")
-        if run_stack_tests():
-            ok("All dependencies available")
-        else:
-            error("Some dependencies missing")
-        
-        print()
-        
-        # Detailed Docker container status
-        if INSTANCE_NAME and STACK_DIR:
-            say("Docker Container Status:")
-            try:
-                # Get detailed container info
-                result = subprocess.run(
-                    ["docker", "compose", "ps", "--format", "table"],
-                    cwd=STACK_DIR,
-                    capture_output=True,
-                    text=True
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    print(result.stdout)
-                    
-                    # Check individual container health
-                    health_result = subprocess.run(
-                        ["docker", "compose", "ps", "--format", "json"],
-                        cwd=STACK_DIR,
-                        capture_output=True,
-                        text=True
-                    )
-                    if health_result.returncode == 0:
-                        import json
-                        containers = []
-                        for line in health_result.stdout.strip().split('\n'):
-                            if line:
-                                containers.append(json.loads(line))
-                        
-                        print(f"\n{COLOR_BOLD}Container Health:{COLOR_OFF}")
-                        for container in containers:
-                            name = container.get('Service', 'unknown')
-                            state = container.get('State', 'unknown')
-                            health = container.get('Health', 'unknown')
-                            if state == 'running':
-                                status_icon = ICON_SUCCESS
-                                status_color = COLOR_GREEN
-                            else:
-                                status_icon = ICON_ERROR
-                                status_color = COLOR_RED
-                            print(f"  {status_icon} {name}: {status_color}{state}{COLOR_OFF} (health: {health})")
-                
-                else:
-                    warn("No containers found or not started")
-            except Exception as e:
-                warn(f"Could not check container status: {e}")
-        
-        print()
-        
-        # Network and port checks
+        # Check if we're in single-instance context or multi-instance context
         if ENV_FILE and ENV_FILE.exists():
-            say("Network & Port Status:")
-            try:
-                import socket
-                # Read ports from env file
-                with open(ENV_FILE, 'r') as f:
-                    env_content = f.read()
-                    
-                import re
-                http_port_match = re.search(r'HTTP_PORT=(\d+)', env_content)
-                https_port_match = re.search(r'HTTPS_PORT=(\d+)', env_content)
-                
-                # Check HTTP port
-                if http_port_match:
-                    port = int(http_port_match.group(1))
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(2)
-                    result = sock.connect_ex(('localhost', port))
-                    if result == 0:
-                        ok(f"HTTP Port {port}: Service responding")
-                        print(f"  → http://localhost:{port}")
-                    else:
-                        warn(f"HTTP Port {port}: No response")
-                    sock.close()
-                
-                # Check HTTPS port
-                if https_port_match:
-                    port = int(https_port_match.group(1))
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(2)
-                    result = sock.connect_ex(('localhost', port))
-                    if result == 0:
-                        ok(f"HTTPS Port {port}: Service responding")
-                        print(f"  → https://localhost:{port}")
-                    else:
-                        warn(f"HTTPS Port {port}: No response")
-                    sock.close()
-                
-                # Check domain configuration
-                domain_match = re.search(r'DOMAIN=([^\s]+)', env_content)
-                if domain_match:
-                    domain = domain_match.group(1)
-                    print(f"  Configured domain: {COLOR_BOLD}{domain}{COLOR_OFF}")
-                    
-                    # Try to resolve domain
-                    try:
-                        socket.gethostbyname(domain)
-                        ok(f"Domain {domain}: DNS resolves")
-                    except socket.gaierror:
-                        warn(f"Domain {domain}: DNS resolution failed")
-            except Exception as e:
-                warn(f"Could not check network status: {e}")
+            # Single instance context
+            _doctor_single_instance(ENV_FILE)
+        else:
+            # Multi-instance context - check all instances
+            instances = find_instances()
+            if not instances:
+                warn("No instances found on this system")
+                return
+            
+            say("Running diagnostics for all instances...")
+            print()
+            
+            for instance in instances:
+                say(f"=== Instance: {instance.name} ===")
+                _doctor_single_instance(instance.stack_dir / ".env")
+                print()
+        
+    except Exception as e:
+        error(f"System diagnostics failed: {e}")
+
+
+def _doctor_single_instance(env_file_path: Path) -> None:
+    """Run comprehensive diagnostics for a single instance."""
+    try:
+        if not env_file_path.exists():
+            error(f"No .env file found at {env_file_path}")
+            return
+        
+        with open(env_file_path, 'r') as f:
+            env_content = f.read()
+        
+        # Parse instance info from env file
+        instance_name = ""
+        domain = ""
+        data_root = ""
+        stack_dir = env_file_path.parent
+        
+        import re
+        for line in env_content.split('\n'):
+            if line.startswith('INSTANCE_NAME='):
+                instance_name = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('DOMAIN='):
+                domain = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('DATA_ROOT='):
+                data_root = line.split('=', 1)[1].strip('"\'')
+        
+        print(f"Instance: {COLOR_BOLD}{instance_name}{COLOR_OFF}")
+        print(f"Directory: {stack_dir}")
+        if domain:
+            print(f"Domain: {domain}")
+        print()
+        
+        # Environment Configuration
+        say("Environment Configuration:")
+        ok(f"Environment file found: {env_file_path}")
+        
+        # Check for required variables
+        required_vars = ['INSTANCE_NAME', 'SECRET_KEY', 'HTTP_PORT']
+        missing_vars = []
+        
+        for var in required_vars:
+            if f'{var}=' in env_content:
+                ok(f"Required variable '{var}': Present")
+            else:
+                missing_vars.append(var)
+                error(f"Required variable '{var}': Missing")
+        
+        if missing_vars:
+            warn(f"Missing {len(missing_vars)} required variables")
         
         print()
         
-        # SSL/TLS Certificate status
-        if ENV_FILE and ENV_FILE.exists() and STACK_DIR:
-            say("SSL/TLS Certificate Status:")
-            try:
-                with open(ENV_FILE, 'r') as f:
-                    env_content = f.read()
+        # System Dependencies
+        say("System Dependencies:")
+        try:
+            result = subprocess.run(["docker", "--version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                ok(f"Docker: {version}")
+            else:
+                error("Docker not found or not working")
+        except Exception:
+            error("Docker not found or not working")
+        
+        try:
+            result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                ok(f"Docker Compose: {version}")
+            else:
+                error("Docker Compose not found or not working")
+        except Exception:
+            error("Docker Compose not found or not working")
+        
+        print()
+        
+        # Docker Container Status
+        say("Docker Container Status:")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "ps", "--format", "json"],
+                cwd=stack_dir,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                containers = []
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        containers.append(json.loads(line))
                 
-                # Check if Traefik is configured
-                if 'traefik' in env_content.lower():
-                    print(f"  {ICON_INFO} Traefik configuration detected")
-                    
-                    # Check for certificate files
-                    cert_dir = Path(STACK_DIR) / "ssl"
-                    if cert_dir.exists():
-                        cert_files = list(cert_dir.glob("*.pem")) + list(cert_dir.glob("*.crt"))
-                        if cert_files:
-                            ok(f"SSL certificates found: {len(cert_files)} files")
-                            for cert in cert_files[:3]:  # Show first 3
-                                print(f"    → {cert.name}")
+                if containers:
+                    running_count = 0
+                    for container in containers:
+                        name = container.get('Service', 'unknown')
+                        state = container.get('State', 'unknown')
+                        health = container.get('Health', 'unknown')
+                        if state == 'running':
+                            ok(f"Container '{name}': Running (health: {health})")
+                            running_count += 1
                         else:
-                            warn("No SSL certificate files found")
-                    else:
-                        warn("SSL directory not found")
+                            error(f"Container '{name}': {state}")
                     
-                    # Check Let's Encrypt ACME data
-                    acme_file = Path(STACK_DIR) / "acme.json"
-                    if acme_file.exists():
-                        ok("Let's Encrypt ACME configuration found")
-                        try:
-                            import json
-                            with open(acme_file, 'r') as f:
-                                acme_data = json.load(f)
-                            if acme_data:
-                                print(f"    Configured for: {len(acme_data.get('accounts', {}))} ACME accounts")
-                        except:
-                            print("    ACME file exists but could not parse")
+                    if running_count == len(containers):
+                        ok(f"All {len(containers)} containers are running")
                     else:
-                        warn("Let's Encrypt ACME file not found")
+                        warn(f"Only {running_count}/{len(containers)} containers are running")
                 else:
-                    print(f"  {ICON_INFO} Direct HTTP configuration (no SSL)")
-            except Exception as e:
-                warn(f"Could not check SSL status: {e}")
+                    warn("No containers found for this instance")
+            else:
+                error("Could not check container status")
+                warn("   → Check if docker-compose.yml exists")
+        except Exception as e:
+            error(f"Container check failed: {e}")
         
         print()
         
-        # Storage and backup status
+        # Network & Port Status
+        say("Network & Port Status:")
+        import socket
+        
+        # Get ports from env
+        http_port = None
+        https_port = None
+        for line in env_content.split('\n'):
+            if line.startswith('HTTP_PORT='):
+                http_port = int(line.split('=', 1)[1].strip('"\''))
+            elif line.startswith('HTTPS_PORT='):
+                https_port = int(line.split('=', 1)[1].strip('"\''))
+        
+        if not http_port:
+            http_port = 8000  # Default port
+        
+        ports_to_check = [('HTTP', http_port)]
+        if https_port:
+            ports_to_check.append(('HTTPS', https_port))
+        
+        for port_type, port in ports_to_check:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            result = sock.connect_ex(('127.0.0.1', port))
+            if result == 0:
+                ok(f"{port_type} port {port}: Service responding")
+                print(f"  → http{'s' if port_type == 'HTTPS' else ''}://localhost:{port}")
+            else:
+                error(f"{port_type} port {port}: Not accessible")
+            sock.close()
+        
+        # Check domain configuration
+        if domain:
+            print(f"  Configured domain: {COLOR_BOLD}{domain}{COLOR_OFF}")
+            
+            # Try to resolve domain
+            try:
+                ip = socket.gethostbyname(domain)
+                ok(f"Domain {domain}: DNS resolves to {ip}")
+            except Exception:
+                warn(f"Domain {domain}: DNS resolution failed")
+        
+        print()
+        
+        # SSL/TLS Certificate Status
+        say("SSL/TLS Certificate Status:")
+        if 'traefik' in env_content.lower():
+            print(f"  {ICON_INFO} Traefik configuration detected")
+            
+            # Check for certificate files
+            cert_dir = Path(stack_dir) / "ssl"
+            if cert_dir.exists():
+                cert_files = list(cert_dir.glob("*.pem")) + list(cert_dir.glob("*.crt"))
+                if cert_files:
+                    ok(f"SSL certificates found: {len(cert_files)} files")
+                    for cert in cert_files[:3]:  # Show first 3
+                        print(f"    → {cert.name}")
+                else:
+                    warn("No SSL certificate files found")
+            else:
+                warn("SSL directory not found")
+            
+            # Check Let's Encrypt ACME data
+            acme_file = Path(stack_dir) / "acme.json"
+            if acme_file.exists():
+                ok("Let's Encrypt ACME configuration found")
+                try:
+                    import json
+                    with open(acme_file, 'r') as f:
+                        acme_data = json.load(f)
+                    if acme_data:
+                        print(f"    Configured for: {len(acme_data.get('accounts', {}))} ACME accounts")
+                except:
+                    print("    ACME file exists but could not parse")
+            else:
+                warn("Let's Encrypt ACME file not found")
+        else:
+            print(f"  {ICON_INFO} Direct HTTP configuration (no SSL)")
+        
+        print()
+        
+        # Storage & Backup Status
         say("Storage & Backup Status:")
         try:
-            if DATA_ROOT:
-                # Disk space check
-                result = subprocess.run(["df", "-h", str(DATA_ROOT)], capture_output=True, text=True)
-                if result.returncode == 0:
-                    lines = result.stdout.strip().split('\n')
-                    if len(lines) > 1:
-                        print(f"  Data directory usage: {lines[1]}")
-                
-                # Check backup directory
-                backup_dir = Path(DATA_ROOT) / "backups"
-                if backup_dir.exists():
-                    backup_files = list(backup_dir.glob("*.tar*"))
-                    ok(f"Backup directory found: {len(backup_files)} backup files")
-                    if backup_files:
-                        # Show newest backup
-                        newest = max(backup_files, key=lambda x: x.stat().st_mtime)
-                        import datetime
-                        mod_time = datetime.datetime.fromtimestamp(newest.stat().st_mtime)
-                        print(f"    Latest backup: {newest.name} ({mod_time.strftime('%Y-%m-%d %H:%M')})")
+            if data_root:
+                data_path = Path(data_root)
+                if data_path.exists():
+                    # Disk space check
+                    result = subprocess.run(["df", "-h", str(data_path)], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        lines = result.stdout.strip().split('\n')
+                        if len(lines) > 1:
+                            print(f"  Data directory usage: {lines[1]}")
+                    
+                    # Check backup directory
+                    backup_dir = data_path / "backups"
+                    if backup_dir.exists():
+                        backup_files = list(backup_dir.glob("*.tar*"))
+                        ok(f"Backup directory found: {len(backup_files)} backup files")
+                        if backup_files:
+                            # Show newest backup
+                            newest = max(backup_files, key=lambda x: x.stat().st_mtime)
+                            import datetime
+                            mod_time = datetime.datetime.fromtimestamp(newest.stat().st_mtime)
+                            print(f"    Latest backup: {newest.name} ({mod_time.strftime('%Y-%m-%d %H:%M')})")
+                    else:
+                        warn("Backup directory not found")
                 else:
-                    warn("Backup directory not found")
+                    warn(f"Data directory not found: {data_path}")
+            else:
+                warn("DATA_ROOT not configured")
         except Exception as e:
             warn(f"Could not check storage status: {e}")
         
         print()
         
-        # Internet connectivity check
-        say("External Connectivity:")
-        try:
-            import urllib.request
-            # Test basic internet connectivity
-            urllib.request.urlopen('https://www.google.com', timeout=5)
-            ok("Internet connectivity: Available")
+        # Internet connectivity check (only once for multi-instance)
+        if env_file_path == ENV_FILE:  # Only check for first instance
+            say("External Connectivity:")
+            try:
+                import urllib.request
+                # Test basic internet connectivity
+                urllib.request.urlopen('https://www.google.com', timeout=5)
+                ok("Internet connectivity: Available")
+                
+                # Test Docker Hub (for image pulls)
+                urllib.request.urlopen('https://hub.docker.com', timeout=5)
+                ok("Docker Hub connectivity: Available")
+                
+            except Exception as e:
+                warn(f"External connectivity limited: {e}")
             
-            # Test Docker Hub (for image pulls)
-            urllib.request.urlopen('https://hub.docker.com', timeout=5)
-            ok("Docker Hub connectivity: Available")
-            
-        except Exception as e:
-            warn(f"External connectivity limited: {e}")
+            print()
         
-        print()
-        ok("Comprehensive diagnostics completed!")
+        # Health Summary
+        say("Health Summary:")
+        
+        # Calculate health score
+        checks = [
+            env_file_path.exists(),  # Env file exists
+            len(missing_vars) == 0,  # All required vars present
+            # Add more checks here as needed
+        ]
+        
+        health_score = sum(checks) / len(checks) * 100
+        
+        if health_score >= 80:
+            ok(f"Instance health: {health_score:.0f}% - Good")
+        elif health_score >= 60:
+            warn(f"Instance health: {health_score:.0f}% - Needs attention")
+        else:
+            error(f"Instance health: {health_score:.0f}% - Critical issues")
         
     except Exception as e:
-        error(f"Diagnostics failed: {e}")
+        error(f"Instance diagnostics failed: {e}")
 
 
 def cmd_troubleshoot_connection(_: argparse.Namespace) -> None:
@@ -752,64 +825,103 @@ def cmd_troubleshoot_connection(_: argparse.Namespace) -> None:
     print_header("Connection Troubleshooting")
     
     try:
+        # Check if we're in single-instance context or multi-instance context
+        if ENV_FILE and ENV_FILE.exists():
+            # Single instance context
+            _troubleshoot_single_instance(ENV_FILE)
+        else:
+            # Multi-instance context - check all instances
+            instances = find_instances()
+            if not instances:
+                warn("No instances found on this system")
+                return
+            
+            say("Checking all instances for connection issues...")
+            print()
+            
+            for instance in instances:
+                say(f"=== Instance: {instance.name} ===")
+                _troubleshoot_single_instance(instance.stack_dir / ".env")
+                print()
+        
+    except Exception as e:
+        error(f"Connection troubleshooting failed: {e}")
+
+
+def _troubleshoot_single_instance(env_file_path: Path) -> None:
+    """Troubleshoot connection issues for a single instance."""
+    try:
         # Environment check
         say("Instance Configuration:")
-        if not ENV_FILE or not ENV_FILE.exists():
-            error("No .env file found")
+        if not env_file_path.exists():
+            error(f"No .env file found at {env_file_path}")
             return
         
-        with open(ENV_FILE, 'r') as f:
+        with open(env_file_path, 'r') as f:
             env_content = f.read()
         
-        import re
-        domain_match = re.search(r'DOMAIN=([^\s]+)', env_content)
-        http_port_match = re.search(r'HTTP_PORT=(\d+)', env_content)
-        https_port_match = re.search(r'HTTPS_PORT=(\d+)', env_content)
+        # Parse instance info from env file
+        instance_name = ""
+        domain = ""
+        http_port = ""
+        https_port = ""
+        stack_dir = env_file_path.parent
         
-        if domain_match:
-            domain = domain_match.group(1)
+        import re
+        for line in env_content.split('\n'):
+            if line.startswith('INSTANCE_NAME='):
+                instance_name = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('DOMAIN='):
+                domain = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('HTTP_PORT='):
+                http_port = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('HTTPS_PORT='):
+                https_port = line.split('=', 1)[1].strip('"\'')
+        
+        if domain:
+            print(f"  Instance: {COLOR_BOLD}{instance_name}{COLOR_OFF}")
             print(f"  Configured domain: {COLOR_BOLD}{domain}{COLOR_OFF}")
         else:
-            warn("No domain configured")
-            return
+            print(f"  Instance: {COLOR_BOLD}{instance_name}{COLOR_OFF}")
+            warn("No domain configured - using local ports only")
         
-        # Check DNS resolution
-        say("DNS Resolution:")
-        try:
-            import socket
-            ip = socket.gethostbyname(domain)
-            ok(f"Domain resolves to: {ip}")
-            
-            # Check if it's a Cloudflare IP (common ranges)
-            cloudflare_ranges = ['104.16.', '104.17.', '104.18.', '104.19.', '104.20.', '104.21.', '104.22.', '104.23.', '104.24.', '104.25.', '104.26.', '104.27.', '104.28.', '104.29.', '104.30.', '104.31.', '172.64.', '172.65.', '172.66.', '172.67.']
-            if any(ip.startswith(prefix) for prefix in cloudflare_ranges):
-                ok("Domain appears to be behind Cloudflare")
-            else:
-                warn("Domain may not be using Cloudflare")
-        except socket.gaierror as e:
-            error(f"DNS resolution failed: {e}")
-            return
+        # Check DNS resolution if domain exists
+        if domain:
+            say("DNS Resolution:")
+            try:
+                import socket
+                ip = socket.gethostbyname(domain)
+                ok(f"Domain resolves to: {ip}")
+                
+                # Check if it's a Cloudflare IP (common ranges)
+                cloudflare_ranges = ['104.16.', '104.17.', '104.18.', '104.19.', '104.20.', '104.21.', '104.22.', '104.23.', '104.24.', '104.25.', '104.26.', '104.27.', '104.28.', '104.29.', '104.30.', '104.31.', '172.64.', '172.65.', '172.66.', '172.67.']
+                if any(ip.startswith(prefix) for prefix in cloudflare_ranges):
+                    ok("Domain appears to be behind Cloudflare")
+                else:
+                    warn("Domain may not be using Cloudflare")
+            except Exception as e:
+                error(f"DNS resolution failed: {e}")
         
         print()
         
         # Check local container status
         say("Local Container Health:")
-        if STACK_DIR:
-            try:
-                result = subprocess.run(
-                    ["docker", "compose", "ps", "--format", "json"],
-                    cwd=STACK_DIR,
-                    capture_output=True,
-                    text=True
-                )
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "ps", "--format", "json"],
+                cwd=stack_dir,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                containers = []
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        containers.append(json.loads(line))
                 
-                if result.returncode == 0:
-                    import json
-                    containers = []
-                    for line in result.stdout.strip().split('\n'):
-                        if line:
-                            containers.append(json.loads(line))
-                    
+                if containers:
                     for container in containers:
                         name = container.get('Service', 'unknown')
                         state = container.get('State', 'unknown')
@@ -819,9 +931,12 @@ def cmd_troubleshoot_connection(_: argparse.Namespace) -> None:
                             error(f"Container '{name}': {state}")
                             warn("   → Try: docker compose up -d")
                 else:
-                    error("Could not check container status")
-            except Exception as e:
-                error(f"Container check failed: {e}")
+                    warn("No containers found for this instance")
+            else:
+                error("Could not check container status")
+                warn(f"   → Check if docker-compose.yml exists in {stack_dir}")
+        except Exception as e:
+            error(f"Container check failed: {e}")
         
         print()
         
@@ -829,126 +944,74 @@ def cmd_troubleshoot_connection(_: argparse.Namespace) -> None:
         say("Local Port Accessibility:")
         import socket
         
-        if http_port_match:
-            port = int(http_port_match.group(1))
+        # Default ports if not specified
+        test_ports = []
+        if http_port:
+            test_ports.append(('HTTP', int(http_port)))
+        else:
+            test_ports.append(('HTTP', 8000))  # Default HTTP port
+        
+        if https_port:
+            test_ports.append(('HTTPS', int(https_port)))
+        
+        for port_type, port in test_ports:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(3)
             result = sock.connect_ex(('127.0.0.1', port))
             if result == 0:
-                ok(f"HTTP port {port}: Locally accessible")
+                ok(f"{port_type} port {port}: Locally accessible")
                 
                 # Try to make an HTTP request
-                try:
-                    import urllib.request
-                    response = urllib.request.urlopen(f'http://127.0.0.1:{port}', timeout=5)
-                    if response.code == 200:
-                        ok(f"HTTP service: Responding correctly")
-                    else:
-                        warn(f"HTTP service: Returned status {response.code}")
-                except Exception as e:
-                    warn(f"HTTP service: Not responding ({e})")
+                if port_type == 'HTTP':
+                    try:
+                        import urllib.request
+                        response = urllib.request.urlopen(f'http://127.0.0.1:{port}', timeout=5)
+                        if response.code == 200:
+                            ok(f"HTTP service: Responding correctly")
+                        else:
+                            warn(f"HTTP service: Returned status {response.code}")
+                    except Exception as e:
+                        warn(f"HTTP service: Not responding ({e})")
             else:
-                error(f"HTTP port {port}: Not accessible locally")
+                error(f"{port_type} port {port}: Not accessible locally")
                 warn("   → Check if containers are running")
                 warn("   → Check port binding in docker-compose.yml")
             sock.close()
         
-        if https_port_match:
-            port = int(https_port_match.group(1))
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
-            result = sock.connect_ex(('127.0.0.1', port))
-            if result == 0:
-                ok(f"HTTPS port {port}: Locally accessible")
-            else:
-                error(f"HTTPS port {port}: Not accessible locally")
-            sock.close()
-        
         print()
         
-        # Check SSL/TLS configuration
-        say("SSL/TLS Configuration:")
-        if 'traefik' in env_content.lower():
-            print(f"  {ICON_INFO} Using Traefik for SSL termination")
-            
-            # Check Traefik configuration
-            if STACK_DIR:
-                traefik_config = Path(STACK_DIR) / "traefik"
-                if traefik_config.exists():
-                    ok("Traefik configuration directory found")
-                    
-                    # Check for dynamic config
-                    dynamic_config = traefik_config / "dynamic"
-                    if dynamic_config.exists():
-                        config_files = list(dynamic_config.glob("*.yml")) + list(dynamic_config.glob("*.yaml"))
-                        if config_files:
-                            ok(f"Dynamic configuration files: {len(config_files)}")
-                        else:
-                            warn("No dynamic configuration files found")
-                    
-                    # Check ACME certificates
-                    acme_file = Path(STACK_DIR) / "acme.json"
-                    if acme_file.exists():
-                        ok("ACME certificate file found")
-                        
-                        # Check file permissions
-                        import stat
-                        permissions = oct(acme_file.stat().st_mode)[-3:]
-                        if permissions == "600":
-                            ok("ACME file permissions: Correct (600)")
-                        else:
-                            warn(f"ACME file permissions: {permissions} (should be 600)")
-                            warn("   → Run: chmod 600 acme.json")
-                    else:
-                        warn("ACME certificate file not found")
-                        warn("   → Certificates may still be generating")
-                else:
-                    error("Traefik configuration directory not found")
-        else:
-            print(f"  {ICON_INFO} Using direct HTTP (no SSL)")
-        
-        print()
-        
-        # Cloudflare-specific diagnostics
-        say("Cloudflare 521 Error Diagnostics:")
-        print("  Common causes of Cloudflare 521 errors:")
-        print("  1. Origin server (your server) is down")
-        print("  2. Origin server is not listening on the expected port")
-        print("  3. Firewall blocking Cloudflare IPs")
-        print("  4. SSL/TLS mismatch between Cloudflare and origin")
-        print()
-        
-        # Check if server can be reached externally
-        say("External Accessibility Check:")
-        try:
-            # Try to connect to the domain directly
-            import urllib.request
-            req = urllib.request.Request(f'https://{domain}')
-            req.add_header('User-Agent', 'Connection-Test/1.0')
-            
+        # External accessibility check for domain
+        if domain:
+            say("External Accessibility Check:")
             try:
-                response = urllib.request.urlopen(req, timeout=10)
-                ok(f"External HTTPS connection successful (status: {response.code})")
-            except urllib.error.HTTPError as e:
-                if e.code == 521:
-                    error("Confirmed: Cloudflare 521 error detected")
-                    print("  Troubleshooting steps:")
-                    print("  1. Verify containers are running locally")
-                    print("  2. Check local port accessibility")
-                    print("  3. Verify firewall allows Cloudflare IPs")
-                    print("  4. Check SSL/TLS configuration")
-                    print("  5. Review Cloudflare SSL/TLS settings")
-                else:
-                    warn(f"External connection returned HTTP {e.code}")
+                # Try to connect to the domain directly
+                import urllib.request
+                import urllib.error
+                req = urllib.request.Request(f'https://{domain}')
+                req.add_header('User-Agent', 'Connection-Test/1.0')
+                
+                try:
+                    response = urllib.request.urlopen(req, timeout=10)
+                    ok(f"External HTTPS connection successful (status: {response.code})")
+                except urllib.error.HTTPError as e:
+                    if e.code == 521:
+                        error("Confirmed: Cloudflare 521 error detected")
+                        print("  Troubleshooting steps:")
+                        print("  1. Verify containers are running locally")
+                        print("  2. Check local port accessibility")
+                        print("  3. Verify firewall allows Cloudflare IPs")
+                        print("  4. Check SSL/TLS configuration")
+                        print("  5. Review Cloudflare SSL/TLS settings")
+                    else:
+                        warn(f"External connection returned HTTP {e.code}")
+                except Exception as e:
+                    warn(f"External connection failed: {e}")
+                    print("  This could indicate network connectivity issues")
             except Exception as e:
-                warn(f"External connection failed: {e}")
-                print("  This could indicate network connectivity issues")
-        except Exception as e:
-            warn(f"External accessibility check failed: {e}")
-        
-        print()
+                warn(f"External accessibility check failed: {e}")
         
         # Additional troubleshooting tips
+        print()
         say("Additional Troubleshooting Tips:")
         print("  For Cloudflare 521 errors:")
         print("  • Ensure origin server is accessible on configured ports")
@@ -958,11 +1021,8 @@ def cmd_troubleshoot_connection(_: argparse.Namespace) -> None:
         print("  • Check server firewall allows Cloudflare IP ranges")
         print("  • Monitor container logs for errors")
         
-        print()
-        ok("Connection troubleshooting completed!")
-        
     except Exception as e:
-        error(f"Connection troubleshooting failed: {e}")
+        error(f"Instance troubleshooting failed: {e}")
 
 
 def cmd_schedule(args: argparse.Namespace) -> None:

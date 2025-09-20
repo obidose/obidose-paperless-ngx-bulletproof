@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import subprocess
+import shutil
 import time
 from pathlib import Path
 from datetime import datetime
@@ -260,71 +261,90 @@ def main() -> None:
         mode = "full"
     snap = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{mode}"
     work = Path(tempfile.mkdtemp(prefix="paperless-backup."))
-    if mode == "incr" and parent:
+    
+    try:
+        if mode == "incr" and parent:
+            subprocess.run(
+                ["rclone", "copy", f"{REMOTE}/{parent}", str(work), "--include", "*.snar"],
+                check=False,
+            )
+        say(f"Creating {mode} snapshot {snap}")
+
+        dump_db(work)
+        tar_mode = "full" if mode in {"full", "archive"} else "incr"
+        tar_dir(DIR_MEDIA, "media", work, tar_mode)
+        tar_dir(DIR_DATA, "data", work, tar_mode)
+        tar_dir(DIR_EXPORT, "export", work, tar_mode)
+
+        # Backup instance configuration files
+        if ENV_FILE.exists():
+            (work / ".env").write_text(ENV_FILE.read_text())
+        else:
+            warn(f"No .env found at {ENV_FILE}")
+
+        if COMPOSE_FILE.exists():
+            shutil_path = work / "compose.snapshot.yml"
+            shutil_path.write_text(COMPOSE_FILE.read_text())
+        else:
+            warn(f"No docker-compose.yml found at {COMPOSE_FILE}")
+
+        # Backup additional configuration files if they exist
+        stack_dir = COMPOSE_FILE.parent if COMPOSE_FILE else Path.cwd()
+        additional_configs = [
+            ("init.sh", "init.sh"),
+            ("maintenance.sh", "maintenance.sh"),
+            ("backup.py", "backup.py"),
+            ("paperless.conf", "paperless.conf")
+        ]
+        
+        for source_name, backup_name in additional_configs:
+            config_file = stack_dir / source_name
+            if config_file.exists():
+                (work / backup_name).write_text(config_file.read_text())
+                say(f"Backed up {source_name}")
+
+        manifest_lines = [f"mode: {mode}", f"created: {datetime.utcnow().isoformat()}"]
+        if mode == "incr" and parent:
+            manifest_lines.append(f"parent: {parent}")
+        (work / "manifest.yaml").write_text("\n".join(manifest_lines) + "\n")
+
+        passed = verify_archives(work) and test_db_restore(work)
+        status = "status.ok" if passed else "status.fail"
+        (work / status).write_text(datetime.utcnow().isoformat() + "\n")
+        if passed:
+            ok("Integrity checks passed")
+        else:
+            warn("Integrity checks failed")
+
+        dest_root = ARCHIVE_REMOTE if mode == "archive" else REMOTE
+        dest = f"{dest_root}/{snap}"
+        say(f"Uploading to {dest}")
         subprocess.run(
-            ["rclone", "copy", f"{REMOTE}/{parent}", str(work), "--include", "*.snar"],
-            check=False,
+            [
+                "rclone",
+                "copy",
+                str(work),
+                dest,
+                "--checksum",
+                "--transfers",
+                "4",
+                "--checkers",
+                "8",
+                "--fast-list",
+            ],
+            check=True,
         )
-    say(f"Creating {mode} snapshot {snap}")
 
-    dump_db(work)
-    tar_mode = "full" if mode in {"full", "archive"} else "incr"
-    tar_dir(DIR_MEDIA, "media", work, tar_mode)
-    tar_dir(DIR_DATA, "data", work, tar_mode)
-    tar_dir(DIR_EXPORT, "export", work, tar_mode)
+        if mode != "archive":
+            prune_snapshots(KEEP_FULLS, KEEP_INCS)
 
-    if ENV_FILE.exists():
-        (work / ".env").write_text(ENV_FILE.read_text())
-    else:
-        warn(f"No .env found at {ENV_FILE}")
-
-    if COMPOSE_FILE.exists():
-        shutil_path = work / "compose.snapshot.yml"
-        shutil_path.write_text(COMPOSE_FILE.read_text())
-
-    manifest_lines = [f"mode: {mode}", f"created: {datetime.utcnow().isoformat()}"]
-    if mode == "incr" and parent:
-        manifest_lines.append(f"parent: {parent}")
-    (work / "manifest.yaml").write_text("\n".join(manifest_lines) + "\n")
-
-    passed = verify_archives(work) and test_db_restore(work)
-    status = "status.ok" if passed else "status.fail"
-    (work / status).write_text(datetime.utcnow().isoformat() + "\n")
-    if passed:
-        ok("Integrity checks passed")
-    else:
-        warn("Integrity checks failed")
-
-    dest_root = ARCHIVE_REMOTE if mode == "archive" else REMOTE
-    dest = f"{dest_root}/{snap}"
-    say(f"Uploading to {dest}")
-    subprocess.run(
-        [
-            "rclone",
-            "copy",
-            str(work),
-            dest,
-            "--checksum",
-            "--transfers",
-            "4",
-            "--checkers",
-            "8",
-            "--fast-list",
-        ],
-        check=True,
-    )
-
-    if mode != "archive":
-        prune_snapshots(KEEP_FULLS, KEEP_INCS)
-
-    ok("Backup completed")
+        ok("Backup completed")
+        
+    finally:
+        # Clean up temporary working directory
+        if work.exists():
+            shutil.rmtree(work)
 
 
 if __name__ == "__main__":
-    import shutil
-
-    try:
-        main()
-    finally:
-        if 'work' in locals() and Path(work).exists():
-            shutil.rmtree(work)
+    main()
