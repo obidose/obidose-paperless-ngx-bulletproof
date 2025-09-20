@@ -1,5 +1,18 @@
 # Paperless‑ngx Bulletproof Installer
 
+A backup-centric, "batteries‑included" setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
+- Docker + Docker Compose
+- Optional **Traefik** reverse proxy + Let's Encrypt (HTTPS)
+- **pCloud** off‑site backup storage (OAuth, region auto‑detect)
+- Easy **backup / restore / safe upgrades / status** via the `bulletproof` CLI
+- Cron‑based nightly snapshots with retention
+
+> Designed for backup reliability: all operations center around secure pCloud backup storage with automated snapshots and easy restoration.
+
+---
+
+## Bulletproof CLIrless‑ngx Bulletproof Installer
+
 A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
 - Docker + Docker Compose
 - Optional **Traefik** reverse proxy + Let’s Encrypt (HTTPS)
@@ -132,11 +145,11 @@ On a fresh Ubuntu 22.04/24.04 host, the installer will:
 3. **Launch bulletproof** for all setup and management
 
 The **bulletproof** CLI then handles:
-- **pCloud setup** using OAuth token (recommended) or WebDAV
+- **pCloud setup** using OAuth token (recommended) or WebDAV - **required for all operations**
 - **Checking for existing backups** in your pCloud storage
-- **Instance creation** with guided configuration
-- **Backup and restore operations**
-- **Multi-instance management**
+- **Instance creation** with guided configuration and automatic backup setup
+- **Backup and restore operations** - the core functionality
+- **Multi-instance management** with independent backup chains
 
 ### Subsequent Runs
 
@@ -147,10 +160,15 @@ bulletproof
 
 This launches the enhanced CLI interface that provides:
 - **Multi-instance dashboard** showing all your Paperless-ngx instances
-- **pCloud setup** (if not already configured)
+- **Smart pCloud setup** - prominently offered when not configured, with clear status indicators
 - **Instance creation** wizard for new setups
 - **Backup exploration** to restore from existing backups
 - **Complete management** of all instances
+
+When you first run `bulletproof` after installation, if pCloud isn't set up yet, you'll see:
+- Clear status showing "pCloud setup required" 
+- "Set up pCloud" as the primary option
+- Alternative options that explain pCloud requirements
 
 ### Enhanced CLI Interface
 

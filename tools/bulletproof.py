@@ -787,33 +787,75 @@ def multi_main() -> None:
         
         if not insts:
             print_header("Paperless-ngx Instances", "No instances found")
-            options = [
-                ("1", "Add instance"),
-                ("2", "Explore backups"),
-                ("0", "Quit")
-            ]
+            
+            # Check pCloud status and add appropriate options
+            pcloud_ok = _pcloud_remote_ok()
+            if pcloud_ok:
+                pcloud_status = f"{COLOR_GREEN}✓{COLOR_OFF} pCloud configured"
+                options = [
+                    ("1", "Add instance"),
+                    ("2", "Explore backups"),
+                    ("3", "Reconfigure pCloud"),
+                    ("0", "Quit")
+                ]
+                choice_range = "[1-3, 0]"
+            else:
+                pcloud_status = f"{COLOR_YELLOW}!{COLOR_OFF} pCloud setup required for all backup operations"
+                options = [
+                    ("1", "Set up pCloud"),
+                    ("2", "Add instance (requires pCloud)"),
+                    ("3", "Explore backups (requires pCloud)"),
+                    ("0", "Quit")
+                ]
+                choice_range = "[1-3, 0]"
+            
+            print(f"\n{COLOR_GRAY}Status:{COLOR_OFF} {pcloud_status}")
             print_menu_options(options)
             
             try:
-                choice = _read(f"{COLOR_WHITE}Select action{COLOR_OFF} {COLOR_GRAY}[1-2, 0]{COLOR_OFF}: ").strip()
+                choice = _read(f"{COLOR_WHITE}Select action{COLOR_OFF} {COLOR_GRAY}{choice_range}{COLOR_OFF}: ").strip()
             except EOFError:
                 print()
                 return
-            if choice == "1":
-                # Check if pCloud is set up first  
-                if not _pcloud_remote_ok():
-                    say("pCloud setup required for backup functionality.")
-                    if not setup_pcloud_remote():
-                        warn("Cannot create instance without pCloud setup.")
-                        continue
                 
-                cmd_create_instance(argparse.Namespace())
-            elif choice == "2":
-                explore_backups()
-            elif choice == "0":
-                break
+            if not pcloud_ok:
+                # When pCloud is not set up
+                if choice == "1":
+                    if setup_pcloud_remote():
+                        say("pCloud setup completed successfully!")
+                    else:
+                        warn("pCloud setup failed.")
+                elif choice == "2":
+                    say("pCloud setup required for backup functionality.")
+                    if setup_pcloud_remote():
+                        cmd_create_instance(argparse.Namespace())
+                    else:
+                        warn("Cannot create instance without pCloud setup.")
+                elif choice == "3":
+                    say("pCloud setup required to explore backups.")
+                    if setup_pcloud_remote():
+                        explore_backups()
+                    else:
+                        warn("Cannot explore backups without pCloud setup.")
+                elif choice == "0":
+                    break
+                else:
+                    warn("Invalid choice")
             else:
-                warn("Invalid choice")
+                # When pCloud is already set up
+                if choice == "1":
+                    cmd_create_instance(argparse.Namespace())
+                elif choice == "2":
+                    explore_backups()
+                elif choice == "3":
+                    if setup_pcloud_remote():
+                        say("pCloud reconfigured successfully!")
+                    else:
+                        warn("pCloud reconfiguration failed.")
+                elif choice == "0":
+                    break
+                else:
+                    warn("Invalid choice")
             continue
         
         # Display instances table
@@ -1025,6 +1067,10 @@ def verify_snapshot(source: str, snap: str) -> None:
 
 
 def explore_backups() -> None:
+    if not _pcloud_remote_ok():
+        warn("pCloud not configured. Use 'bulletproof setup-pcloud' first.")
+        return
+        
     rem_insts = list_remote_instances()
     if not rem_insts:
         warn("No backups found on remote")
