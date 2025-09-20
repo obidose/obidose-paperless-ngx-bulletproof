@@ -109,7 +109,23 @@ class Instance:
     def schedule_desc(self) -> str:
         """Get human-readable backup schedule description."""
         full_time = self.env.get("CRON_FULL_TIME", "")
-        return _cron_desc(full_time)
+        incr_time = self.env.get("CRON_INCR_TIME", "")
+        archive_time = self.env.get("CRON_ARCHIVE_TIME", "")
+        
+        schedules = []
+        if full_time and full_time.strip():
+            schedules.append(f"Full: {_cron_desc(full_time)}")
+        if incr_time and incr_time.strip():
+            schedules.append(f"Incr: {_cron_desc(incr_time)}")
+        if archive_time and archive_time.strip():
+            schedules.append(f"Arch: {_cron_desc(archive_time)}")
+        
+        if not schedules:
+            return "No backups configured"
+        elif len(schedules) == 1:
+            return schedules[0]
+        else:
+            return " | ".join(schedules)
     
     def env_for_subprocess(self) -> dict[str, str]:
         """Get environment variables for subprocess execution."""

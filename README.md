@@ -1,8 +1,6 @@
-# Paperless‑ngx Bulletproof# Paperless‑ngx Bulletproof Installer
+# Paperless-ngx Bulletproof
 
-
-
-A modern, modular, backup-centric management system for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:A backup-centric, "batteries‑included" setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
+A modern, backup-centric management system for **Paperless-ngx** with multi-instance support, comprehensive backup automation, and enhanced diagnostics.
 
 - Docker + Docker Compose
 

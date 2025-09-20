@@ -62,7 +62,16 @@ ICON_BULLET = f"{COLOR_CYAN}•{COLOR_OFF}"
 
 def print_header(title: str, subtitle: str = "") -> None:
     """Print a styled header with optional subtitle."""
-    width = 60
+    # Calculate width based on content, with minimum and maximum limits
+    title_len = len(title)
+    subtitle_len = len(subtitle) if subtitle else 0
+    content_width = max(title_len, subtitle_len)
+    
+    # Add padding and ensure minimum width
+    min_width = 58
+    max_width = 80
+    width = max(min_width, min(max_width, content_width + 4))
+    
     print()
     print(f"{COLOR_CYAN}╔{'═' * (width-2)}╗{COLOR_OFF}")
     print(f"{COLOR_CYAN}║{COLOR_OFF} {COLOR_BOLD}{title.center(width-2)}{COLOR_OFF} {COLOR_CYAN}║{COLOR_OFF}")
