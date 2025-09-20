@@ -264,7 +264,8 @@ The installer sets up a complete Paperless-ngx environment:
 └── {instance-name}-setup/     # Stack directory
     ├── docker-compose.yml     # Container definitions
     ├── .env                   # Environment configuration
-    └── backup.py              # Instance backup script
+    ├── init.sh                # Initialization script
+    └── maintenance.sh         # Maintenance utilities
 ```
 
 ### Cloud Storage

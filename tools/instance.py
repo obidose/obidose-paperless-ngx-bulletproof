@@ -569,8 +569,7 @@ services:
 
 networks:
   paperless:
-    external: true
-    name: traefik_default
+    name: paperless_net_{name}
 """
         else:
             # Direct HTTP version with health checks and proper dependencies
