@@ -187,13 +187,12 @@ def download_and_install_bulletproof() -> None:
             os.chmod(dest_path, chmod_mode)
         
         # Update the main bulletproof script to add the module directory to Python path
+        say("Configuring module imports...")
         with open("/usr/local/bin/bulletproof", "r") as f:
             content = f.read()
         
-        # Add the bulletproof module directory to sys.path after importing sys
-        lines = content.split('\n')
-        
         # Find where 'import sys' is located
+        lines = content.split('\n')
         sys_import_line = -1
         for i, line in enumerate(lines):
             if line.strip() == 'import sys':
@@ -203,22 +202,27 @@ def download_and_install_bulletproof() -> None:
         if sys_import_line >= 0:
             # Insert after the existing 'import sys' line
             insert_index = sys_import_line + 1
+            lines.insert(insert_index, "sys.path.insert(0, '/usr/local/lib/bulletproof')")
+            lines.insert(insert_index + 1, '')  # Empty line for spacing
+            
+            with open("/usr/local/bin/bulletproof", "w") as f:
+                f.write('\n'.join(lines))
+            
+            # Verify the modification worked
+            with open("/usr/local/bin/bulletproof", "r") as f:
+                final_content = f.read()
+            
+            if "sys.path.insert(0, '/usr/local/lib/bulletproof')" in final_content:
+                ok("Module path configured successfully")
+            else:
+                die("Failed to configure module path")
+                
+            if "_safely_delete_instance" in final_content:
+                ok("Enhanced instance management functions available")
+            else:
+                die("Enhanced functions missing - installation incomplete")
         else:
-            # If no 'import sys' found, find first import and add both
-            insert_index = 0
-            for i, line in enumerate(lines):
-                if line.strip().startswith('import ') or line.strip().startswith('from '):
-                    insert_index = i
-                    break
-            lines.insert(insert_index, 'import sys')
-            insert_index += 1
-        
-        # Insert the path modification after sys is imported
-        lines.insert(insert_index, "sys.path.insert(0, '/usr/local/lib/bulletproof')")
-        lines.insert(insert_index + 1, '')  # Empty line for spacing
-        
-        with open("/usr/local/bin/bulletproof", "w") as f:
-            f.write('\n'.join(lines))
+            die("Could not find 'import sys' line in bulletproof script")
         
         ok("bulletproof CLI installed to /usr/local/bin/bulletproof")
         ok(f"Supporting modules installed to {bulletproof_dir}")
