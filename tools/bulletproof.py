@@ -163,9 +163,14 @@ def _pcloud_remote_ok() -> bool:
     return _timeout(10, ["rclone", "about", f"{RCLONE_REMOTE_NAME}:"])
 
 
-def _pcloud_create_oauth_remote(token_json: str, host: str) -> None:
-    subprocess.run(["rclone", "config", "delete", RCLONE_REMOTE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(
+def _pcloud_create_oauth_remote(token_json: str, host: str) -> bool:
+    """Create pCloud OAuth remote and return success status."""
+    # Clean up existing remote
+    subprocess.run(["rclone", "config", "delete", RCLONE_REMOTE_NAME], 
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Create new remote with error capture
+    result = subprocess.run(
         [
             "rclone",
             "config",
@@ -178,10 +183,16 @@ def _pcloud_create_oauth_remote(token_json: str, host: str) -> None:
             host,
             "--non-interactive",
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
         check=False,
     )
+    
+    if result.returncode != 0:
+        warn(f"rclone config create failed: {result.stderr.strip()}")
+        return False
+    
+    return True
 
 
 def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
@@ -195,11 +206,15 @@ def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
     
     for host, region_name in regions:
         say(f"Trying {region_name} region ({host})...")
-        _pcloud_create_oauth_remote(token_json, host)
+        
+        # Create remote and check if successful
+        if not _pcloud_create_oauth_remote(token_json, host):
+            warn(f"Failed to create remote config for {region_name}")
+            continue
         
         # Debug: Check if remote was created
         if not _pcloud_remote_exists():
-            warn(f"Failed to create remote for {region_name}")
+            warn(f"Remote config created but not detected for {region_name}")
             continue
             
         # Debug: Test connection with more detailed output
