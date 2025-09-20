@@ -390,6 +390,7 @@ def _handle_multi_instance_menu(insts) -> bool:
     
     # Multi-instance menu
     print_menu_options([
+        ("m", "Manage instances"),
         ("c", "Create new instance"),
         ("s", "Start all instances"),
         ("d", "Stop all instances"),
@@ -401,7 +402,14 @@ def _handle_multi_instance_menu(insts) -> bool:
     
     choice = _read("Choice: ").strip().lower()
     
-    if choice == "c":
+    # Handle empty input (Ctrl+C or EOF) as quit
+    if not choice:
+        return False
+    
+    # Handle menu actions
+    if choice == "m":
+        _handle_instance_selection_menu(insts)
+    elif choice == "c":
         cmd_create_instance(argparse.Namespace())
     elif choice == "s":
         start_all(insts)
@@ -423,20 +431,122 @@ def _handle_multi_instance_menu(insts) -> bool:
     return True
 
 
+def _handle_instance_selection_menu(insts) -> None:
+    """Handle instance selection submenu."""
+    while True:
+        print()
+        say("Select an instance to manage:")
+        print()
+        
+        # Show numbered list of instances
+        for i, inst in enumerate(insts):
+            status = inst.status()
+            status_icon = "●" if status == "Running" else "○"
+            print(f"  {i + 1} │ {status_icon} {inst.name} ({status})")
+        
+        print()
+        print_menu_options([
+            ("b", "Back to main menu")
+        ], "Instance Selection")
+        
+        choice = _read("Select instance (number) or action: ").strip()
+        
+        # Handle empty input as back
+        if not choice:
+            break
+            
+        if choice.lower() == "b":
+            break
+            
+        # Handle instance selection
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(insts):
+                _handle_single_instance_menu(insts[idx])
+            else:
+                warn("Invalid instance number")
+        else:
+            warn("Invalid choice")
+
+
+def _handle_single_instance_menu(instance: Instance) -> None:
+    """Handle single instance management menu."""
+    while True:
+        print()
+        say(f"Managing instance: {instance.name}")
+        status = instance.status()
+        print(f"Status: {status}")
+        print()
+        
+        # Build menu options based on current state
+        options = []
+        
+        if status == "Running":
+            options.append(("p", "Stop instance"))
+        else:
+            options.append(("s", "Start instance"))
+            
+        options.extend([
+            ("b", "Create backup now"),
+            ("r", "Restore from backup"),
+            ("h", "Change backup schedule"),
+            ("n", "Rename instance"),
+            ("d", "Delete instance"),
+            ("v", "View logs"),
+            ("x", "Back to instance list")
+        ])
+        
+        print_menu_options(options, f"Instance Management - {instance.name}")
+        
+        choice = _read("Choice: ").strip().lower()
+        
+        # Handle empty input as back
+        if not choice:
+            break
+            
+        if choice == "s" and status != "Running":
+            _safely_start_instance(instance)
+        elif choice == "p" and status == "Running":
+            _safely_stop_instance(instance)
+        elif choice == "b":
+            _safely_backup_instance(instance)
+        elif choice == "r":
+            _safely_restore_instance(instance)
+        elif choice == "h":
+            _change_backup_schedule(instance)
+        elif choice == "n":
+            _rename_instance(instance)
+        elif choice == "d":
+            if _safely_delete_instance(instance):
+                break  # Instance deleted, return to instance list
+        elif choice == "v":
+            _view_instance_logs(instance)
+        elif choice == "x":
+            break
+        else:
+            warn("Invalid choice")
+
+
 def multi_main() -> None:
     """Main function for multi-instance management."""
     print_header("Paperless-ngx Bulletproof", "Multi-Instance Management Dashboard")
     
-    while True:
-        insts = find_instances()
-        cleanup_orphans()
-        
-        if not insts:
-            if not _handle_no_instances():
-                break
-        else:
-            if not _handle_multi_instance_menu(insts):
-                break
+    # Run orphan cleanup only once at startup
+    cleanup_orphans()
+    
+    try:
+        while True:
+            insts = find_instances()
+            
+            if not insts:
+                if not _handle_no_instances():
+                    break
+            else:
+                if not _handle_multi_instance_menu(insts):
+                    break
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        sys.exit(0)
 
 
 def _get_current_instance_info() -> Optional[Instance]:
@@ -611,3 +721,316 @@ if __name__ == "__main__":
                 parser.print_help()
         else:
             args.func(args)
+
+
+# =============================================================================
+# Safe Instance Management Functions
+# =============================================================================
+
+def _safely_start_instance(instance: Instance) -> None:
+    """Safely start an instance."""
+    try:
+        say(f"Starting instance: {instance.name}")
+        up_instance(instance)
+        ok(f"Instance {instance.name} started successfully")
+    except Exception as e:
+        error(f"Failed to start instance {instance.name}: {e}")
+
+
+def _safely_stop_instance(instance: Instance) -> None:
+    """Safely stop an instance."""
+    try:
+        say(f"Stopping instance: {instance.name}")
+        down_instance(instance)
+        ok(f"Instance {instance.name} stopped successfully")
+    except Exception as e:
+        error(f"Failed to stop instance {instance.name}: {e}")
+
+
+def _safely_backup_instance(instance: Instance) -> None:
+    """Safely backup an instance."""
+    was_running = instance.status() == "Running"
+    
+    try:
+        if was_running:
+            say(f"Stopping {instance.name} for backup...")
+            down_instance(instance)
+        
+        say(f"Creating backup for {instance.name}...")
+        # Use the backup functionality from backup_restore module
+        from backup_restore import cmd_backup
+        import argparse
+        args = argparse.Namespace()
+        args.instance = instance.name
+        cmd_backup(args)
+        ok(f"Backup created for {instance.name}")
+        
+    except Exception as e:
+        error(f"Backup failed for {instance.name}: {e}")
+    finally:
+        if was_running:
+            try:
+                say(f"Restarting {instance.name}...")
+                up_instance(instance)
+                ok(f"Instance {instance.name} restarted")
+            except Exception as e:
+                error(f"Failed to restart {instance.name}: {e}")
+
+
+def _safely_restore_instance(instance: Instance) -> None:
+    """Safely restore an instance from backup."""
+    was_running = instance.status() == "Running"
+    
+    try:
+        # Show available backups using existing functionality
+        from backup_restore import fetch_snapshots_for
+        snapshots = fetch_snapshots_for(instance.name)
+        
+        if not snapshots:
+            warn(f"No backups found for {instance.name}")
+            return
+        
+        print()
+        say("Available backups:")
+        for i, (timestamp, size, snap_id) in enumerate(snapshots):
+            print(f"  {i + 1}. {timestamp} ({size}) - {snap_id}")
+        
+        choice = _read("Select backup number (or 'c' to cancel): ").strip()
+        
+        if choice.lower() == 'c' or not choice:
+            return
+            
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(snapshots):
+                timestamp, size, snap_id = snapshots[idx]
+                
+                # Confirm destructive action
+                if not _read(f"This will replace all data in {instance.name}. Continue? [y/N]: ").strip().lower().startswith('y'):
+                    say("Restore cancelled")
+                    return
+                
+                if was_running:
+                    say(f"Stopping {instance.name} for restore...")
+                    down_instance(instance)
+                
+                say(f"Restoring {instance.name} from {timestamp}...")
+                from backup_restore import cmd_restore
+                import argparse
+                args = argparse.Namespace()
+                args.instance = instance.name
+                args.snapshot = snap_id
+                cmd_restore(args)
+                ok(f"Instance {instance.name} restored from backup")
+                
+            else:
+                warn("Invalid backup number")
+        else:
+            warn("Invalid choice")
+            
+    except Exception as e:
+        error(f"Restore failed for {instance.name}: {e}")
+    finally:
+        if was_running:
+            try:
+                say(f"Restarting {instance.name}...")
+                up_instance(instance)
+                ok(f"Instance {instance.name} restarted")
+            except Exception as e:
+                error(f"Failed to restart {instance.name}: {e}")
+
+
+def _change_backup_schedule(instance: Instance) -> None:
+    """Change backup schedule for an instance."""
+    say(f"Current backup schedule for {instance.name}:")
+    
+    # Read current schedule from env file
+    env_file = instance.stack_dir / ".env"
+    schedule = "Not configured"
+    
+    if env_file.exists():
+        content = env_file.read_text()
+        for line in content.split('\n'):
+            if line.startswith('BACKUP_SCHEDULE='):
+                schedule = line.split('=', 1)[1].strip('"\'')
+                break
+    
+    print(f"  Current: {schedule}")
+    print()
+    
+    print("Schedule options:")
+    print("  1. Daily at 2:00 AM")
+    print("  2. Weekly on Sunday at 3:00 AM")
+    print("  3. Monthly on 1st at 4:00 AM")
+    print("  4. Custom cron expression")
+    print("  5. Disable backups")
+    
+    choice = _read("Select option (1-5): ").strip()
+    
+    schedules = {
+        "1": "0 2 * * *",
+        "2": "0 3 * * 0", 
+        "3": "0 4 1 * *",
+        "5": ""
+    }
+    
+    if choice in schedules:
+        new_schedule = schedules[choice]
+    elif choice == "4":
+        new_schedule = _read("Enter cron expression: ").strip()
+    else:
+        warn("Invalid choice")
+        return
+    
+    try:
+        # Update .env file
+        if env_file.exists():
+            content = env_file.read_text()
+            lines = content.split('\n')
+            updated = False
+            
+            for i, line in enumerate(lines):
+                if line.startswith('BACKUP_SCHEDULE='):
+                    lines[i] = f'BACKUP_SCHEDULE="{new_schedule}"'
+                    updated = True
+                    break
+            
+            if not updated:
+                lines.append(f'BACKUP_SCHEDULE="{new_schedule}"')
+            
+            env_file.write_text('\n'.join(lines))
+            
+            if new_schedule:
+                ok(f"Backup schedule updated to: {new_schedule}")
+            else:
+                ok("Backups disabled")
+        else:
+            warn("Environment file not found")
+            
+    except Exception as e:
+        error(f"Failed to update schedule: {e}")
+
+
+def _rename_instance(instance: Instance) -> None:
+    """Rename an instance."""
+    was_running = instance.status() == "Running"
+    current_name = instance.name
+    
+    new_name = _read(f"Enter new name for '{current_name}': ").strip()
+    
+    if not new_name:
+        return
+        
+    if new_name == current_name:
+        say("Name unchanged")
+        return
+    
+    # Check if new name already exists
+    existing_instances = [inst.name for inst in find_instances()]
+    if new_name in existing_instances:
+        error(f"Instance '{new_name}' already exists")
+        return
+    
+    try:
+        if was_running:
+            say(f"Stopping {current_name} for rename...")
+            down_instance(instance)
+        
+        say(f"Renaming {current_name} to {new_name}...")
+        
+        # Rename directories
+        docker_dir = Path("/home/docker")
+        old_stack_dir = docker_dir / f"{current_name}-setup"
+        new_stack_dir = docker_dir / f"{new_name}-setup"
+        old_data_dir = docker_dir / current_name
+        new_data_dir = docker_dir / new_name
+        
+        if old_stack_dir.exists():
+            old_stack_dir.rename(new_stack_dir)
+        if old_data_dir.exists():
+            old_data_dir.rename(new_data_dir)
+        
+        # Update .env file
+        env_file = new_stack_dir / ".env"
+        if env_file.exists():
+            content = env_file.read_text()
+            content = content.replace(f'INSTANCE_NAME="{current_name}"', f'INSTANCE_NAME="{new_name}"')
+            content = content.replace(f"INSTANCE_NAME={current_name}", f'INSTANCE_NAME="{new_name}"')
+            env_file.write_text(content)
+        
+        ok(f"Instance renamed from {current_name} to {new_name}")
+        
+        # Update the instance object
+        instance.name = new_name
+        instance.stack_dir = new_stack_dir
+        instance.data_dir = new_data_dir
+        
+    except Exception as e:
+        error(f"Failed to rename instance: {e}")
+    finally:
+        if was_running:
+            try:
+                say(f"Starting {new_name}...")
+                up_instance(instance)
+                ok(f"Instance {new_name} started")
+            except Exception as e:
+                error(f"Failed to start renamed instance: {e}")
+
+
+def _safely_delete_instance(instance: Instance) -> bool:
+    """Safely delete an instance. Returns True if deleted."""
+    say(f"WARNING: This will permanently delete instance '{instance.name}' and ALL its data!")
+    
+    if not _read("Type 'DELETE' to confirm: ").strip() == "DELETE":
+        say("Deletion cancelled")
+        return False
+    
+    try:
+        # Stop instance first
+        if instance.status() == "Running":
+            say(f"Stopping {instance.name}...")
+            down_instance(instance)
+        
+        say(f"Deleting {instance.name}...")
+        
+        # Remove directories
+        docker_dir = Path("/home/docker")
+        stack_dir = docker_dir / f"{instance.name}-setup"
+        data_dir = docker_dir / instance.name
+        
+        if stack_dir.exists():
+            subprocess.run(["rm", "-rf", str(stack_dir)], check=True)
+        if data_dir.exists():
+            subprocess.run(["rm", "-rf", str(data_dir)], check=True)
+        
+        ok(f"Instance {instance.name} deleted successfully")
+        return True
+        
+    except Exception as e:
+        error(f"Failed to delete instance: {e}")
+        return False
+
+
+def _view_instance_logs(instance: Instance) -> None:
+    """View logs for an instance."""
+    say(f"Viewing logs for {instance.name}...")
+    
+    try:
+        # Show recent logs
+        result = subprocess.run(
+            ["docker", "compose", "logs", "--tail=50"],
+            cwd=instance.stack_dir,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+            
+        _read("Press Enter to continue...")
+        
+    except Exception as e:
+        error(f"Failed to view logs: {e}")

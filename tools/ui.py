@@ -16,7 +16,8 @@ def _read(prompt: str) -> str:
         try:
             return input(prompt)
         except (EOFError, KeyboardInterrupt):
-            return ""
+            # Re-raise KeyboardInterrupt instead of returning empty string
+            raise KeyboardInterrupt
     
     # Fall back to direct TTY access for non-interactive environments
     try:
@@ -30,7 +31,8 @@ def _read(prompt: str) -> str:
             print(prompt, end="", flush=True)
             return input()
         except (EOFError, KeyboardInterrupt):
-            return ""
+            # Re-raise KeyboardInterrupt instead of returning empty string
+            raise KeyboardInterrupt
 
 
 # Enhanced color scheme and visual elements
