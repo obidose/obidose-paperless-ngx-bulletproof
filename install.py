@@ -247,6 +247,12 @@ def main() -> None:
         print("  1. Run 'bulletproof' to set up cloud storage and manage instances")
         print("  2. Use 'bulletproof --help' to see all available options")
         print()
+        
+        # Check if we're running in a pipe (like curl | python)
+        if not sys.stdin.isatty():
+            say("Installation completed via pipe - run 'bulletproof' manually to start")
+            return
+        
         say("Launching bulletproof now...")
         
         # Launch bulletproof
