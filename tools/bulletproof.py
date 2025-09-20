@@ -165,11 +165,14 @@ def _pcloud_remote_ok() -> bool:
 
 def _pcloud_create_oauth_remote(token_json: str, host: str) -> bool:
     """Create pCloud OAuth remote and return success status."""
-    # Clean up existing remote
+    # Clean up existing remote thoroughly
     subprocess.run(["rclone", "config", "delete", RCLONE_REMOTE_NAME], 
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
-    # Create new remote with error capture
+    # Create new remote with full non-interactive environment
+    env = os.environ.copy()
+    env['RCLONE_CONFIG_REFRESH_TOKEN'] = 'false'
+    
     result = subprocess.run(
         [
             "rclone",
@@ -186,22 +189,26 @@ def _pcloud_create_oauth_remote(token_json: str, host: str) -> bool:
         capture_output=True,
         text=True,
         check=False,
+        env=env,
+        input="false\n",  # Answer "no" to any prompts that slip through
     )
     
     if result.returncode != 0:
         warn(f"rclone config create failed: {result.stderr.strip()}")
+        if result.stdout.strip():
+            warn(f"rclone stdout: {result.stdout.strip()}")
         return False
     
     return True
 
 
 def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
-    say("Testing pCloud connection with both regions...")
+    say("Testing cloud storage connection with both regions...")
     
-    # Try to detect region preference based on token behavior
+    # Try Europe first as it's more common for OAuth issues
     regions = [
-        ("api.pcloud.com", "Global/US"),
-        ("eapi.pcloud.com", "Europe")
+        ("eapi.pcloud.com", "Europe"),
+        ("api.pcloud.com", "Global/US")
     ]
     
     for host, region_name in regions:
@@ -212,12 +219,16 @@ def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
             warn(f"Failed to create remote config for {region_name}")
             continue
         
-        # Debug: Check if remote was created
+        # Give rclone a moment to process the config
+        import time
+        time.sleep(1)
+        
+        # Check if remote was created and exists
         if not _pcloud_remote_exists():
             warn(f"Remote config created but not detected for {region_name}")
             continue
             
-        # Debug: Test connection with more detailed output
+        # Test connection with more detailed output
         try:
             result = subprocess.run(
                 ["rclone", "about", f"{RCLONE_REMOTE_NAME}:"], 
@@ -226,14 +237,14 @@ def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
                 text=True
             )
             if result.returncode == 0:
-                ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' configured for {region_name} region.")
+                ok(f"Cloud storage remote '{RCLONE_REMOTE_NAME}:' configured for {region_name} region.")
                 return True
             else:
                 error_msg = result.stderr.strip()
                 warn(f"Connection test failed for {region_name}: {error_msg}")
                 
                 # Check for region-specific errors
-                if "unauthorized" in error_msg.lower() or "401" in error_msg:
+                if "unauthorized" in error_msg.lower() or "401" in error_msg or "2094" in error_msg:
                     warn(f"Token may not be valid for {region_name} region")
                 elif "timeout" in error_msg.lower():
                     warn(f"Network timeout connecting to {region_name} region")
@@ -245,10 +256,10 @@ def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
     
     # If both regions failed, provide helpful guidance
     warn("Token validation failed for both regions. This could be because:")
-    warn("• Your pCloud account is in a different region than expected")
+    warn("• Your cloud account is in a different region than expected")
     warn("• The OAuth token was generated incorrectly")
     warn("• Network connectivity issues")
-    say("Try generating a new token with: rclone authorize \"pcloud\"")
+    say("Try generating a new token with: rclone authorize \"<provider>\"")
     say("Or use option 3 (WebDAV) which works regardless of region.")
     
     return False
@@ -291,14 +302,20 @@ def _pcloud_webdav_try_both(email: str, password: str) -> bool:
 
 
 def setup_pcloud_remote() -> bool:
-    """Interactive pCloud setup. Returns True if setup successful."""
+    """Interactive cloud storage setup. Returns True if setup successful."""
+    global RCLONE_REMOTE_NAME
+    
+    # Ensure remote name is properly initialized for multi-main mode
+    if not RCLONE_REMOTE_NAME:
+        RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+    
     if _pcloud_remote_ok():
-        ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' is already configured and working.")
+        ok(f"Cloud storage remote '{RCLONE_REMOTE_NAME}:' is already configured and working.")
         return True
 
-    print_header("pCloud Setup Required")
+    print_header("Cloud Storage Setup Required")
     
-    say("Choose how to connect to pCloud:")
+    say("Choose how to connect to your cloud storage:")
     print("  1) Paste OAuth token JSON (recommended)")
     print("  2) Headless OAuth helper")
     print("  3) Try legacy WebDAV")
@@ -309,16 +326,19 @@ def setup_pcloud_remote() -> bool:
 
         if choice in {"1", "2"}:
             if choice == "1":
-                say('On any machine with a browser, run:  rclone authorize "pcloud"')
+                say('On any machine with a browser, run:  rclone authorize "<provider>"')
+                say("")
+                say("ℹ Replace <provider> with your cloud storage type:")
+                say("  • pcloud, googledrive, dropbox, onedrive, s3, etc.")
             else:
                 say("Headless OAuth setup:")
                 say("1. On a machine with a browser, install rclone")
-                say("2. Run: rclone authorize \"pcloud\"")
+                say("2. Run: rclone authorize \"<provider>\"")
                 say("3. Copy the JSON token output and paste it below")
                 say("4. The token looks like: {\"access_token\":\"...\",\"token_type\":\"bearer\"...}")
             
             say("")
-            say("ℹ Note: The system will automatically test both pCloud regions:")
+            say("ℹ Note: For pCloud, the system will test both regions automatically:")
             say("  • Global/US region (api.pcloud.com)")
             say("  • Europe region (eapi.pcloud.com)")
             say("")
@@ -338,11 +358,11 @@ def setup_pcloud_remote() -> bool:
                 continue
             if _pcloud_set_oauth_token_autoregion(token):
                 return True
-            warn("If the token keeps failing, your pCloud account might be in a")
+            warn("If the token keeps failing, your cloud account might be in a")
             warn("different region, or you might need to use WebDAV (option 3).")
 
         elif choice == "3":
-            email = _pcloud_prompt("pCloud login email: ").strip()
+            email = _pcloud_prompt("Cloud storage login email: ").strip()
             if not email:
                 warn("Email required.")
                 continue
@@ -352,30 +372,30 @@ def setup_pcloud_remote() -> bool:
             try:
                 tty_path = _get_tty_path()
                 with open(tty_path, "r+") as tty:
-                    password = getpass.getpass("pCloud password (or App Password): ", stream=tty)
+                    password = getpass.getpass("Cloud storage password (or App Password): ", stream=tty)
             except OSError:
-                password = getpass.getpass("pCloud password (or App Password): ")
+                password = getpass.getpass("Cloud storage password (or App Password): ")
             if not password:
                 warn("Password required.")
                 continue
             if _pcloud_webdav_try_both(email, password) and _pcloud_remote_ok():
-                ok("pCloud remote configured.")
+                ok("Cloud storage remote configured.")
                 return True
             warn("Authentication failed on both endpoints.")
 
         elif choice == "4":
-            warn("Skipping pCloud configuration. Some features will be unavailable.")
+            warn("Skipping cloud storage configuration. Some features will be unavailable.")
             return False
 
         else:
             warn("Invalid choice.")
 
 
-# ===== End pCloud Setup Functions =====
+# ===== End Cloud Storage Setup Functions =====
 
 
 def cmd_setup_pcloud(args: argparse.Namespace) -> None:
-    """Command to set up pCloud remote."""
+    """Command to set up cloud storage remote."""
     setup_pcloud_remote()
 
 
@@ -870,20 +890,20 @@ def multi_main() -> None:
             # Check pCloud status and add appropriate options
             pcloud_ok = _pcloud_remote_ok()
             if pcloud_ok:
-                pcloud_status = f"{COLOR_GREEN}✓{COLOR_OFF} pCloud configured"
+                pcloud_status = f"{COLOR_GREEN}✓{COLOR_OFF} Cloud storage configured"
                 options = [
                     ("1", "Add instance"),
                     ("2", "Explore backups"),
-                    ("3", "Reconfigure pCloud"),
+                    ("3", "Reconfigure cloud storage"),
                     ("0", "Quit")
                 ]
                 choice_range = "[1-3, 0]"
             else:
-                pcloud_status = f"{COLOR_YELLOW}!{COLOR_OFF} pCloud setup required for all backup operations"
+                pcloud_status = f"{COLOR_YELLOW}!{COLOR_OFF} Cloud storage setup required for all backup operations"
                 options = [
-                    ("1", "Set up pCloud"),
-                    ("2", "Add instance (requires pCloud)"),
-                    ("3", "Explore backups (requires pCloud)"),
+                    ("1", "Set up cloud storage"),
+                    ("2", "Add instance (requires cloud storage)"),
+                    ("3", "Explore backups (requires cloud storage)"),
                     ("0", "Quit")
                 ]
                 choice_range = "[1-3, 0]"
@@ -898,30 +918,30 @@ def multi_main() -> None:
                 return
                 
             if not pcloud_ok:
-                # When pCloud is not set up
+                # When cloud storage is not set up
                 if choice == "1":
                     if setup_pcloud_remote():
-                        say("pCloud setup completed successfully!")
+                        say("Cloud storage setup completed successfully!")
                     else:
-                        warn("pCloud setup failed.")
+                        warn("Cloud storage setup failed.")
                 elif choice == "2":
-                    say("pCloud setup required for backup functionality.")
+                    say("Cloud storage setup required for backup functionality.")
                     if setup_pcloud_remote():
                         cmd_create_instance(argparse.Namespace())
                     else:
-                        warn("Cannot create instance without pCloud setup.")
+                        warn("Cannot create instance without cloud storage setup.")
                 elif choice == "3":
-                    say("pCloud setup required to explore backups.")
+                    say("Cloud storage setup required to explore backups.")
                     if setup_pcloud_remote():
                         explore_backups()
                     else:
-                        warn("Cannot explore backups without pCloud setup.")
+                        warn("Cannot explore backups without cloud storage setup.")
                 elif choice == "0":
                     break
                 else:
                     warn("Invalid choice")
             else:
-                # When pCloud is already set up
+                # When cloud storage is already set up
                 if choice == "1":
                     cmd_create_instance(argparse.Namespace())
                 elif choice == "2":
@@ -1147,7 +1167,7 @@ def verify_snapshot(source: str, snap: str) -> None:
 
 def explore_backups() -> None:
     if not _pcloud_remote_ok():
-        warn("pCloud not configured. Use 'bulletproof setup-pcloud' first.")
+        warn("Cloud storage not configured. Use 'bulletproof setup-pcloud' first.")
         return
         
     rem_insts = list_remote_instances()
@@ -1709,7 +1729,7 @@ p.add_argument("--incr", help="incremental frequency (hours or cron)")
 p.add_argument("--archive", help="cron for monthly archive or blank to disable")
 p.set_defaults(func=cmd_schedule)
 
-p = sub.add_parser("setup-pcloud", help="set up pCloud remote for backups")
+p = sub.add_parser("setup-pcloud", help="set up cloud storage remote for backups")
 p.set_defaults(func=cmd_setup_pcloud)
 
 p = sub.add_parser("create", help="create a new Paperless-ngx instance")

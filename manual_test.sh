@@ -5,20 +5,37 @@
 echo "🔍 Manual pCloud OAuth Token Test"
 echo "================================="
 
-# Check if rclone is available
-echo "1. Testing rclone availability..."
-if ! command -v rclone &> /dev/null; then
-    echo "❌ rclone not found in PATH"
-    exit 1
+# Check if token was provided as argument
+if [ $# -eq 1 ]; then
+    TOKEN="$1"
+    echo "Using token provided as argument"
+else
+    # Check if rclone is available
+    echo "1. Testing rclone availability..."
+    if ! command -v rclone &> /dev/null; then
+        echo "❌ rclone not found in PATH"
+        exit 1
+    fi
+
+    echo "✅ rclone is available"
+    rclone version | head -1
+
+    echo ""
+    echo "2. Getting token from user..."
+    echo "Please paste your OAuth token JSON:"
+    
+    # Use /dev/tty to read directly from terminal
+    if [ -t 0 ]; then
+        read -r TOKEN
+    else
+        # If stdin is not a terminal (e.g., piped), try to read from /dev/tty
+        exec < /dev/tty
+        read -r TOKEN
+    fi
 fi
 
-echo "✅ rclone is available"
-rclone version | head -1
-
 echo ""
-echo "2. Testing token format..."
-echo "Please paste your OAuth token JSON:"
-read -r TOKEN
+echo "3. Testing token format..."
 
 # Basic JSON validation
 if echo "$TOKEN" | jq . > /dev/null 2>&1; then
@@ -37,7 +54,7 @@ else
 fi
 
 echo ""
-echo "3. Testing Global/US region (api.pcloud.com)..."
+echo "4. Testing Global/US region (api.pcloud.com)..."
 
 # Clean up any existing test config
 rclone config delete pcloud_test_global > /dev/null 2>&1
@@ -66,7 +83,7 @@ fi
 rclone config delete pcloud_test_global > /dev/null 2>&1
 
 echo ""
-echo "4. Testing Europe region (eapi.pcloud.com)..."
+echo "5. Testing Europe region (eapi.pcloud.com)..."
 
 # Clean up any existing test config
 rclone config delete pcloud_test_europe > /dev/null 2>&1
