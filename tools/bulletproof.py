@@ -50,27 +50,57 @@ def load_env(path: Path) -> None:
             k, v = line.split("=", 1)
             os.environ.setdefault(k, v)
 
+# Enhanced color scheme and visual elements
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
 COLOR_YELLOW = "\033[1;33m"
 COLOR_RED = "\033[1;31m"
+COLOR_CYAN = "\033[1;36m"
+COLOR_MAGENTA = "\033[1;35m"
+COLOR_WHITE = "\033[1;37m"
+COLOR_GRAY = "\033[0;90m"
+COLOR_BOLD = "\033[1m"
+COLOR_DIM = "\033[2m"
 COLOR_OFF = "\033[0m"
 
+# Status indicators
+STATUS_UP = f"{COLOR_GREEN}●{COLOR_OFF}"
+STATUS_DOWN = f"{COLOR_RED}●{COLOR_OFF}"
+STATUS_UNKNOWN = f"{COLOR_GRAY}●{COLOR_OFF}"
+
+# Icons and symbols
+ICON_INFO = f"{COLOR_BLUE}ℹ{COLOR_OFF}"
+ICON_SUCCESS = f"{COLOR_GREEN}✓{COLOR_OFF}"
+ICON_WARNING = f"{COLOR_YELLOW}⚠{COLOR_OFF}"
+ICON_ERROR = f"{COLOR_RED}✗{COLOR_OFF}"
+ICON_ARROW = f"{COLOR_CYAN}→{COLOR_OFF}"
+ICON_BULLET = f"{COLOR_WHITE}•{COLOR_OFF}"
+
+def print_header(title: str, subtitle: str = "") -> None:
+    """Print a stylized header with optional subtitle."""
+    width = max(len(title), len(subtitle)) + 4
+    border = "═" * width
+    print(f"\n{COLOR_CYAN}╔{border}╗{COLOR_OFF}")
+    print(f"{COLOR_CYAN}║{COLOR_OFF} {COLOR_BOLD}{title.center(width-2)}{COLOR_OFF} {COLOR_CYAN}║{COLOR_OFF}")
+    if subtitle:
+        print(f"{COLOR_CYAN}║{COLOR_OFF} {COLOR_DIM}{subtitle.center(width-2)}{COLOR_OFF} {COLOR_CYAN}║{COLOR_OFF}")
+    print(f"{COLOR_CYAN}╚{border}╝{COLOR_OFF}\n")
+
+def print_separator(char: str = "─", length: int = 60) -> None:
+    """Print a visual separator."""
+    print(f"{COLOR_GRAY}{char * length}{COLOR_OFF}")
 
 def say(msg: str) -> None:
-    print(f"{COLOR_BLUE}[*]{COLOR_OFF} {msg}")
-
+    print(f"{ICON_INFO} {msg}")
 
 def ok(msg: str) -> None:
-    print(f"{COLOR_GREEN}[ok]{COLOR_OFF} {msg}")
-
+    print(f"{ICON_SUCCESS} {COLOR_GREEN}{msg}{COLOR_OFF}")
 
 def warn(msg: str) -> None:
-    print(f"{COLOR_YELLOW}[!]{COLOR_OFF} {msg}")
-
+    print(f"{ICON_WARNING} {COLOR_YELLOW}{msg}{COLOR_OFF}")
 
 def die(msg: str) -> None:
-    print(f"{COLOR_RED}[x]{COLOR_OFF} {msg}")
+    print(f"{ICON_ERROR} {COLOR_RED}{msg}{COLOR_OFF}")
     raise SystemExit(1)
 
 
@@ -329,7 +359,8 @@ def delete_instance(inst: Instance) -> None:
             check=False,
         )
         try:
-            subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+            net_name = f"paperless_{inst.name}_net"
+            subprocess.run(["docker", "network", "rm", net_name], check=False)
         except Exception:
             pass
         subprocess.run(["rm", "-rf", str(inst.stack_dir)], check=False)
@@ -367,7 +398,13 @@ def delete_all(insts: list[Instance]) -> None:
     if _read("Delete ALL instances? (y/N): ").lower().startswith("y"):
         for inst in insts:
             delete_instance(inst)
-        subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+        # Clean up any remaining networks (each instance has its own)
+        for inst in insts:
+            try:
+                net_name = f"paperless_{inst.name}_net"
+                subprocess.run(["docker", "network", "rm", net_name], check=False)
+            except Exception:
+                pass
         ok("All instances removed")
 
 
@@ -426,25 +463,24 @@ def multi_main() -> None:
         if not insts:
             cleanup_orphans()
             insts = find_instances()
+        
         if not insts:
-            print()
-            print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
-            print("No instances found.")
-            print()
-            print("Actions:")
-            print(" 1) Add instance")
-            print(" 2) Explore backups")
-            print(" 0) Quit")
+            print_header("Paperless-ngx Instances", "No instances found")
+            options = [
+                ("1", "Add instance"),
+                ("2", "Explore backups"),
+                ("0", "Quit")
+            ]
+            print_menu_options(options)
+            
             try:
-                choice = _read("Select action: ").strip()
+                choice = _read(f"{COLOR_WHITE}Select action{COLOR_OFF} {COLOR_GRAY}[1-2, 0]{COLOR_OFF}: ").strip()
             except EOFError:
                 print()
                 return
             if choice == "1":
                 try:
-                    name = (
-                        _read("New instance name [paperless]: ").strip() or "paperless"
-                    )
+                    name = _read(f"New instance name {COLOR_GRAY}[paperless]{COLOR_OFF}: ").strip() or "paperless"
                 except EOFError:
                     return
                 install_instance(name)
@@ -453,83 +489,75 @@ def multi_main() -> None:
             elif choice == "0":
                 break
             else:
-                warn("Unknown choice")
+                warn("Invalid choice")
             continue
-        print()
-        print(f"{COLOR_BLUE}=== Paperless-ngx Instances ==={COLOR_OFF}")
-        print(f"{'#':>2} {'NAME':<20} {'STAT':<4} SCHEDULE")
-        for idx, inst in enumerate(insts, 1):
-            status = inst.status()
-            color = COLOR_GREEN if status == "up" else COLOR_RED
-            print(
-                f"{idx:>2} {inst.name:<20} {color}{status:<4}{COLOR_OFF} {inst.schedule()}"
-            )
-
-        print()
-        print("Actions:")
-        print(" 1) Manage instance")
-        print(" 2) Backup instance")
-        print(" 3) Backup all")
-        print(" 4) Add instance")
-        print(" 5) Start all")
-        print(" 6) Stop all")
-        print(" 7) Delete all")
-        print(" 8) Explore backups")
-        print(" 0) Quit")
+        
+        # Display instances table
+        print_instances_table(insts)
+        
+        # Display action menu
+        options = [
+            ("1", "Manage instance"),
+            ("2", "Backup instance"),
+            ("3", "Backup all"),
+            ("4", "Add instance"),
+            ("5", "Start all"),
+            ("6", "Stop all"),
+            ("7", "Delete all"),
+            ("8", "Explore backups"),
+            ("0", "Quit")
+        ]
+        print_menu_options(options)
 
         try:
-            choice = _read("Select action: ").strip()
+            choice = _read(f"{COLOR_WHITE}Select action{COLOR_OFF} {COLOR_GRAY}[1-8, 0]{COLOR_OFF}: ").strip()
         except EOFError:
             print()
             return
-        if choice == "4":
-            mode = _read("Add from scratch or backup? (s/b) [s]: ").strip().lower()
-            if mode.startswith("b"):
-                picked = pick_remote_snapshot()
-                if not picked:
-                    continue
-                source, snap = picked
-                default_name = source
-                existing = {i.name for i in insts}
-                while default_name in existing:
-                    default_name += "-copy"
-                name = _read(f"New instance name [{default_name}]: ").strip() or default_name
-                install_instance(name)
-                new_inst = next((i for i in find_instances() if i.name == name), None)
-                if new_inst:
-                    restore_instance(new_inst, snap, source)
-            else:
-                name = _read("New instance name: ").strip()
-                if name:
-                    install_instance(name)
-        elif choice == "7":
-            delete_all(insts)
-        elif choice == "3":
-            mode = _read("Full or Incremental? [incr]: ").strip().lower()
-            mode = "full" if mode.startswith("f") else "incr"
-            for inst in insts:
-                say(f"Backing up {inst.name}")
-                backup_instance(inst, mode)
-        elif choice == "2":
-            idx = _read("Instance number to back up: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                mode = _read("Full or Incremental? [incr]: ").strip().lower()
-                mode = "full" if mode.startswith("f") else "incr"
-                backup_instance(insts[int(idx) - 1], mode)
-        elif choice == "5":
-            start_all(insts)
-        elif choice == "6":
-            stop_all(insts)
-        elif choice == "8":
-            explore_backups()
-        elif choice == "1":
-            idx = _read("Instance number to manage: ").strip()
-            if idx.isdigit() and 1 <= int(idx) <= len(insts):
-                manage_instance(insts[int(idx) - 1])
-        elif choice == "0":
-            break
-        else:
-            warn("Unknown choice")
+def print_instances_table(insts: list[Instance]) -> None:
+    """Print a beautiful table of instances with enhanced formatting."""
+    if not insts:
+        print_header("Paperless-ngx Instances", "No instances found")
+        return
+    
+    print_header("Paperless-ngx Instances", f"{len(insts)} instance{'s' if len(insts) != 1 else ''} found")
+    
+    # Calculate column widths
+    name_width = max(20, max(len(inst.name) for inst in insts) + 2)
+    
+    # Table header
+    header = f"{'#':>3} │ {'NAME':<{name_width}} │ {'STATUS':<8} │ BACKUP SCHEDULE"
+    print(f"{COLOR_CYAN}{header}{COLOR_OFF}")
+    print(f"{COLOR_GRAY}{'─' * 3}─┼─{'─' * name_width}─┼─{'─' * 8}─┼─{'─' * 30}{COLOR_OFF}")
+    
+    # Table rows
+    for idx, inst in enumerate(insts, 1):
+        status = inst.status()
+        status_icon = STATUS_UP if status == "up" else STATUS_DOWN
+        status_text = f"{status_icon} {status}"
+        
+        schedule = inst.schedule()
+        if len(schedule) > 50:
+            schedule = schedule[:47] + "..."
+        
+        row = f"{COLOR_WHITE}{idx:>3}{COLOR_OFF} │ {COLOR_BOLD}{inst.name:<{name_width}}{COLOR_OFF} │ {status_text:<15} │ {COLOR_DIM}{schedule}{COLOR_OFF}"
+        print(row)
+    
+    print()
+
+def print_menu_options(options: list[tuple[str, str]], title: str = "Actions") -> None:
+    """Print menu options with enhanced formatting."""
+    print(f"{COLOR_CYAN}┌─ {title} {'─' * (50 - len(title))}┐{COLOR_OFF}")
+    
+    for i, (key, desc) in enumerate(options):
+        if key == "0":
+            # Separator before quit option
+            print(f"{COLOR_CYAN}├{'─' * 51}┤{COLOR_OFF}")
+        
+        icon = ICON_ARROW if key != "0" else "◦"
+        print(f"{COLOR_CYAN}│{COLOR_OFF} {icon} {COLOR_WHITE}{key}{COLOR_OFF}) {desc:<40} {COLOR_CYAN}│{COLOR_OFF}")
+    
+    print(f"{COLOR_CYAN}└{'─' * 51}┘{COLOR_OFF}")
 
 
 def dc(*args: str) -> list[str]:
@@ -727,22 +755,8 @@ def extract_tar(tar_path: Path, dest: Path) -> None:
     )
 
 
-def ensure_network() -> None:
-    """Ensure the shared docker network exists."""
-    try:
-        subprocess.run(
-            ["docker", "network", "inspect", "paperless_net"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        subprocess.run(["docker", "network", "create", "paperless_net"], check=False)
-
-
 def restore_db(dump: Path) -> None:
     say("Restoring database…")
-    ensure_network()
     subprocess.run(dc("up", "-d", "db"), check=True)
     time.sleep(5)
     subprocess.run(
@@ -850,7 +864,6 @@ def cmd_restore(args: argparse.Namespace) -> None:
     say("Restoring chain: " + " -> ".join(chain))
     if COMPOSE_FILE.exists():
         subprocess.run(dc("down"), check=False)
-    ensure_network()
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     try:
@@ -887,7 +900,6 @@ def cmd_restore(args: argparse.Namespace) -> None:
             restore_db(final_dump)
     finally:
         shutil.rmtree(dump_dir, ignore_errors=True)
-    ensure_network()
     subprocess.run(dc("up", "-d"), check=False)
     if run_stack_tests():
         ok("Restore complete")
@@ -1074,9 +1086,15 @@ def menu() -> None:
     while True:
         snaps = fetch_snapshots()
         latest = snaps[-1][0] if snaps else "none"
-        print(f"{COLOR_BLUE}=== Bulletproof ({INSTANCE_NAME}) ==={COLOR_OFF}")
-        print(f"Remote: {REMOTE}")
-        print(f"Snapshots: {len(snaps)} (latest: {latest})")
+        
+        # Print header
+        print_header(f"Bulletproof Instance - {INSTANCE_NAME}")
+        
+        # Instance info
+        print(f"{COLOR_BOLD}{ICON_INFO} Instance Information{COLOR_OFF}")
+        print(f"  {COLOR_GRAY}Remote:{COLOR_OFF} {COLOR_CYAN}{REMOTE}{COLOR_OFF}")
+        print(f"  {COLOR_GRAY}Snapshots:{COLOR_OFF} {COLOR_WHITE}{len(snaps)}{COLOR_OFF} (latest: {COLOR_GREEN if snaps else COLOR_RED}{latest}{COLOR_OFF})")
+        
         def desc(full: str, incr: str, arch: str) -> str:
             try:
                 m, h, dom, mon, dow = full.split()
@@ -1115,24 +1133,36 @@ def menu() -> None:
                 return f"full {full_txt}, incr {incr_txt}, archive {arch_txt}"
             return f"full {full_txt}, incr {incr_txt}"
 
-        print(f"Schedule: {desc(CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME)}\n")
-        print("1) Start")
-        print("2) Stop")
-        print("3) Backup")
-        print("4) Snapshots")
-        print("5) Restore snapshot")
-        print("6) Rename instance")
-        print("7) Delete instance")
-        print("8) Upgrade")
-        print("9) Status")
-        print("10) Logs")
-        print("11) Doctor")
-        print("12) Backup schedule")
-        print("13) Quit")
-        choice = _read("Choose [1-13]: ").strip()
+        print(f"  {COLOR_GRAY}Schedule:{COLOR_OFF} {COLOR_YELLOW}{desc(CRON_FULL_TIME, CRON_INCR_TIME, CRON_ARCHIVE_TIME)}{COLOR_OFF}")
+        
+        print_separator()
+        
+        # Print menu options with enhanced formatting
+        menu_options = [
+            ("1", "Start instance containers"),
+            ("2", "Stop instance containers"),
+            ("3", "Create backup snapshot"),
+            ("4", "List all backup snapshots"),
+            ("5", "Restore from backup"),
+            ("6", "Change instance name"),
+            ("7", "Remove entire instance"),
+            ("8", "Update to latest version"),
+            ("9", "Show container status"),
+            ("10", "View container logs"),
+            ("11", "Run diagnostic checks"),
+            ("12", "Configure backup timing"),
+            ("13", "Exit to main menu")
+        ]
+        print_menu_options(menu_options, "Instance Actions")
+        
+        choice = _read(f"{ICON_ARROW} Choose [1-13]: ").strip()
         current = Instance(INSTANCE_NAME, STACK_DIR, DATA_ROOT, os.environ)
         if choice == "3":
-            mode_in = _read("Full, Incremental, or Archive? [incr]: ").strip().lower()
+            print(f"\n{COLOR_BOLD}{ICON_INFO} Backup Mode Selection{COLOR_OFF}")
+            print(f"  {COLOR_GREEN}Full{COLOR_OFF}        - Complete backup (slower, independent)")
+            print(f"  {COLOR_YELLOW}Incremental{COLOR_OFF} - Changes only (faster, depends on previous)")
+            print(f"  {COLOR_CYAN}Archive{COLOR_OFF}     - Full backup + cleanup old incrementals")
+            mode_in = _read(f"{ICON_ARROW} Full, Incremental, or Archive? [incr]: ").strip().lower()
             if mode_in.startswith("f"):
                 mode = "full"
             elif mode_in.startswith("a"):
@@ -1144,10 +1174,15 @@ def menu() -> None:
             cmd_snapshots(argparse.Namespace(snapshot=None))
         elif choice == "5":
             snaps = fetch_snapshots()
+            if not snaps:
+                print(f"{ICON_WARNING} No snapshots available")
+                continue
+            print(f"\n{COLOR_BOLD}{ICON_INFO} Available Snapshots{COLOR_OFF}")
             for idx, (name, mode, parent) in enumerate(snaps, 1):
                 detail = f"{mode}" if mode != "incr" else f"{mode}<-{parent}"
-                print(f"{idx}) {name} ({detail})")
-            choice_snap = _read("Snapshot number or name (blank=latest): ").strip()
+                mode_color = COLOR_GREEN if mode == "full" else COLOR_YELLOW if mode == "incr" else COLOR_CYAN
+                print(f"  {COLOR_WHITE}{idx:2d}){COLOR_OFF} {COLOR_BOLD}{name}{COLOR_OFF} ({mode_color}{detail}{COLOR_OFF})")
+            choice_snap = _read(f"{ICON_ARROW} Snapshot number or name (blank=latest): ").strip()
             if choice_snap.isdigit():
                 idx = int(choice_snap)
                 snap = snaps[idx - 1][0] if 1 <= idx <= len(snaps) else None
@@ -1155,7 +1190,7 @@ def menu() -> None:
                 snap = choice_snap or None
             cmd_restore(argparse.Namespace(snapshot=snap))
         elif choice == "6":
-            new = _read("New name: ").strip()
+            new = _read(f"{ICON_ARROW} New instance name: ").strip()
             if new:
                 rename_instance(current, new)
                 break
@@ -1167,7 +1202,7 @@ def menu() -> None:
         elif choice == "9":
             cmd_status(argparse.Namespace())
         elif choice == "10":
-            svc = _read("Service (blank=all): ").strip() or None
+            svc = _read(f"{ICON_ARROW} Service name (blank=all): ").strip() or None
             cmd_logs(argparse.Namespace(service=svc))
         elif choice == "11":
             cmd_doctor(argparse.Namespace())
@@ -1180,7 +1215,8 @@ def menu() -> None:
         elif choice == "13":
             break
         else:
-            print("Invalid choice")
+            print(f"{ICON_ERROR} {COLOR_RED}Invalid choice. Please select 1-13.{COLOR_OFF}")
+            continue
 
 
 parser = argparse.ArgumentParser(description="Paperless-ngx bulletproof helper")

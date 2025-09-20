@@ -111,14 +111,15 @@ def cleanup_stack_dir() -> None:
     except Exception as e:
         warn(f"Failed to force-remove containers: {e}")
     try:
+        net_name = f"paperless_{cfg.instance_name}_net"
         res = subprocess.run(
-            ["docker", "network", "inspect", "paperless_net", "-f", "{{len .Containers}}"],
+            ["docker", "network", "inspect", net_name, "-f", "{{len .Containers}}"],
             capture_output=True,
             text=True,
             check=False,
         )
         if res.returncode == 0 and res.stdout.strip() == "0":
-            subprocess.run(["docker", "network", "rm", "paperless_net"], check=False)
+            subprocess.run(["docker", "network", "rm", net_name], check=False)
     except Exception:
         pass
     for path in (cfg.stack_dir, cfg.data_root):
@@ -178,7 +179,9 @@ def write_compose_file() -> None:
     log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik})")
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
     traefik_running = _traefik_running()
-    net_exists = _network_exists("paperless_net")
+    # Use instance-specific network name to avoid conflicts
+    net_name = f"paperless_{cfg.instance_name}_net"
+    net_exists = _network_exists(net_name)
     net_ext = "\n    external: true" if net_exists else ""
 
     if cfg.enable_traefik == "yes":
@@ -350,7 +353,7 @@ traefik:
         services
         + "networks:\n"
         + "  paperless:\n"
-        + "    name: paperless_net\n"
+        + f"    name: {net_name}\n"
         + ("    external: true\n" if net_exists else "")
     )
     Path(cfg.compose_file).write_text(compose.strip() + "\n")
