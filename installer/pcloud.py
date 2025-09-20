@@ -8,6 +8,20 @@ import sys
 from .common import say, warn, ok
 
 
+def _get_tty_path() -> str:
+    """Best-effort path to a readable/writable TTY."""
+    for key in ("TTY", "SSH_TTY", "SUDO_TTY"):
+        path = os.environ.get(key)
+        if path:
+            return path
+    for fd in (0, 1, 2):
+        try:
+            return os.ttyname(fd)
+        except OSError:
+            continue
+    return "/dev/tty"
+
+
 def _prompt(text: str) -> str:
     """Read input from user with proper TTY handling."""
     if sys.stdin.isatty() and sys.stdout.isatty():
@@ -16,14 +30,14 @@ def _prompt(text: str) -> str:
     
     # Fall back to direct TTY access
     try:
-        tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+        tty_path = _get_tty_path()
         with open(tty_path, "r+") as tty:
             print(text, end="", flush=True, file=tty)
             return tty.readline().strip()
     except OSError:
-        # Last resort
-        print(text, end="", flush=True)
-        return sys.stdin.readline().strip()
+        # Last resort - return empty string if no TTY available
+        print(f"[Warning] {text}")
+        return ""
 
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 
@@ -130,15 +144,25 @@ def ensure_pcloud_remote_or_menu() -> None:
         ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' is ready.")
         return
 
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        # Try to use TTY directly if stdin/stdout aren't TTY
+    # Check if we can access a TTY for interactive input
+    # Use the same approach as common.py for consistency
+    tty_available = False
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        tty_available = True
+    else:
+        # Try to access TTY directly (common when run via pipe)
         try:
-            tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
-            with open(tty_path, "r+"):
-                pass  # Just test if we can open it
+            tty_path = _get_tty_path()
+            with open(tty_path, "r+") as tty:
+                # Test if we can actually read/write
+                pass
+            tty_available = True
         except OSError:
-            warn("No interactive TTY; skipping pCloud configuration for now.")
-            return
+            pass
+    
+    if not tty_available:
+        warn("No interactive TTY available; skipping pCloud configuration for now.")
+        return
 
     while True:
         print()
@@ -173,7 +197,7 @@ def ensure_pcloud_remote_or_menu() -> None:
 
             # Try to use TTY for password input if available
             try:
-                tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+                tty_path = _get_tty_path()
                 with open(tty_path, "r+") as tty:
                     password = getpass.getpass("pCloud password (or App Password): ", stream=tty)
             except OSError:
