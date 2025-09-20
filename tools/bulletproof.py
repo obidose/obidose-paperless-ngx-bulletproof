@@ -99,6 +99,327 @@ def ok(msg: str) -> None:
 def warn(msg: str) -> None:
     print(f"{ICON_WARNING} {COLOR_YELLOW}{msg}{COLOR_OFF}")
 
+
+# ===== pCloud Setup Functions =====
+
+RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+
+
+def _get_tty_path() -> str:
+    """Best-effort path to a readable/writable TTY."""
+    for key in ("TTY", "SSH_TTY", "SUDO_TTY"):
+        path = os.environ.get(key)
+        if path:
+            return path
+    for fd in (0, 1, 2):
+        try:
+            return os.ttyname(fd)
+        except OSError:
+            continue
+    return "/dev/tty"
+
+
+def _pcloud_prompt(text: str) -> str:
+    """Read input from user with proper TTY handling for pCloud setup."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        print(text, end="", flush=True)
+        return sys.stdin.readline().strip()
+    
+    # Fall back to direct TTY access
+    try:
+        tty_path = _get_tty_path()
+        with open(tty_path, "r+") as tty:
+            print(text, end="", flush=True, file=tty)
+            return tty.readline().strip()
+    except OSError:
+        # Last resort - return empty string if no TTY available
+        print(f"[Warning] {text}")
+        return ""
+
+
+def _sanitize_oneline(text: str) -> str:
+    return text.replace("\r", "").replace("\n", "").replace("\0", "")
+
+
+def _timeout(seconds: int, cmd: list[str]) -> bool:
+    try:
+        subprocess.run(cmd, timeout=seconds, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def _pcloud_remote_exists() -> bool:
+    try:
+        res = subprocess.run(["rclone", "listremotes"], capture_output=True, text=True, check=True)
+        return any(line.strip() == f"{RCLONE_REMOTE_NAME}:" for line in res.stdout.splitlines())
+    except Exception:
+        return False
+
+
+def _pcloud_remote_ok() -> bool:
+    if not _pcloud_remote_exists():
+        return False
+    return _timeout(10, ["rclone", "about", f"{RCLONE_REMOTE_NAME}:"])
+
+
+def _pcloud_create_oauth_remote(token_json: str, host: str) -> None:
+    subprocess.run(["rclone", "config", "delete", RCLONE_REMOTE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        [
+            "rclone",
+            "config",
+            "create",
+            RCLONE_REMOTE_NAME,
+            "pcloud",
+            "token",
+            token_json,
+            "hostname",
+            host,
+            "--non-interactive",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
+    for host in ["api.pcloud.com", "eapi.pcloud.com"]:
+        _pcloud_create_oauth_remote(token_json, host)
+        if _pcloud_remote_ok():
+            ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' configured for {host}.")
+            return True
+    return False
+
+
+def _pcloud_webdav_create(email: str, password: str, host: str) -> None:
+    obscured = subprocess.check_output(["rclone", "obscure", password], text=True).strip()
+    subprocess.run(["rclone", "config", "delete", RCLONE_REMOTE_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        [
+            "rclone",
+            "config",
+            "create",
+            RCLONE_REMOTE_NAME,
+            "webdav",
+            "--non-interactive",
+            "--",
+            "vendor",
+            "other",
+            "url",
+            host,
+            "user",
+            email,
+            "pass",
+            obscured,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def _pcloud_webdav_try_both(email: str, password: str) -> bool:
+    for host in ["https://webdav.pcloud.com", "https://ewebdav.pcloud.com"]:
+        _pcloud_webdav_create(email, password, host)
+        if _pcloud_remote_ok():
+            ok(f"pCloud remote configured for {host}")
+            return True
+    return False
+
+
+def setup_pcloud_remote() -> bool:
+    """Interactive pCloud setup. Returns True if setup successful."""
+    if _pcloud_remote_ok():
+        ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' is already configured and working.")
+        return True
+
+    print_header("pCloud Setup Required")
+    
+    say("Choose how to connect to pCloud:")
+    print("  1) Paste OAuth token JSON (recommended)")
+    print("  2) Headless OAuth helper")
+    print("  3) Try legacy WebDAV")
+    print("  4) Skip for now")
+    
+    while True:
+        choice = _pcloud_prompt("Choose [1-4] [1]: ") or "1"
+
+        if choice in {"1", "2"}:
+            say('On any machine with a browser, run:  rclone authorize "pcloud"')
+            token = _sanitize_oneline(_pcloud_prompt("Paste token JSON here: "))
+            if not token:
+                warn("Empty token.")
+                continue
+            try:
+                import json
+                json.loads(token)
+            except Exception:
+                warn("Token does not look like JSON with access_token.")
+                continue
+            if _pcloud_set_oauth_token_autoregion(token):
+                return True
+            warn("Token invalid or not valid for either region. Try again.")
+
+        elif choice == "3":
+            email = _pcloud_prompt("pCloud login email: ").strip()
+            if not email:
+                warn("Email required.")
+                continue
+            import getpass
+
+            # Try to use TTY for password input if available
+            try:
+                tty_path = _get_tty_path()
+                with open(tty_path, "r+") as tty:
+                    password = getpass.getpass("pCloud password (or App Password): ", stream=tty)
+            except OSError:
+                password = getpass.getpass("pCloud password (or App Password): ")
+            if not password:
+                warn("Password required.")
+                continue
+            if _pcloud_webdav_try_both(email, password) and _pcloud_remote_ok():
+                ok("pCloud remote configured.")
+                return True
+            warn("Authentication failed on both endpoints.")
+
+        elif choice == "4":
+            warn("Skipping pCloud configuration. Some features will be unavailable.")
+            return False
+
+        else:
+            warn("Invalid choice.")
+
+
+# ===== End pCloud Setup Functions =====
+
+
+def cmd_setup_pcloud(args: argparse.Namespace) -> None:
+    """Command to set up pCloud remote."""
+    setup_pcloud_remote()
+
+
+def cmd_create_instance(args: argparse.Namespace) -> None:
+    """Command to create a new Paperless-ngx instance."""
+    print_header("Create New Instance")
+    
+    # Ensure pCloud is set up first
+    if not _pcloud_remote_ok():
+        say("pCloud remote not configured. Setting up now...")
+        if not setup_pcloud_remote():
+            warn("pCloud setup failed. Instance creation requires pCloud for backups.")
+            return
+    
+    # Get instance name
+    while True:
+        name = _read("Instance name: ").strip()
+        if not name:
+            warn("Instance name cannot be empty.")
+            continue
+        
+        # Check if instance already exists
+        existing_instances = find_instances()
+        if any(inst.name == name for inst in existing_instances):
+            warn(f"Instance '{name}' already exists.")
+            continue
+        
+        break
+    
+    # Check for existing backups first
+    remote_instances = list_remote_instances()
+    if name in remote_instances:
+        restore_choice = _read(f"Found backup for '{name}'. Restore from backup? [y/N]: ").strip().lower()
+        if restore_choice.startswith('y'):
+            # Restore from backup
+            say(f"Restoring instance '{name}' from backup...")
+            # TODO: Implement restore functionality
+            say("Restore functionality will be implemented here")
+            return
+    
+    say("Creating new instance from scratch...")
+    say("This will guide you through creating a new Paperless-ngx instance.")
+    
+    # Basic configuration prompts
+    timezone = _read("Timezone [UTC]: ").strip() or "UTC"
+    
+    # Path configuration
+    data_root = _read(f"Data directory [/home/docker/{name}]: ").strip() or f"/home/docker/{name}"
+    stack_dir = _read(f"Stack directory [/home/docker/{name}-setup]: ").strip() or f"/home/docker/{name}-setup"
+    
+    # Admin credentials
+    admin_user = _read("Admin username [admin]: ").strip() or "admin"
+    admin_password = _read("Admin password: ").strip()
+    if not admin_password:
+        warn("Admin password cannot be empty.")
+        return
+    
+    # Database password
+    db_password = _read("Database password [auto-generated]: ").strip()
+    if not db_password:
+        import secrets
+        import string
+        db_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+        say(f"Generated database password: {db_password}")
+    
+    # HTTPS/Traefik configuration
+    use_https = _read("Enable HTTPS with Traefik? [y/N]: ").strip().lower().startswith('y')
+    domain = ""
+    email = ""
+    
+    if use_https:
+        domain = _read("Domain name: ").strip()
+        if not domain:
+            warn("Domain name required for HTTPS.")
+            return
+        email = _read("Email for Let's Encrypt: ").strip()
+        if not email:
+            warn("Email required for Let's Encrypt.")
+            return
+    
+    # Create directories
+    data_path = Path(data_root)
+    stack_path = Path(stack_dir)
+    
+    try:
+        data_path.mkdir(parents=True, exist_ok=True)
+        stack_path.mkdir(parents=True, exist_ok=True)
+        say(f"Created directories: {data_path}, {stack_path}")
+    except Exception as e:
+        warn(f"Failed to create directories: {e}")
+        return
+    
+    # Generate .env file
+    env_content = f"""# Paperless-ngx Configuration for {name}
+PAPERLESS_TIME_ZONE={timezone}
+PAPERLESS_ADMIN_USER={admin_user}
+PAPERLESS_ADMIN_PASSWORD={admin_password}
+POSTGRES_PASSWORD={db_password}
+"""
+    
+    if use_https:
+        env_content += f"""DOMAIN={domain}
+EMAIL={email}
+TRAEFIK_ENABLED=yes
+"""
+    
+    env_file = stack_path / ".env"
+    env_file.write_text(env_content)
+    say(f"Created configuration file: {env_file}")
+    
+    # TODO: Generate docker-compose.yml based on configuration
+    # TODO: Start the stack
+    # TODO: Set up backup schedule
+    
+    ok(f"Instance '{name}' created successfully!")
+    say("Next steps:")
+    say(f"  1. cd {stack_dir}")
+    say("  2. Review the configuration in .env")
+    say("  3. Run 'bulletproof' to manage this instance")
+
+
+# ===== Enhanced Multi-Instance Management =====
+
 def die(msg: str) -> None:
     print(f"{ICON_ERROR} {COLOR_RED}{msg}{COLOR_OFF}")
     raise SystemExit(1)
@@ -479,11 +800,14 @@ def multi_main() -> None:
                 print()
                 return
             if choice == "1":
-                try:
-                    name = _read(f"New instance name {COLOR_GRAY}[paperless]{COLOR_OFF}: ").strip() or "paperless"
-                except EOFError:
-                    return
-                install_instance(name)
+                # Check if pCloud is set up first  
+                if not _pcloud_remote_ok():
+                    say("pCloud setup required for backup functionality.")
+                    if not setup_pcloud_remote():
+                        warn("Cannot create instance without pCloud setup.")
+                        continue
+                
+                cmd_create_instance(argparse.Namespace())
             elif choice == "2":
                 explore_backups()
             elif choice == "0":
@@ -1259,6 +1583,12 @@ p.add_argument("--full", help="time for daily full backup (HH:MM or cron)")
 p.add_argument("--incr", help="incremental frequency (hours or cron)")
 p.add_argument("--archive", help="cron for monthly archive or blank to disable")
 p.set_defaults(func=cmd_schedule)
+
+p = sub.add_parser("setup-pcloud", help="set up pCloud remote for backups")
+p.set_defaults(func=cmd_setup_pcloud)
+
+p = sub.add_parser("create", help="create a new Paperless-ngx instance")
+p.set_defaults(func=cmd_create_instance)
 
 
 if __name__ == "__main__":

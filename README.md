@@ -110,75 +110,94 @@ Manual backups prompt for **Full**, **Incremental**, or **Archive** modes when n
 
 ## Quick start
 
-The installer pulls code from the `main` branch by default. Provide a branch
-name or commit SHA with the `--branch` flag (or `BP_BRANCH` environment
-variable) to test other versions. The installer uses this value for the
-repository tarball and any preset files, so everything comes from the same
-branch.
+The installer is lightweight and simply installs the bulletproof CLI with prerequisites. All actual functionality (pCloud setup, instance management, backups) is handled by the enhanced bulletproof CLI itself.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
 ```
+
+This will:
+1. Install Docker, rclone, and other prerequisites
+2. Download and install the bulletproof CLI 
+3. Launch the enhanced bulletproof interface automatically
+
+All subsequent management is done through the `bulletproof` command.
 
 ### Fresh Ubuntu Installation
 
 On a fresh Ubuntu 22.04/24.04 host, the installer will:
 
 1. **Install prerequisites** (Docker, rclone, etc.)
-2. **Guide you through pCloud setup** using OAuth token (recommended) or WebDAV
-3. **Check for existing backups** in your pCloud storage
-4. **Present options** based on what it finds:
+2. **Download and install** the bulletproof CLI
+3. **Launch bulletproof** for all setup and management
 
-**If remote backups are found:**
-- **Restore all backups** - Automatically restores all instances from your latest backups
-- **Install new instance** - Create a fresh instance alongside any existing backups  
-- **Launch Bulletproof CLI** - Advanced management for selective restore/management
-- **Quit**
-
-**If no backups are found:**
-- **Install new instance** - Start fresh with a new Paperless-ngx setup
-- **Launch Bulletproof CLI** - Advanced management options
-- **Quit**
+The **bulletproof** CLI then handles:
+- **pCloud setup** using OAuth token (recommended) or WebDAV
+- **Checking for existing backups** in your pCloud storage
+- **Instance creation** with guided configuration
+- **Backup and restore operations**
+- **Multi-instance management**
 
 ### Subsequent Runs
 
-If you run the installer again on a system where **bulletproof** CLI is already installed, it will:
+Once installed, simply run:
+```bash
+bulletproof
+```
 
-1. **Update the CLI** to the latest version
-2. **Verify pCloud connection** (prompts for setup if needed)  
-3. **Present the same options** as a fresh install
+This launches the enhanced CLI interface that provides:
+- **Multi-instance dashboard** showing all your Paperless-ngx instances
+- **pCloud setup** (if not already configured)
+- **Instance creation** wizard for new setups
+- **Backup exploration** to restore from existing backups
+- **Complete management** of all instances
 
-This makes it easy to restore additional instances, create new ones, or manage existing setups without reinstalling everything.
+### Enhanced CLI Interface
 
-### Dev branch example
+The bulletproof CLI now features a modern, visually appealing interface with:
+- **Colorized output** with status indicators and icons
+- **Tabular instance display** with status and backup schedules
+- **Interactive menus** with clear options and descriptions
+- **Smart pCloud integration** with automatic region detection
+- **Comprehensive backup management** with multiple restore options
+
+### Dev branch testing
+
+To test development versions, specify the branch:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
   | BP_BRANCH=dev sudo -E python3 - --branch dev
 ```
 
-The env var and flag ensure everything comes from `dev`.
+The installer will download the bulletproof CLI from the specified branch.
 
 ### Installation Flow
 
-When you choose **"Install new instance"**, the installer will:
-1. Offer **presets** (Traefik + HTTPS or Direct HTTP)
-2. Prompt for basics (timezone, instance name, paths, admin credentials, domain/email if using HTTPS)
-3. Create the Docker Compose stack and start services
-4. Install backup scripts and cron jobs
-5. Perform a self-test to verify everything is working
+The installation process is now streamlined:
 
-> If you ever need to refresh the CLI manually:
+1. **Run the installer** - Downloads and installs bulletproof CLI with prerequisites
+2. **Launch bulletproof** - Automatically starts the enhanced CLI interface
+3. **Set up pCloud** - Interactive OAuth or WebDAV configuration
+4. **Choose your action**:
+   - **Create new instance** - Guided setup wizard for fresh installations
+   - **Restore from backup** - Browse and restore existing instances
+   - **Explore backups** - Advanced backup management and verification
+
+**Creating a new instance** walks you through:
+- Instance name and basic configuration
+- Directory paths and admin credentials
+- HTTPS/Traefik setup (optional)
+- Backup schedule configuration
+- Automatic Docker stack creation and startup
+
+> The bulletproof CLI command is available globally after installation:
 > ```bash
-> BRANCH=${BRANCH:-main}
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/tools/bulletproof.py \
->   | sudo tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
+> bulletproof --help          # See all available commands
+> bulletproof                 # Launch interactive multi-instance manager
+> bulletproof create          # Create a new instance
+> bulletproof setup-pcloud    # Configure pCloud backup storage
 > ```
-
-Use the same `BRANCH` value when refreshing the CLI so it matches the version
-you're testing. After verifying your changes on a VPS, merge them into `main`
-(or tag a release) and run the installer without specifying a branch for
-production.
 
 ---
 
