@@ -152,9 +152,15 @@ def main() -> None:
     # If the Bulletproof CLI is already installed this one-liner acts as a
     # convenience wrapper.  Skip the heavy installation routine and hand off to
     # the multi-instance manager instead of re-running the wizard.
-    if shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists():
+    # But if BP_FORCE_INSTALL is set, proceed with normal installation
+    if (shutil.which("bulletproof") and Path("/usr/local/bin/bulletproof").exists() 
+        and not os.environ.get("BP_FORCE_INSTALL")):
         say("Bulletproof CLI detected; launching manager...")
         files.install_global_cli()
+        
+        # Ensure pCloud is configured even when CLI is already installed
+        pcloud.ensure_pcloud_remote_or_menu()
+        
         from tools import bulletproof as bp
         # Let the Bulletproof manager handle leftover cleanup when it starts.
         insts = bp.find_instances()

@@ -3,15 +3,27 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 
-from .common import say, warn, ok, TTY
+from .common import say, warn, ok
 
 
 def _prompt(text: str) -> str:
-    if TTY is None:
-        return ""
-    print(text, end="", flush=True)
-    return TTY.readline().strip()
+    """Read input from user with proper TTY handling."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        print(text, end="", flush=True)
+        return sys.stdin.readline().strip()
+    
+    # Fall back to direct TTY access
+    try:
+        tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+        with open(tty_path, "r+") as tty:
+            print(text, end="", flush=True, file=tty)
+            return tty.readline().strip()
+    except OSError:
+        # Last resort
+        print(text, end="", flush=True)
+        return sys.stdin.readline().strip()
 
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 
@@ -118,9 +130,15 @@ def ensure_pcloud_remote_or_menu() -> None:
         ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' is ready.")
         return
 
-    if TTY is None:
-        warn("No interactive TTY; skipping pCloud configuration for now.")
-        return
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        # Try to use TTY directly if stdin/stdout aren't TTY
+        try:
+            tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+            with open(tty_path, "r+"):
+                pass  # Just test if we can open it
+        except OSError:
+            warn("No interactive TTY; skipping pCloud configuration for now.")
+            return
 
     while True:
         print()
@@ -153,7 +171,13 @@ def ensure_pcloud_remote_or_menu() -> None:
                 continue
             import getpass
 
-            password = getpass.getpass("pCloud password (or App Password): ", stream=TTY)
+            # Try to use TTY for password input if available
+            try:
+                tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+                with open(tty_path, "r+") as tty:
+                    password = getpass.getpass("pCloud password (or App Password): ", stream=tty)
+            except OSError:
+                password = getpass.getpass("pCloud password (or App Password): ")
             if not password:
                 warn("Password required.")
                 continue

@@ -11,47 +11,32 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _tty_path() -> str:
-    """Best-effort path to a readable/writable TTY."""
-    for key in ("TTY", "SSH_TTY", "SUDO_TTY"):
-        path = os.environ.get(key)
-        if path:
-            return path
-    for fd in (0, 1, 2):
-        try:
-            return os.ttyname(fd)
-        except OSError:
-            continue
-    return "/dev/tty"
-
-
-try:
-    TTY = open(_tty_path(), "r+")
-    if not sys.stdin.isatty():
-        sys.stdin = sys.stdout = sys.stderr = TTY
-except OSError:
-    TTY = None
-
-
-def _ensure_tty() -> None:
-    global TTY
-    if TTY:
-        return
-    try:
-        TTY = open(_tty_path(), "r+")
-    except OSError:
-        TTY = None
-
-
 def _read(prompt: str) -> str:
-    _ensure_tty()
-    out = TTY if TTY else sys.stdout
-    print(prompt, end="", flush=True, file=out)
-    stream = TTY if TTY else sys.stdin
-    line = stream.readline()
-    if not line:
-        raise EOFError
-    return line.strip()
+    """Read input from the user, handling TTY issues gracefully."""
+    # Use sys.stdin/stdout if they're connected to a TTY
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        print(prompt, end="", flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.strip()
+    
+    # Fall back to direct TTY access for non-interactive environments
+    tty_path = os.environ.get("SUDO_TTY") or "/dev/tty"
+    try:
+        with open(tty_path, "r+") as tty:
+            print(prompt, end="", flush=True, file=tty)
+            line = tty.readline()
+            if not line:
+                raise EOFError
+            return line.strip()
+    except OSError:
+        # Last resort: use stdin/stdout even if not TTY
+        print(prompt, end="", flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError
+        return line.strip()
 
 
 
@@ -61,10 +46,9 @@ def load_env(path: Path) -> None:
         return
     for line in path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k, v)
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k, v)
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -111,8 +95,9 @@ def init_from_env() -> None:
 
     INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
     DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
-    ENV_FILE = Path(os.environ.get("ENV_FILE", STACK_DIR / ".env"))
-    COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
+    if STACK_DIR:
+        ENV_FILE = Path(os.environ.get("ENV_FILE", str(STACK_DIR / ".env")))
+        COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", str(STACK_DIR / "docker-compose.yml")))
     RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     RCLONE_REMOTE_PATH = os.environ.get(
         "RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}"
@@ -222,15 +207,15 @@ class Instance:
 
 
 def parse_env(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
+    """Parse .env file into a dictionary without modifying os.environ."""
     if not path.exists():
-        return env
+        return {}
+    env = {}
     for line in path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        env[k] = v
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
     return env
 
 
@@ -286,22 +271,34 @@ def install_instance(name: str) -> None:
             subprocess.run(["rm", "-rf", str(data_dir)], check=False)
         else:
             return
+    
+    # Instead of running the full installer, use a simpler approach
+    say(f"Creating instance '{name}'...")
+    
+    # Set environment for this instance
     env = os.environ.copy()
-    env.update(
-        {
-            "INSTANCE_NAME": name,
-            "STACK_DIR": str(stack_dir),
-            "DATA_ROOT": str(data_dir),
-            "BP_BRANCH": BRANCH,
-        }
-    )
+    env.update({
+        "INSTANCE_NAME": name,
+        "STACK_DIR": str(stack_dir),
+        "DATA_ROOT": str(data_dir),
+        "BP_BRANCH": BRANCH,
+    })
+    
+    # Run the installer but bypass the CLI detection by setting a flag
+    env["BP_FORCE_INSTALL"] = "1"
+    
     url = (
         "https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/"
         f"{BRANCH}/install.py"
     )
     cmd = f"curl -fsSL {url} | python3 - --branch {BRANCH}"
     say(f"Installing instance '{name}' from branch {BRANCH}")
-    subprocess.run(["bash", "-lc", cmd], env=env, check=True)
+    result = subprocess.run(["bash", "-lc", cmd], env=env, check=False)
+    
+    if result.returncode != 0:
+        warn(f"Installation of '{name}' failed")
+    else:
+        ok(f"Instance '{name}' installed successfully")
 
 
 def backup_instance(inst: Instance, mode: str) -> None:
