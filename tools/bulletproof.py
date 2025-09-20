@@ -88,6 +88,163 @@ def _get_instance_name() -> Optional[str]:
         return name
 
 
+def _handle_create_from_snapshot(name: str) -> bool:
+    """Handle creating a new instance from any available snapshot. Returns True if creation was attempted."""
+    # Get all available snapshots from all instances
+    all_snapshots = _get_all_snapshots()
+    if not all_snapshots:
+        warn("No snapshots found in cloud storage.")
+        return False
+    
+    # Display all available snapshots grouped by instance
+    say("Available snapshots from all instances:")
+    print()
+    
+    snapshot_list = []
+    current_instance = None
+    
+    for instance_name, snapshots in all_snapshots.items():
+        if current_instance != instance_name:
+            print(f"From instance '{instance_name}':")
+            current_instance = instance_name
+        
+        for snap_name, mode, parent in snapshots:
+            snapshot_list.append((instance_name, snap_name, mode, parent))
+            print(f"  {len(snapshot_list)}) {snap_name} ({mode})")
+    
+    if not snapshot_list:
+        warn("No snapshots available.")
+        return False
+    
+    print()
+    snap_choice = _read(f"Choose snapshot [1-{len(snapshot_list)}] or 'c' to cancel: ").strip()
+    
+    if snap_choice.lower() == 'c' or not snap_choice:
+        return False
+    
+    try:
+        snap_index = int(snap_choice) - 1
+        if 0 <= snap_index < len(snapshot_list):
+            source_instance, selected_snap, mode, parent = snapshot_list[snap_index]
+            
+            say(f"Creating instance '{name}' from snapshot '{selected_snap}' (from {source_instance})")
+            
+            # Get configuration for the new instance
+            config = _get_instance_config()
+            if not config:
+                return True
+            
+            # Path configuration  
+            data_root = _read(f"Data directory [/home/docker/{name}]: ").strip() or f"/home/docker/{name}"
+            stack_dir = _read(f"Stack directory [/home/docker/{name}-setup]: ").strip() or f"/home/docker/{name}-setup"
+            
+            # Create directory structure for new instance
+            if not _create_instance_structure(name, data_root, stack_dir, restore_mode=False, config=config):
+                warn("Failed to create instance structure")
+                return True
+            
+            # Set up for restore operation
+            data_dir = Path(data_root)
+            stack_path = Path(stack_dir)
+            
+            # Set up environment for backup restoration
+            os.environ["STACK_DIR"] = str(stack_path)
+            os.environ["DATA_ROOT"] = data_root
+            os.environ["INSTANCE_NAME"] = name
+            
+            # Load the newly created env file
+            from instance import load_env
+            load_env(stack_path / ".env")
+            
+            # Restore the selected snapshot to the new instance
+            say(f"Restoring snapshot '{selected_snap}' to new instance '{name}'...")
+            
+            from backup_restore import cmd_restore
+            import argparse
+            restore_args = argparse.Namespace()
+            restore_args.snapshot = selected_snap
+            restore_args.instance = name
+            
+            # Temporarily change the remote path to point to the source instance
+            original_remote_path = os.environ.get("RCLONE_REMOTE_PATH", "")
+            remote_name = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+            os.environ["RCLONE_REMOTE_PATH"] = f"backups/paperless/{source_instance}"
+            os.environ["REMOTE"] = f"{remote_name}:backups/paperless/{source_instance}"
+            
+            try:
+                cmd_restore(restore_args)
+                ok(f"Instance '{name}' created successfully from snapshot!")
+                
+                # Update the remote path back to the new instance name
+                env_file = stack_path / ".env"
+                if env_file.exists():
+                    content = env_file.read_text()
+                    content = content.replace(f"RCLONE_REMOTE_PATH=backups/paperless/{source_instance}", 
+                                            f"RCLONE_REMOTE_PATH=backups/paperless/{name}")
+                    content = content.replace(f"REMOTE={remote_name}:backups/paperless/{source_instance}", 
+                                            f"REMOTE={remote_name}:backups/paperless/{name}")
+                    env_file.write_text(content)
+                
+                # Auto-start the instance
+                start_now = _read("Start the instance now? [Y/n]: ").strip().lower()
+                if not start_now or start_now.startswith('y'):
+                    try:
+                        say(f"Starting instance '{name}'...")
+                        result = os.system(f"cd {stack_dir} && docker compose up -d")
+                        if result == 0:
+                            ok(f"Instance '{name}' started successfully!")
+                            # Get port from environment
+                            port = os.environ.get('HTTP_PORT', '8000')
+                            say(f"Paperless-ngx is available at: http://localhost:{port}")
+                        else:
+                            warn(f"Failed to start instance '{name}'. You can start it manually with:")
+                            say(f"  cd {stack_dir} && docker compose up -d")
+                    except Exception as e:
+                        warn(f"Error starting instance: {e}")
+                        say(f"You can start it manually with: cd {stack_dir} && docker compose up -d")
+                else:
+                    say("Instance created but not started. To start later:")
+                    say(f"  1. cd {stack_dir}")
+                    say("  2. Start with: docker compose up -d")
+                    say("  3. Or use 'bulletproof' to manage this instance")
+                return True
+                
+            except Exception as e:
+                error(f"Failed to restore snapshot: {e}")
+                return True
+            finally:
+                # Restore original environment
+                if original_remote_path:
+                    os.environ["RCLONE_REMOTE_PATH"] = original_remote_path
+                    os.environ["REMOTE"] = f"{remote_name}:{original_remote_path}"
+        else:
+            warn("Invalid selection")
+            return False
+            
+    except ValueError:
+        warn("Invalid selection")
+        return False
+
+
+def _get_all_snapshots() -> dict[str, list]:
+    """Get all snapshots from all instances in cloud storage."""
+    all_snapshots = {}
+    
+    try:
+        # Get all remote instances
+        remote_instances = list_remote_instances()
+        
+        for instance_name in remote_instances:
+            snapshots = fetch_snapshots_for(instance_name)
+            if snapshots:
+                all_snapshots[instance_name] = snapshots
+                
+    except Exception as e:
+        warn(f"Failed to fetch snapshots: {e}")
+    
+    return all_snapshots
+
+
 def _handle_restore_from_backup(name: str) -> bool:
     """Handle restoration from existing backup. Returns True if restore was attempted."""
     remote_instances = list_remote_instances()
@@ -197,6 +354,36 @@ def _get_instance_config() -> Optional[Dict[str, Any]]:
             warn("Email required for Let's Encrypt.")
             return None
     
+    # Backup schedule configuration
+    print()
+    say("Configure backup schedules:")
+    configure_backups = _read("Configure backup schedules now? [Y/n]: ").strip().lower()
+    
+    # Default schedules
+    full_schedule = "30 3 * * 0"   # Sunday 3:30 AM
+    incr_schedule = "0 0 * * *"    # Daily at midnight
+    archive_schedule = ""          # Disabled by default
+    
+    if not configure_backups.startswith('n'):
+        say("Setting up backup schedules...")
+        
+        print()
+        say("Full backups (complete backup of all data):")
+        full_schedule = _prompt_full_schedule(full_schedule)
+        
+        print()
+        say("Incremental backups (only changed files since last backup):")
+        incr_schedule = _prompt_incr_schedule(incr_schedule)
+        
+        print()
+        say("Archive backups (monthly long-term storage):")
+        archive_schedule = _prompt_archive_schedule(archive_schedule)
+    else:
+        say("Using default backup schedules:")
+        say(f"  Full: {full_schedule} (weekly on Sunday at 3:30 AM)")
+        say(f"  Incremental: {incr_schedule} (daily at midnight)")
+        say(f"  Archive: disabled")
+    
     return {
         'timezone': timezone,
         'admin_user': admin_user,
@@ -204,7 +391,10 @@ def _get_instance_config() -> Optional[Dict[str, Any]]:
         'db_password': db_password,
         'use_https': use_https,
         'domain': domain,
-        'email': email
+        'email': email,
+        'full_schedule': full_schedule,
+        'incr_schedule': incr_schedule,
+        'archive_schedule': archive_schedule
     }
 
 
@@ -224,9 +414,32 @@ def cmd_create_instance(args: argparse.Namespace) -> None:
     if not name:
         return
     
-    # Check for existing backups and handle restore
-    if _handle_restore_from_backup(name):
-        return
+    # Creation mode selection
+    print()
+    say("Instance creation options:")
+    print("  1. Create new instance from scratch")
+    print("  2. Create instance from existing backup/snapshot")
+    print("  3. Restore existing instance from backup")
+    
+    mode = _read("Select option [1-3]: ").strip()
+    
+    if mode == "3":
+        # Check for existing backups and handle restore
+        if _handle_restore_from_backup(name):
+            return
+        else:
+            say("No backups found for this instance name. Creating new instance.")
+            mode = "1"
+    elif mode == "2":
+        # Create from any snapshot
+        if _handle_create_from_snapshot(name):
+            return
+        else:
+            say("No snapshots available or creation cancelled. Creating new instance.")
+            mode = "1"
+    
+    if mode != "1":
+        mode = "1"  # Default to new instance
     
     # Create new instance from scratch
     say("Creating new instance from scratch...")
@@ -247,11 +460,28 @@ def cmd_create_instance(args: argparse.Namespace) -> None:
         return
     
     ok(f"Instance '{name}' created successfully!")
-    say("Next steps:")
-    say(f"  1. cd {stack_dir}")
-    say("  2. Review the configuration in .env")
-    say("  3. Start with: docker compose up -d")
-    say("  4. Or use 'bulletproof' to manage this instance")
+    
+    # Auto-start the instance
+    start_now = _read("Start the instance now? [Y/n]: ").strip().lower()
+    if not start_now or start_now.startswith('y'):
+        try:
+            say(f"Starting instance '{name}'...")
+            result = os.system(f"cd {stack_dir} && docker compose up -d")
+            if result == 0:
+                ok(f"Instance '{name}' started successfully!")
+                port = config.get('HTTP_PORT', '8000')
+                say(f"Paperless-ngx is available at: http://localhost:{port}")
+            else:
+                warn(f"Failed to start instance '{name}'. You can start it manually with:")
+                say(f"  cd {stack_dir} && docker compose up -d")
+        except Exception as e:
+            warn(f"Error starting instance: {e}")
+            say(f"You can start it manually with: cd {stack_dir} && docker compose up -d")
+    else:
+        say("Instance created but not started. To start later:")
+        say(f"  1. cd {stack_dir}")
+        say("  2. Start with: docker compose up -d")
+        say("  3. Or use 'bulletproof' to manage this instance")
 
 
 def cmd_upgrade(_: argparse.Namespace) -> None:
@@ -288,14 +518,15 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
 
 def cmd_doctor(_: argparse.Namespace) -> None:
-    """Command to run basic checks."""
+    """Command to run comprehensive system diagnostics."""
     print_header("System Diagnostics")
     
     try:
-        say("Environment:")
-        print(f"- INSTANCE_NAME: {INSTANCE_NAME}")
-        print(f"- STACK_DIR: {STACK_DIR}")
-        print(f"- DATA_ROOT: {DATA_ROOT}")
+        # Basic environment check
+        say("Environment Configuration:")
+        print(f"- INSTANCE_NAME: {INSTANCE_NAME or 'Not set'}")
+        print(f"- STACK_DIR: {STACK_DIR or 'Not set'}")
+        print(f"- DATA_ROOT: {DATA_ROOT or 'Not set'}")
         
         if COMPOSE_FILE:
             compose_status = "[ok]" if COMPOSE_FILE.exists() else "[missing]"
@@ -306,10 +537,74 @@ def cmd_doctor(_: argparse.Namespace) -> None:
             print(f"- ENV_FILE: {ENV_FILE} {env_status}")
         
         print()
+        
+        # System dependencies check
+        say("System Dependencies:")
         if run_stack_tests():
-            ok("All system checks passed!")
+            ok("All dependencies available")
         else:
-            error("Some system checks failed!")
+            error("Some dependencies missing")
+        
+        print()
+        
+        # Container status check
+        if INSTANCE_NAME and STACK_DIR:
+            say("Container Status:")
+            try:
+                result = os.popen(f"cd {STACK_DIR} && docker compose ps --format table").read()
+                if result.strip():
+                    print(result)
+                else:
+                    warn("No containers found or not started")
+            except Exception as e:
+                warn(f"Could not check container status: {e}")
+        
+        print()
+        
+        # Port availability check
+        if ENV_FILE and ENV_FILE.exists():
+            say("Port Availability:")
+            try:
+                import socket
+                # Read HTTP_PORT from env file
+                with open(ENV_FILE, 'r') as f:
+                    env_content = f.read()
+                    import re
+                    port_match = re.search(r'HTTP_PORT=(\d+)', env_content)
+                    if port_match:
+                        port = int(port_match.group(1))
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(('localhost', port))
+                        if result == 0:
+                            ok(f"Port {port}: Service responding")
+                            say(f"  Paperless-ngx available at: http://localhost:{port}")
+                        else:
+                            warn(f"Port {port}: No response (service may be starting)")
+                        sock.close()
+                    else:
+                        warn("HTTP_PORT not found in .env file")
+            except Exception as e:
+                warn(f"Could not check port availability: {e}")
+        
+        print()
+        
+        # Disk space check
+        say("Disk Space:")
+        try:
+            if DATA_ROOT:
+                result = os.popen(f"df -h {DATA_ROOT}").read()
+                lines = result.strip().split('\n')
+                if len(lines) > 1:
+                    print(lines[1])  # Skip header, show data
+                else:
+                    warn("Could not determine disk usage")
+        except Exception as e:
+            warn(f"Could not check disk space: {e}")
+        
+        print()
+        ok("Diagnostics completed!")
+        
     except Exception as e:
         error(f"Diagnostics failed: {e}")
 
@@ -317,7 +612,49 @@ def cmd_doctor(_: argparse.Namespace) -> None:
 def cmd_schedule(args: argparse.Namespace) -> None:
     """Command to configure backup schedule."""
     print_header("Backup Schedule Configuration")
-    warn("Schedule configuration not yet implemented")
+    
+    if not STACK_DIR:
+        error("No instance context. Use --instance to specify instance.")
+        return
+    
+    # Get instance info
+    instance_name = os.path.basename(STACK_DIR).replace("-setup", "")
+    from instance import parse_env
+    env_dict = parse_env(STACK_DIR / ".env")
+    instance = Instance(instance_name, STACK_DIR, Path(f"/home/docker/{instance_name}"), env_dict)
+    
+    # Get current schedules
+    env_file = STACK_DIR / ".env"
+    full_schedule = "30 3 * * 0"  # Default: Sunday 3:30 AM
+    incr_schedule = "0 0 * * *"   # Default: Daily at midnight  
+    archive_schedule = ""         # Default: disabled
+    
+    if env_file.exists():
+        content = env_file.read_text()
+        for line in content.split('\n'):
+            if line.startswith('CRON_FULL_TIME='):
+                full_schedule = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('CRON_INCR_TIME='):
+                incr_schedule = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('CRON_ARCHIVE_TIME='):
+                archive_schedule = line.split('=', 1)[1].strip('"\'')
+    
+    # Use command line args if provided, otherwise prompt
+    full = args.full or _prompt_full_schedule(full_schedule)
+    incr = args.incr or _prompt_incr_schedule(incr_schedule)
+    
+    if args.archive is not None:
+        archive = args.archive
+    else:
+        archive = _prompt_archive_schedule(archive_schedule)
+    
+    # Update environment file
+    _update_env_schedule(env_file, "CRON_FULL_TIME", full)
+    _update_env_schedule(env_file, "CRON_INCR_TIME", incr)
+    _update_env_schedule(env_file, "CRON_ARCHIVE_TIME", archive)
+    
+    ok("Backup schedules updated!")
+    install_cron(full, incr, archive)
 
 
 def cmd_setup_pcloud(args: argparse.Namespace) -> None:
@@ -453,73 +790,176 @@ def _safely_restore_instance(instance: Instance) -> None:
                 error(f"Failed to restart {instance.name}: {e}")
 
 
+def _normalize_time(t: str) -> tuple[int, int]:
+    """Return (hour, minute) from 'HH:MM' or 'HHMM' input."""
+    t = t.strip()
+    if ":" in t:
+        h, m = t.split(":", 1)
+    elif t.isdigit() and len(t) in (3, 4):
+        h, m = t[:-2], t[-2:]
+    else:
+        raise ValueError("Use HH:MM or HHMM")
+    h_i, m_i = int(h), int(m)
+    if not (0 <= h_i <= 23 and 0 <= m_i <= 59):
+        raise ValueError("Hour 0-23 and minute 0-59")
+    return h_i, m_i
+
+
+def _prompt_time(msg: str, default: str) -> tuple[int, int]:
+    """Prompt for time input with validation."""
+    while True:
+        raw = _read(f"{msg} [{default}]: ").strip() or default
+        try:
+            return _normalize_time(raw)
+        except ValueError as e:
+            warn(f"Invalid time: {e}")
+
+
+def _prompt_full_schedule(current: str) -> str:
+    """Prompt for full backup schedule."""
+    freq = _read(
+        "Full backup frequency (daily/weekly/monthly/cron) [weekly]: "
+    ).strip().lower()
+    if not freq:
+        freq = "weekly"
+    if " " in freq:
+        return freq
+    if freq.startswith("d"):
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * *"
+    if freq.startswith("w"):
+        dow = _read("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} * * {dow}"
+    if freq.startswith("m"):
+        dom = _read("Day of month (1-31) [1]: ").strip() or "1"
+        h, m = _prompt_time("Time (HH:MM)", "03:30")
+        return f"{m} {h} {dom} * *"
+    if freq.startswith("c"):
+        return _read(f"Cron expression [{current}]: ").strip() or current
+    return freq
+
+
+def _prompt_incr_schedule(current: str) -> str:
+    """Prompt for incremental backup schedule."""
+    freq = _read(
+        "Incremental backup frequency (hourly/daily/weekly/cron) [daily]: "
+    ).strip().lower()
+    if not freq:
+        freq = "daily"
+    if " " in freq:
+        return freq
+    if freq.startswith("h"):
+        n = _read("Every how many hours? [1]: ").strip() or "1"
+        return f"0 */{int(n)} * * *"
+    if freq.startswith("d"):
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * *"
+    if freq.startswith("w"):
+        dow = _read("Day of week (0=Sun..6=Sat) [0]: ").strip() or "0"
+        h, m = _prompt_time("Time (HH:MM)", "00:00")
+        return f"{m} {h} * * {dow}"
+    if freq.startswith("c"):
+        return _read(f"Cron expression [{current}]: ").strip() or current
+    return freq
+
+
+def _prompt_archive_schedule(current: str) -> str:
+    """Prompt for archive backup schedule."""
+    enable = _read("Enable monthly archive backup? (y/N): ").strip().lower()
+    if enable.startswith("y"):
+        dom = _read("Day of month [1]: ").strip() or "1"
+        h, m = _prompt_time("Time (HH:MM)", "04:00")
+        return f"{m} {h} {dom} * *"
+    return ""
+
+
 def _change_backup_schedule(instance: Instance) -> None:
     """Change backup schedule for an instance."""
-    say(f"Current backup schedule for {instance.name}:")
+    say(f"Current backup schedules for {instance.name}:")
     
-    # Read current schedule from env file
+    # Read current schedules from env file
     env_file = instance.stack_dir / ".env"
-    schedule = "Not configured"
+    full_schedule = "30 3 * * 0"  # Default: Sunday 3:30 AM
+    incr_schedule = "0 0 * * *"   # Default: Daily at midnight
+    archive_schedule = ""         # Default: disabled
     
     if env_file.exists():
         content = env_file.read_text()
         for line in content.split('\n'):
-            if line.startswith('BACKUP_SCHEDULE='):
-                schedule = line.split('=', 1)[1].strip('"\'')
-                break
+            if line.startswith('CRON_FULL_TIME='):
+                full_schedule = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('CRON_INCR_TIME='):
+                incr_schedule = line.split('=', 1)[1].strip('"\'')
+            elif line.startswith('CRON_ARCHIVE_TIME='):
+                archive_schedule = line.split('=', 1)[1].strip('"\'')
     
-    print(f"  Current: {schedule}")
+    print(f"  Full backups: {full_schedule or 'disabled'}")
+    print(f"  Incremental: {incr_schedule or 'disabled'}")
+    print(f"  Archive: {archive_schedule or 'disabled'}")
     print()
     
-    print("Schedule options:")
-    print("  1. Daily at 2:00 AM")
-    print("  2. Weekly on Sunday at 3:00 AM")
-    print("  3. Monthly on 1st at 4:00 AM")
-    print("  4. Custom cron expression")
-    print("  5. Disable backups")
+    print("Configure backup schedules:")
+    print("  1. Full backup schedule")
+    print("  2. Incremental backup schedule") 
+    print("  3. Archive backup schedule")
+    print("  4. Configure all schedules")
+    print("  5. Disable all backups")
     
     choice = _read("Select option (1-5): ").strip()
     
-    schedules = {
-        "1": "0 2 * * *",
-        "2": "0 3 * * 0", 
-        "3": "0 4 1 * *",
-        "5": ""
-    }
-    
-    if choice in schedules:
-        new_schedule = schedules[choice]
+    if choice == "1":
+        new_full = _prompt_full_schedule(full_schedule)
+        _update_env_schedule(env_file, "CRON_FULL_TIME", new_full)
+        ok(f"Full backup schedule updated to: {new_full}")
+    elif choice == "2":
+        new_incr = _prompt_incr_schedule(incr_schedule) 
+        _update_env_schedule(env_file, "CRON_INCR_TIME", new_incr)
+        ok(f"Incremental backup schedule updated to: {new_incr}")
+    elif choice == "3":
+        new_archive = _prompt_archive_schedule(archive_schedule)
+        _update_env_schedule(env_file, "CRON_ARCHIVE_TIME", new_archive)
+        if new_archive:
+            ok(f"Archive backup schedule updated to: {new_archive}")
+        else:
+            ok("Archive backups disabled")
     elif choice == "4":
-        new_schedule = _read("Enter cron expression: ").strip()
+        new_full = _prompt_full_schedule(full_schedule)
+        new_incr = _prompt_incr_schedule(incr_schedule)
+        new_archive = _prompt_archive_schedule(archive_schedule)
+        _update_env_schedule(env_file, "CRON_FULL_TIME", new_full)
+        _update_env_schedule(env_file, "CRON_INCR_TIME", new_incr)
+        _update_env_schedule(env_file, "CRON_ARCHIVE_TIME", new_archive)
+        ok("All backup schedules updated")
+    elif choice == "5":
+        _update_env_schedule(env_file, "CRON_FULL_TIME", "")
+        _update_env_schedule(env_file, "CRON_INCR_TIME", "")
+        _update_env_schedule(env_file, "CRON_ARCHIVE_TIME", "")
+        ok("All backups disabled")
     else:
         warn("Invalid choice")
-        return
-    
+
+
+def _update_env_schedule(env_file: Path, var_name: str, schedule: str) -> None:
+    """Update a schedule variable in the .env file."""
     try:
-        # Update .env file
         if env_file.exists():
             content = env_file.read_text()
             lines = content.split('\n')
             updated = False
             
             for i, line in enumerate(lines):
-                if line.startswith('BACKUP_SCHEDULE='):
-                    lines[i] = f'BACKUP_SCHEDULE="{new_schedule}"'
+                if line.startswith(f'{var_name}='):
+                    lines[i] = f'{var_name}="{schedule}"'
                     updated = True
                     break
             
             if not updated:
-                lines.append(f'BACKUP_SCHEDULE="{new_schedule}"')
+                lines.append(f'{var_name}="{schedule}"')
             
             env_file.write_text('\n'.join(lines))
-            
-            if new_schedule:
-                ok(f"Backup schedule updated to: {new_schedule}")
-            else:
-                ok("Backups disabled")
         else:
             warn("Environment file not found")
-            
     except Exception as e:
         error(f"Failed to update schedule: {e}")
 
@@ -656,39 +1096,39 @@ def _handle_no_instances() -> bool:
     # Check cloud storage first
     if not _pcloud_remote_ok():
         print_menu_options([
-            ("s", "Set up cloud storage (required)"),
-            ("q", "Quit")
+            ("1", "Set up cloud storage (required)"),
+            ("0", "Quit")
         ], "Setup Required")
         
-        choice = _read("Choice: ").strip().lower()
-        if choice == "s":
+        choice = _read("Choice: ").strip()
+        if choice == "1":
             if setup_pcloud_remote():
                 ok("Cloud storage setup completed!")
                 return True
             else:
                 error("Cloud storage setup failed!")
                 return True
-        elif choice == "q":
+        elif choice == "0":
             return False
         else:
             warn("Invalid choice")
             return True
     else:
         print_menu_options([
-            ("c", "Create new instance"),
-            ("s", "Configure cloud storage"),
-            ("e", "Explore backups"),
-            ("q", "Quit")
+            ("1", "Create new instance"),
+            ("2", "Configure cloud storage"),
+            ("3", "Explore backups"),
+            ("0", "Quit")
         ], "No Instances Found")
         
-        choice = _read("Choice: ").strip().lower()
-        if choice == "c":
+        choice = _read("Choice: ").strip()
+        if choice == "1":
             cmd_create_instance(argparse.Namespace())
-        elif choice == "s":
+        elif choice == "2":
             setup_pcloud_remote()
-        elif choice == "e":
+        elif choice == "3":
             explore_backups()
-        elif choice == "q":
+        elif choice == "0":
             return False
         else:
             warn("Invalid choice")
@@ -703,40 +1143,40 @@ def _handle_multi_instance_menu(insts) -> bool:
     
     # Multi-instance menu
     print_menu_options([
-        ("m", "Manage instances"),
-        ("c", "Create new instance"),
-        ("s", "Start all instances"),
-        ("d", "Stop all instances"),
-        ("r", "Delete all instances"),
-        ("e", "Explore backups"),
-        ("o", "Configure cloud storage"),
-        ("q", "Quit")
+        ("1", "Manage instances"),
+        ("2", "Create new instance"),
+        ("3", "Start all instances"),
+        ("4", "Stop all instances"),
+        ("5", "Delete all instances"),
+        ("6", "Explore backups"),
+        ("7", "Configure cloud storage"),
+        ("0", "Quit")
     ], "Multi-Instance Actions")
     
-    choice = _read("Choice: ").strip().lower()
+    choice = _read("Choice: ").strip()
     
     # Handle empty input (Ctrl+C or EOF) as quit
     if not choice:
         return False
     
     # Handle menu actions
-    if choice == "m":
+    if choice == "1":
         _handle_instance_selection_menu(insts)
-    elif choice == "c":
+    elif choice == "2":
         cmd_create_instance(argparse.Namespace())
-    elif choice == "s":
+    elif choice == "3":
         start_all(insts)
         ok("All instances started")
-    elif choice == "d":
+    elif choice == "4":
         stop_all(insts)
         ok("All instances stopped")
-    elif choice == "r":
+    elif choice == "5":
         delete_all(insts)
-    elif choice == "e":
+    elif choice == "6":
         explore_backups()
-    elif choice == "o":
+    elif choice == "7":
         setup_pcloud_remote()
-    elif choice == "q":
+    elif choice == "0":
         return False
     else:
         warn("Invalid choice")
@@ -762,7 +1202,7 @@ def _handle_instance_selection_menu(insts) -> None:
         
         print()
         print_menu_options([
-            ("b", "Back to main menu")
+            ("0", "Back to main menu")
         ], "Instance Selection")
         
         choice = _read("Select instance (number) or action: ").strip()
@@ -771,7 +1211,7 @@ def _handle_instance_selection_menu(insts) -> None:
         if not choice:
             break
             
-        if choice.lower() == "b":
+        if choice == "0":
             break
             
         # Handle instance selection
@@ -912,7 +1352,7 @@ def _handle_menu_choice(choice: str, current: Optional[Instance]) -> bool:
         cmd_doctor(argparse.Namespace())
     elif choice == "11":
         cmd_schedule(argparse.Namespace(full=None, incr=None, archive=None))
-    elif choice == "12":
+    elif choice == "0":
         return False
     else:
         warn("Invalid choice")
@@ -948,7 +1388,7 @@ def menu() -> None:
             ("9", "Upgrade instance"),
             ("10", "System diagnostics"),
             ("11", "Configure schedule"),
-            ("12", "Quit")
+            ("0", "Quit")
         ], "Instance Management")
         
         choice = _read("Choice: ").strip()

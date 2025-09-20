@@ -8,8 +8,21 @@ like starting, stopping, deleting, and renaming instances.
 import os
 import subprocess
 import shutil
+import socket
 from pathlib import Path
 from ui import say, ok, warn, error, _read, print_instances_table
+
+
+def find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int:
+    """Find an available port starting from start_port."""
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(('', port))
+                return port
+        except OSError:
+            continue
+    return start_port  # Fallback to start_port if none found
 
 
 def load_env(path: Path) -> None:
@@ -166,10 +179,16 @@ def cleanup_orphans() -> None:
             for stack in orphaned_stacks:
                 try:
                     subprocess.run(["rm", "-rf", str(stack)], check=False)
-                    subprocess.run(["rm", "-rf", str(data)], check=False)
-                    ok(f"Removed {stack} and {data}")
+                    ok(f"Removed {stack}")
                 except Exception as e:
                     warn(f"Failed to remove {stack}: {e}")
+            
+            for data in orphaned_data:
+                try:
+                    subprocess.run(["rm", "-rf", str(data)], check=False)
+                    ok(f"Removed {data}")
+                except Exception as e:
+                    warn(f"Failed to remove {data}: {e}")
 
 
 def install_instance(name: str) -> None:
@@ -203,7 +222,7 @@ def install_instance(name: str) -> None:
         error(f"Error installing instance '{name}': {e}")
 
 
-def _create_instance_structure(name: str, data_root: str, stack_dir: str, restore_mode: bool = False, config: dict = None) -> bool:
+def _create_instance_structure(name: str, data_root: str, stack_dir: str, restore_mode: bool = False, config: dict | None = None) -> bool:
     """
     Unified function to create instance structure for both restore and new instances.
     
@@ -237,6 +256,17 @@ def _create_instance_structure(name: str, data_root: str, stack_dir: str, restor
         
         remote_name = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
         
+        # Determine port configuration
+        if config.get('use_https'):
+            # For HTTPS instances, no direct port exposure needed
+            port_config = "# Port managed by Traefik"
+            paperless_url = f"https://{config['domain']}"
+        else:
+            # For direct instances, find available port
+            http_port = find_available_port(8000)
+            port_config = f"HTTP_PORT={http_port}"
+            paperless_url = f"http://localhost:{http_port}"
+        
         # Generate .env file
         env_content = f"""# Paperless-ngx Configuration for {name}
 INSTANCE_NAME={name}
@@ -247,9 +277,29 @@ STACK_DIR={stack_dir}
 PAPERLESS_TIME_ZONE={config['timezone']}
 PAPERLESS_ADMIN_USER={config['admin_user']}
 PAPERLESS_ADMIN_PASSWORD={config['admin_password']}
+PAPERLESS_URL={paperless_url}
 
 # Database Configuration
+POSTGRES_VERSION=15
+POSTGRES_DB=paperless
+POSTGRES_USER=paperless
 POSTGRES_PASSWORD={config['db_password']}
+
+# Directory Configuration
+DIR_DB={data_root}/pgdata
+DIR_DATA={data_root}/data
+DIR_MEDIA={data_root}/media
+DIR_EXPORT={data_root}/export
+DIR_CONSUME={data_root}/consume
+DIR_TIKA_CACHE={data_root}/tika-cache
+
+# Port Configuration
+{port_config}
+
+# User Configuration
+PUID=1000
+PGID=1000
+TZ={config['timezone']}
 
 # Backup Configuration
 RCLONE_REMOTE_NAME={remote_name}
@@ -257,9 +307,9 @@ RCLONE_REMOTE_PATH=backups/paperless/{name}
 REMOTE={remote_name}:backups/paperless/{name}
 
 # Backup Schedule
-CRON_FULL_TIME=30 3 * * 0
-CRON_INCR_TIME=0 0 * * *
-CRON_ARCHIVE_TIME=
+CRON_FULL_TIME={config.get('full_schedule', '30 3 * * 0')}
+CRON_INCR_TIME={config.get('incr_schedule', '0 0 * * *')}
+CRON_ARCHIVE_TIME={config.get('archive_schedule', '')}
 """
         
         if config.get('use_https'):
@@ -282,10 +332,13 @@ TRAEFIK_ENABLED=yes
             shutil.copy2(compose_source, compose_dest)
             say(f"Created docker-compose.yml from {compose_template} template")
         else:
-            # Fallback: create a basic compose file if templates don't exist
-            basic_compose = f"""version: '3.8'
+            # Fallback: create a comprehensive compose file if templates don't exist
+            basic_compose = f"""services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
 
-services:
   db:
     image: postgres:15-alpine
     restart: unless-stopped
@@ -296,9 +349,16 @@ services:
     volumes:
       - {data_root}/pgdata:/var/lib/postgresql/data
 
-  redis:
-    image: redis:7-alpine
+  gotenberg:
+    image: gotenberg/gotenberg:8
     restart: unless-stopped
+    command: ["gotenberg", "--chromium-disable-javascript=true"]
+
+  tika:
+    image: ghcr.io/paperless-ngx/tika:latest
+    restart: unless-stopped
+    volumes:
+      - {data_root}/tika-cache:/cache
 
   paperless:
     image: ghcr.io/paperless-ngx/paperless-ngx:latest
@@ -306,21 +366,41 @@ services:
     depends_on:
       - db
       - redis
+      - gotenberg
+      - tika
     environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${{PAPERLESS_TIME_ZONE}}
       PAPERLESS_REDIS: redis://redis:6379
       PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: ${{POSTGRES_PASSWORD}}
       PAPERLESS_ADMIN_USER: ${{PAPERLESS_ADMIN_USER}}
       PAPERLESS_ADMIN_PASSWORD: ${{PAPERLESS_ADMIN_PASSWORD}}
       PAPERLESS_TIME_ZONE: ${{PAPERLESS_TIME_ZONE}}
+      PAPERLESS_URL: ${{PAPERLESS_URL}}
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_CONSUMER_POLLING: "10"
     volumes:
       - {data_root}/data:/usr/src/paperless/data
       - {data_root}/media:/usr/src/paperless/media
       - {data_root}/export:/usr/src/paperless/export
+      - {data_root}/consume:/usr/src/paperless/consume"""
+            
+            # Add port configuration only for direct instances
+            if not config.get('use_https'):
+                basic_compose += f"""
     ports:
-      - "8000:8000"
+      - "${{HTTP_PORT}}:8000"
 """
+            
             compose_dest.write_text(basic_compose)
-            say("Created basic docker-compose.yml")
+            say("Created comprehensive docker-compose.yml with gotenberg and tika")
         
         # Copy backup script
         backup_script_source = Path(__file__).parent.parent / "modules" / "backup.py"
