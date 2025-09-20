@@ -554,9 +554,12 @@ services:
       - ${{DIR_MEDIA}}:/usr/src/paperless/media
       - ${{DIR_EXPORT}}:/usr/src/paperless/export
       - ${{DIR_CONSUME}}:/usr/src/paperless/consume
-    networks: [paperless]
+    networks:
+      - paperless
+      - traefik
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
       - "traefik.http.routers.paperless-{name}.rule=Host(`${{DOMAIN}}`)"
       - "traefik.http.routers.paperless-{name}.tls=true"
       - "traefik.http.routers.paperless-{name}.tls.certresolver=letsencrypt"
@@ -570,6 +573,8 @@ services:
 networks:
   paperless:
     name: paperless_net_{name}
+  traefik:
+    external: true
 """
         else:
             # Direct HTTP version with health checks and proper dependencies
@@ -723,6 +728,24 @@ sudo chmod -R 755 "{data_root}"
 if ! docker network ls | grep -q "paperless_net_{name}"; then
     echo "Creating Docker network..."
     docker network create paperless_net_{name} 2>/dev/null || true
+fi
+
+# Create Traefik network if it doesn't exist (needed for HTTPS)
+if ! docker network ls | grep -q "traefik"; then
+    echo "Creating Traefik network..."
+    docker network create traefik 2>/dev/null || true
+fi
+
+# Check if Traefik is running
+if ! docker ps | grep -q traefik; then
+    echo "WARNING: Traefik is not running!"
+    echo "For HTTPS to work, you need to start Traefik first."
+    echo "You can start Traefik with your existing setup or use a basic configuration."
+    echo ""
+    echo "Basic Traefik setup:"
+    echo "1. Create traefik.yml with your configuration"
+    echo "2. Start Traefik: docker run -d --name traefik --network traefik -p 80:80 -p 443:443 traefik"
+    echo ""
 fi
 
 # Pull latest images
