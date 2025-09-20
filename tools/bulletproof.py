@@ -185,11 +185,57 @@ def _pcloud_create_oauth_remote(token_json: str, host: str) -> None:
 
 
 def _pcloud_set_oauth_token_autoregion(token_json: str) -> bool:
-    for host in ["api.pcloud.com", "eapi.pcloud.com"]:
+    say("Testing pCloud connection with both regions...")
+    
+    # Try to detect region preference based on token behavior
+    regions = [
+        ("api.pcloud.com", "Global/US"),
+        ("eapi.pcloud.com", "Europe")
+    ]
+    
+    for host, region_name in regions:
+        say(f"Trying {region_name} region ({host})...")
         _pcloud_create_oauth_remote(token_json, host)
-        if _pcloud_remote_ok():
-            ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' configured for {host}.")
-            return True
+        
+        # Debug: Check if remote was created
+        if not _pcloud_remote_exists():
+            warn(f"Failed to create remote for {region_name}")
+            continue
+            
+        # Debug: Test connection with more detailed output
+        try:
+            result = subprocess.run(
+                ["rclone", "about", f"{RCLONE_REMOTE_NAME}:"], 
+                timeout=15, 
+                capture_output=True, 
+                text=True
+            )
+            if result.returncode == 0:
+                ok(f"pCloud remote '{RCLONE_REMOTE_NAME}:' configured for {region_name} region.")
+                return True
+            else:
+                error_msg = result.stderr.strip()
+                warn(f"Connection test failed for {region_name}: {error_msg}")
+                
+                # Check for region-specific errors
+                if "unauthorized" in error_msg.lower() or "401" in error_msg:
+                    warn(f"Token may not be valid for {region_name} region")
+                elif "timeout" in error_msg.lower():
+                    warn(f"Network timeout connecting to {region_name} region")
+                    
+        except subprocess.TimeoutExpired:
+            warn(f"Connection test timed out for {region_name} region")
+        except Exception as e:
+            warn(f"Connection test error for {region_name}: {e}")
+    
+    # If both regions failed, provide helpful guidance
+    warn("Token validation failed for both regions. This could be because:")
+    warn("• Your pCloud account is in a different region than expected")
+    warn("• The OAuth token was generated incorrectly")
+    warn("• Network connectivity issues")
+    say("Try generating a new token with: rclone authorize \"pcloud\"")
+    say("Or use option 3 (WebDAV) which works regardless of region.")
+    
     return False
 
 
@@ -247,20 +293,38 @@ def setup_pcloud_remote() -> bool:
         choice = _pcloud_prompt("Choose [1-4] [1]: ") or "1"
 
         if choice in {"1", "2"}:
-            say('On any machine with a browser, run:  rclone authorize "pcloud"')
+            if choice == "1":
+                say('On any machine with a browser, run:  rclone authorize "pcloud"')
+            else:
+                say("Headless OAuth setup:")
+                say("1. On a machine with a browser, install rclone")
+                say("2. Run: rclone authorize \"pcloud\"")
+                say("3. Copy the JSON token output and paste it below")
+                say("4. The token looks like: {\"access_token\":\"...\",\"token_type\":\"bearer\"...}")
+            
+            say("")
+            say("ℹ Note: The system will automatically test both pCloud regions:")
+            say("  • Global/US region (api.pcloud.com)")
+            say("  • Europe region (eapi.pcloud.com)")
+            say("")
+            
             token = _sanitize_oneline(_pcloud_prompt("Paste token JSON here: "))
             if not token:
                 warn("Empty token.")
                 continue
             try:
                 import json
-                json.loads(token)
+                parsed = json.loads(token)
+                if "access_token" not in parsed:
+                    warn("Token missing access_token field.")
+                    continue
             except Exception:
-                warn("Token does not look like JSON with access_token.")
+                warn("Token does not look like valid JSON.")
                 continue
             if _pcloud_set_oauth_token_autoregion(token):
                 return True
-            warn("Token invalid or not valid for either region. Try again.")
+            warn("If the token keeps failing, your pCloud account might be in a")
+            warn("different region, or you might need to use WebDAV (option 3).")
 
         elif choice == "3":
             email = _pcloud_prompt("pCloud login email: ").strip()

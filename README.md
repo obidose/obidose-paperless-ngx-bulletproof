@@ -352,13 +352,13 @@ provided.
 ## Troubleshooting
 
 - **OAuth token fails**  
-  Make sure you paste the **exact** JSON from `rclone authorize "pcloud"` using the **same rclone version** if possible.
+  Make sure you paste the **exact** JSON from `rclone authorize "pcloud"` using the **same rclone version** if possible. If the token keeps failing validation, try generating a fresh token or use WebDAV instead.
 
-- **EU vs Global**  
-  The installer tests pCloud API endpoints and picks the right one automatically.
+- **pCloud region detection**  
+  The system automatically tests both pCloud regions (Global/US and Europe). If OAuth fails for both regions, your account might be in a different region or have specific restrictions. Try WebDAV (option 3) which works regardless of region.
 
 - **WebDAV timeouts / 401**  
-  Prefer **OAuth**. WebDAV endpoints can be region‑/network‑sensitive.
+  Prefer **OAuth**. WebDAV endpoints can be region‑/network‑sensitive, but often work when OAuth fails due to network restrictions.
 
 - **HTTPS not issuing**  
   Confirm DNS points to this host and ports 80/443 are reachable. Traefik will retry challenges.
