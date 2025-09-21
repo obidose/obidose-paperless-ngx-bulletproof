@@ -393,8 +393,6 @@ DIR_TIKA_CACHE={data_root}/tika-cache
 DOMAIN={config['domain']}
 EMAIL={config.get('email', '')}
 LETSENCRYPT_EMAIL={config.get('email', '')}
-CLOUDFLARE_EMAIL={config.get('email', '')}
-CLOUDFLARE_API_KEY=your_cloudflare_api_key_here
 TRAEFIK_ENABLED=yes
 HTTPS_PORT={config.get('https_port', 443)}"""
         
@@ -448,18 +446,11 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.web.http.redirections.entrypoint.permanent=true
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge=true
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare
-      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
       - --certificatesresolvers.letsencrypt.acme.email=$${LETSENCRYPT_EMAIL}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
       - --log.level=INFO
-    environment:
-      - CF_API_EMAIL=$${CLOUDFLARE_EMAIL}
-      - CF_API_KEY=$${CLOUDFLARE_API_KEY}
     ports:
       - "80:80"
       - "443:443"
@@ -467,7 +458,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certificates:/letsencrypt
     networks:
-      - traefik
+      - paperless
 
   redis:
     image: redis:7-alpine
@@ -582,12 +573,10 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - ${DIR_CONSUME}:/usr/src/paperless/consume
     networks:
       - paperless
-      - traefik
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik_net_INSTANCE_NAME"
       - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.paperless-INSTANCE_NAME.tls=true"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.entrypoints=websecure"
       - "traefik.http.routers.paperless-INSTANCE_NAME.tls.certresolver=letsencrypt"
       - "traefik.http.services.paperless-INSTANCE_NAME.loadbalancer.server.port=8000"
     healthcheck:
@@ -602,8 +591,6 @@ volumes:
 networks:
   paperless:
     name: paperless_net_INSTANCE_NAME
-  traefik:
-    name: traefik_net_INSTANCE_NAME
 """.replace("INSTANCE_NAME", name)
         else:
             # Direct HTTP version with health checks and proper dependencies
