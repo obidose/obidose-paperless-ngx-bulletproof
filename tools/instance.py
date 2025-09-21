@@ -841,6 +841,8 @@ echo "3. Access admin at: {paperless_url}/admin"
         
         # Create maintenance script
         maintenance_script = stack_path / "maintenance.sh"
+        
+        # Build the content in parts to avoid f-string escaping issues
         maintenance_script_content = f"""#!/bin/bash
 # Maintenance script for Paperless-ngx instance: {name}
 
@@ -856,7 +858,7 @@ case "$1" in
         echo "Update complete"
         ;;
     "logs")
-        docker compose logs -f "${2:-paperless}"
+        docker compose logs -f "$""" + """{2:-paperless}"
         ;;
     "shell")
         docker compose exec paperless python manage.py shell
@@ -887,7 +889,7 @@ case "$1" in
         ;;
     *)
         echo "Paperless-ngx Maintenance Script for {name}"
-        echo "Usage: $0 {{backup|update|logs|shell|restart|status|permissions}} [service]"
+        echo "Usage: $0 """ + """{backup|update|logs|shell|restart|status|permissions}""" + f""" [service]"
         echo ""
         echo "Commands:"
         echo "  backup       - Run full backup"
