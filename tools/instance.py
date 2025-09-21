@@ -483,7 +483,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       POSTGRES_USER: paperless
       POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
     volumes:
-      - $${DIR_DB}:/var/lib/postgresql/data
+      - ${DIR_DB}:/var/lib/postgresql/data
     networks:
       - paperless
     healthcheck:
@@ -511,7 +511,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
     image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
-      - $${DIR_TIKA_CACHE}:/cache
+      - ${DIR_TIKA_CACHE}:/cache
     networks:
       - paperless
     healthcheck:
@@ -569,10 +569,10 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       PAPERLESS_USE_X_FORWARD_PROTO: true
       
     volumes:
-      - $${DIR_DATA}:/usr/src/paperless/data
-      - $${DIR_MEDIA}:/usr/src/paperless/media
-      - $${DIR_EXPORT}:/usr/src/paperless/export
-      - $${DIR_CONSUME}:/usr/src/paperless/consume
+      - ${DIR_DATA}:/usr/src/paperless/data
+      - ${DIR_MEDIA}:/usr/src/paperless/media
+      - ${DIR_EXPORT}:/usr/src/paperless/export
+      - ${DIR_CONSUME}:/usr/src/paperless/consume
     networks:
       - paperless
       - traefik
