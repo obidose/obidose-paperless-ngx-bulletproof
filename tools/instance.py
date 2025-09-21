@@ -678,7 +678,7 @@ networks:
       # User and timezone configuration
       PUID: $${PUID}
       PGID: $${PGID}
-      TZ: $${TZ}
+      TZ: $${PAPERLESS_TIME_ZONE}
       
       # Database configuration
       PAPERLESS_REDIS: redis://redis:6379
