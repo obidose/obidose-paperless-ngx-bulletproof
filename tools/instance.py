@@ -364,7 +364,12 @@ PAPERLESS_TIME_ZONE={config['timezone']}
 PAPERLESS_ADMIN_USER={config['admin_user']}
 PAPERLESS_ADMIN_PASSWORD={config['admin_password']}
 PAPERLESS_URL={paperless_url}
-SECRET_KEY={secret_key}
+PAPERLESS_SECRET_KEY={secret_key}
+PAPERLESS_ALLOWED_HOSTS={allowed_hosts}
+PAPERLESS_CORS_ALLOWED_HOSTS={cors_hosts}
+PAPERLESS_USE_X_FORWARD_HOST=true
+PAPERLESS_USE_X_FORWARD_PORT=true
+PAPERLESS_USE_X_FORWARD_PROTO=true
 
 # ===== DATABASE CONFIGURATION =====
 POSTGRES_VERSION=15
@@ -397,14 +402,6 @@ HTTPS_PORT={config.get('https_port', 443)}"""
 PUID=1000
 PGID=1000
 TZ={config['timezone']}
-
-# ===== PAPERLESS SECURITY SETTINGS =====
-PAPERLESS_SECRET_KEY={secret_key}
-PAPERLESS_ALLOWED_HOSTS={allowed_hosts}
-PAPERLESS_CORS_ALLOWED_HOSTS={cors_hosts}
-PAPERLESS_USE_X_FORWARD_HOST={"true" if config.get('use_https') else "false"}
-PAPERLESS_USE_X_FORWARD_PORT={"true" if config.get('use_https') else "false"}
-PAPERLESS_USE_X_FORWARD_PROTO={"true" if config.get('use_https') else "false"}
 
 # ===== PAPERLESS PROCESSING SETTINGS =====
 PAPERLESS_OCR_LANGUAGE=eng
@@ -477,7 +474,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
     networks: [traefik]
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.dashboard-INSTANCE_NAME.rule=Host(`traefik.${{DOMAIN}}`)"
+      - "traefik.http.routers.dashboard-INSTANCE_NAME.rule=Host(`traefik.$${DOMAIN}`)"
       - "traefik.http.routers.dashboard-INSTANCE_NAME.tls=true"
       - "traefik.http.routers.dashboard-INSTANCE_NAME.tls.certresolver=letsencrypt"
       - "traefik.http.routers.dashboard-INSTANCE_NAME.service=api@internal"
