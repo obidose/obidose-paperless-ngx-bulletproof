@@ -621,17 +621,17 @@ networks:
       retries: 3
 
   db:
-    image: postgres:${POSTGRES_VERSION:-15}-alpine
+    image: postgres:$${POSTGRES_VERSION:-15}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: $${POSTGRES_DB}
+      POSTGRES_USER: $${POSTGRES_USER}
+      POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
     volumes:
-      - ${DIR_DB}:/var/lib/postgresql/data
+      - $${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -654,7 +654,7 @@ networks:
     image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
-      - ${DIR_TIKA_CACHE}:/cache
+      - $${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f tika || exit 1"]
@@ -676,22 +676,22 @@ networks:
     restart: unless-stopped
     environment:
       # User and timezone configuration
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      PUID: $${PUID}
+      PGID: $${PGID}
+      TZ: $${TZ}
       
       # Database configuration
       PAPERLESS_REDIS: redis://redis:6379
       PAPERLESS_DBHOST: db
       PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${POSTGRES_DB}
-      PAPERLESS_DBUSER: ${POSTGRES_USER}
-      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_DBNAME: $${POSTGRES_DB}
+      PAPERLESS_DBUSER: $${POSTGRES_USER}
+      PAPERLESS_DBPASS: $${POSTGRES_PASSWORD}
       
       # Authentication
-      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
-      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
-      PAPERLESS_URL: ${PAPERLESS_URL}
+      PAPERLESS_ADMIN_USER: $${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: $${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: $${PAPERLESS_URL}
       
       # Service integrations
       PAPERLESS_TIKA_ENABLED: "1"
@@ -707,20 +707,20 @@ networks:
       
       # Security settings
       PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
-      PAPERLESS_ALLOWED_HOSTS: ${PAPERLESS_ALLOWED_HOSTS}
-      PAPERLESS_CORS_ALLOWED_HOSTS: ${PAPERLESS_CORS_ALLOWED_HOSTS}
+      PAPERLESS_ALLOWED_HOSTS: $${PAPERLESS_ALLOWED_HOSTS}
+      PAPERLESS_CORS_ALLOWED_HOSTS: $${PAPERLESS_CORS_ALLOWED_HOSTS}
       
       # OCR and language settings
-      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE}
-      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE}
+      PAPERLESS_OCR_LANGUAGE: $${PAPERLESS_OCR_LANGUAGE}
+      PAPERLESS_TIME_ZONE: $${PAPERLESS_TIME_ZONE}
       
     volumes:
-      - ${DIR_DATA}:/usr/src/paperless/data
-      - ${DIR_MEDIA}:/usr/src/paperless/media
-      - ${DIR_EXPORT}:/usr/src/paperless/export
-      - ${DIR_CONSUME}:/usr/src/paperless/consume
+      - $${DIR_DATA}:/usr/src/paperless/data
+      - $${DIR_MEDIA}:/usr/src/paperless/media
+      - $${DIR_EXPORT}:/usr/src/paperless/export
+      - $${DIR_CONSUME}:/usr/src/paperless/consume
     ports:
-      - "${HTTP_PORT}:8000"
+      - "$${HTTP_PORT}:8000"
     networks: [paperless]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/"]
