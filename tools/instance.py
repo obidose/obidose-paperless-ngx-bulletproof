@@ -328,10 +328,10 @@ def _create_instance_structure(name: str, data_root: str, stack_dir: str, restor
         
         remote_name = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
         
-        # Generate secure secret key
+        # Generate secure secret key (alphanumeric only to avoid shell issues)
         import secrets
         import string
-        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        alphabet = string.ascii_letters + string.digits
         secret_key = ''.join(secrets.choice(alphabet) for _ in range(50))
         
         # Determine port configuration
@@ -435,55 +435,40 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
         
         # Generate Docker Compose file with full Paperless-ngx compliance
         if config.get('use_https'):
-            # Traefik version with health checks and proper dependencies
+            # HTTPS version with Traefik, Tika, Gotenberg and health checks
             compose_content = """services:
   traefik:
     image: traefik:v3.0
     container_name: traefik-INSTANCE_NAME
     restart: unless-stopped
     command:
-      # Docker provider
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      
-      # Entrypoints
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      
-      # HTTPS redirect
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.web.http.redirections.entrypoint.permanent=true
-      
-      # Let's Encrypt
       - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
-      - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.email=$${LETSENCRYPT_EMAIL}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-      
-      # Logs
       - --log.level=INFO
-      - --api.dashboard=true
-      - --api.insecure=false
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certificates:/letsencrypt
-    networks: [traefik]
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.dashboard-INSTANCE_NAME.rule=Host(`traefik.$${DOMAIN}`)"
-      - "traefik.http.routers.dashboard-INSTANCE_NAME.tls=true"
-      - "traefik.http.routers.dashboard-INSTANCE_NAME.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.dashboard-INSTANCE_NAME.service=api@internal"
+    networks:
+      - traefik
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
-    networks: [paperless]
+    networks:
+      - paperless
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -491,17 +476,18 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       retries: 3
 
   db:
-    image: postgres:${POSTGRES_VERSION:-15}-alpine
+    image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
     volumes:
-      - ${DIR_DB}:/var/lib/postgresql/data
-    networks: [paperless]
+      - $${DATA_DIR}/pgdata:/var/lib/postgresql/data
+    networks:
+      - paperless
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U paperless -d paperless"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -513,7 +499,8 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - "gotenberg"
       - "--chromium-disable-javascript=true"
       - "--chromium-allow-list=file:///tmp/.*"
-    networks: [paperless]
+    networks:
+      - paperless
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -524,8 +511,9 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
     image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
-      - ${DIR_TIKA_CACHE}:/cache
-    networks: [paperless]
+      - $${DATA_DIR}/tika-cache:/cache
+    networks:
+      - paperless
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
       interval: 30s
@@ -534,6 +522,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
 
   paperless:
     image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
@@ -543,62 +532,54 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
         condition: service_healthy
       tika:
         condition: service_healthy
-    restart: unless-stopped
     environment:
-      # User and timezone configuration
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      # Core settings
+      PAPERLESS_SECRET_KEY: $${PAPERLESS_SECRET_KEY}
+      PAPERLESS_TIME_ZONE: $${PAPERLESS_TIME_ZONE}
+      PAPERLESS_ADMIN_USER: $${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: $${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: https://$${DOMAIN}
       
       # Database configuration
       PAPERLESS_REDIS: redis://redis:6379
       PAPERLESS_DBHOST: db
       PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${POSTGRES_DB}
-      PAPERLESS_DBUSER: ${POSTGRES_USER}
-      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: $${POSTGRES_PASSWORD}
       
-      # Authentication
-      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
-      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
-      PAPERLESS_URL: ${PAPERLESS_URL}
+      # OCR and processing
+      PAPERLESS_OCR_LANGUAGE: eng
+      PAPERLESS_CONSUMER_POLLING: 10
+      PAPERLESS_CONSUMER_RECURSIVE: true
+      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: true
+      PAPERLESS_TASK_WORKERS: 2
+      PAPERLESS_THREADS_PER_WORKER: 1
       
       # Service integrations
-      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_ENABLED: 1
       PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
       PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       
-      # Processing configuration
-      PAPERLESS_CONSUMER_POLLING: ${PAPERLESS_CONSUMER_POLLING}
-      PAPERLESS_CONSUMER_RECURSIVE: ${PAPERLESS_CONSUMER_RECURSIVE}
-      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: ${PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS}
-      PAPERLESS_TASK_WORKERS: ${PAPERLESS_TASK_WORKERS}
-      PAPERLESS_THREADS_PER_WORKER: ${PAPERLESS_THREADS_PER_WORKER}
-      
-      # Security settings
-      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
-      PAPERLESS_ALLOWED_HOSTS: ${PAPERLESS_ALLOWED_HOSTS}
-      PAPERLESS_CORS_ALLOWED_HOSTS: ${PAPERLESS_CORS_ALLOWED_HOSTS}
-      PAPERLESS_USE_X_FORWARD_HOST: ${PAPERLESS_USE_X_FORWARD_HOST}
-      PAPERLESS_USE_X_FORWARD_PORT: ${PAPERLESS_USE_X_FORWARD_PORT}
-      PAPERLESS_USE_X_FORWARD_PROTO: ${PAPERLESS_USE_X_FORWARD_PROTO}
-      
-      # OCR and language settings
-      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE}
-      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE}
+      # Security and proxy settings
+      PAPERLESS_ALLOWED_HOSTS: $${DOMAIN}
+      PAPERLESS_CORS_ALLOWED_HOSTS: https://$${DOMAIN}
+      PAPERLESS_USE_X_FORWARD_HOST: true
+      PAPERLESS_USE_X_FORWARD_PORT: true
+      PAPERLESS_USE_X_FORWARD_PROTO: true
       
     volumes:
-      - ${DIR_DATA}:/usr/src/paperless/data
-      - ${DIR_MEDIA}:/usr/src/paperless/media
-      - ${DIR_EXPORT}:/usr/src/paperless/export
-      - ${DIR_CONSUME}:/usr/src/paperless/consume
+      - $${DATA_DIR}/data:/usr/src/paperless/data
+      - $${DATA_DIR}/media:/usr/src/paperless/media
+      - $${DATA_DIR}/export:/usr/src/paperless/export
+      - $${DATA_DIR}/consume:/usr/src/paperless/consume
     networks:
       - paperless
       - traefik
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik"
-      - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`$${DOMAIN}`)"
       - "traefik.http.routers.paperless-INSTANCE_NAME.tls=true"
       - "traefik.http.routers.paperless-INSTANCE_NAME.tls.certresolver=letsencrypt"
       - "traefik.http.services.paperless-INSTANCE_NAME.loadbalancer.server.port=8000"
