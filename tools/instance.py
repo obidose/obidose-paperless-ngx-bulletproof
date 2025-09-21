@@ -142,7 +142,7 @@ class Instance:
                 for container in containers:
                     if container.strip():
                         status_res = subprocess.run(
-                            ["docker", "inspect", "-f", "{{.State.Running}}", container.strip()],
+                            ["docker", "inspect", "-f", "{.State.Running}", container.strip()],
                             capture_output=True,
                             text=True,
                             check=False
@@ -274,6 +274,30 @@ def install_instance(name: str) -> None:
     
     # Change to stack directory and run docker compose
     try:
+        # Create Traefik network if needed and instance uses HTTPS
+        env_file = instance.stack_dir / ".env"
+        if env_file.exists():
+            env_content = env_file.read_text()
+            if "TRAEFIK_ENABLED=yes" in env_content:
+                # Check if traefik network exists
+                try:
+                    subprocess.run(
+                        ["docker", "network", "inspect", "traefik"],
+                        check=True,
+                        capture_output=True
+                    )
+                except subprocess.CalledProcessError:
+                    # Create traefik network if it doesn't exist
+                    try:
+                        subprocess.run(
+                            ["docker", "network", "create", "traefik"],
+                            check=True,
+                            capture_output=True
+                        )
+                        say("Created Traefik network")
+                    except subprocess.CalledProcessError as e:
+                        warn(f"Could not create Traefik network: {e}")
+        
         subprocess.run(
             ["docker", "compose", "up", "-d"],
             cwd=instance.stack_dir,
@@ -438,7 +462,7 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
         # Generate Docker Compose file with full Paperless-ngx compliance
         if config.get('use_https'):
             # Traefik version with health checks and proper dependencies
-            compose_content = f"""version: '3.8'
+            compose_content = """version: '3.8'
 
 services:
   redis:
@@ -453,17 +477,17 @@ services:
       retries: 3
 
   db:
-    image: postgres:${{POSTGRES_VERSION:-15}}-alpine
+    image: postgres:${POSTGRES_VERSION:-15}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${{POSTGRES_DB}}
-      POSTGRES_USER: ${{POSTGRES_USER}}
-      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ${{DIR_DB}}:/var/lib/postgresql/data
+      - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${{POSTGRES_USER}} -d ${{POSTGRES_DB}}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -486,7 +510,7 @@ services:
     image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
-      - ${{DIR_TIKA_CACHE}}:/cache
+      - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
@@ -508,22 +532,22 @@ services:
     restart: unless-stopped
     environment:
       # User and timezone configuration
-      PUID: ${{PUID}}
-      PGID: ${{PGID}}
-      TZ: ${{TZ}}
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
       
       # Database configuration
       PAPERLESS_REDIS: redis://redis:6379
       PAPERLESS_DBHOST: db
       PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${{POSTGRES_DB}}
-      PAPERLESS_DBUSER: ${{POSTGRES_USER}}
-      PAPERLESS_DBPASS: ${{POSTGRES_PASSWORD}}
+      PAPERLESS_DBNAME: ${POSTGRES_DB}
+      PAPERLESS_DBUSER: ${POSTGRES_USER}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
       
       # Authentication
-      PAPERLESS_ADMIN_USER: ${{PAPERLESS_ADMIN_USER}}
-      PAPERLESS_ADMIN_PASSWORD: ${{PAPERLESS_ADMIN_PASSWORD}}
-      PAPERLESS_URL: ${{PAPERLESS_URL}}
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: ${PAPERLESS_URL}
       
       # Service integrations
       PAPERLESS_TIKA_ENABLED: "1"
@@ -531,39 +555,39 @@ services:
       PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       
       # Processing configuration
-      PAPERLESS_CONSUMER_POLLING: ${{PAPERLESS_CONSUMER_POLLING}}
-      PAPERLESS_CONSUMER_RECURSIVE: ${{PAPERLESS_CONSUMER_RECURSIVE}}
-      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: ${{PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS}}
-      PAPERLESS_TASK_WORKERS: ${{PAPERLESS_TASK_WORKERS}}
-      PAPERLESS_THREADS_PER_WORKER: ${{PAPERLESS_THREADS_PER_WORKER}}
+      PAPERLESS_CONSUMER_POLLING: ${PAPERLESS_CONSUMER_POLLING}
+      PAPERLESS_CONSUMER_RECURSIVE: ${PAPERLESS_CONSUMER_RECURSIVE}
+      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: ${PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS}
+      PAPERLESS_TASK_WORKERS: ${PAPERLESS_TASK_WORKERS}
+      PAPERLESS_THREADS_PER_WORKER: ${PAPERLESS_THREADS_PER_WORKER}
       
       # Security settings
-      PAPERLESS_SECRET_KEY: ${{PAPERLESS_SECRET_KEY}}
-      PAPERLESS_ALLOWED_HOSTS: ${{PAPERLESS_ALLOWED_HOSTS}}
-      PAPERLESS_CORS_ALLOWED_HOSTS: ${{PAPERLESS_CORS_ALLOWED_HOSTS}}
-      PAPERLESS_USE_X_FORWARD_HOST: ${{PAPERLESS_USE_X_FORWARD_HOST}}
-      PAPERLESS_USE_X_FORWARD_PORT: ${{PAPERLESS_USE_X_FORWARD_PORT}}
-      PAPERLESS_USE_X_FORWARD_PROTO: ${{PAPERLESS_USE_X_FORWARD_PROTO}}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
+      PAPERLESS_ALLOWED_HOSTS: ${PAPERLESS_ALLOWED_HOSTS}
+      PAPERLESS_CORS_ALLOWED_HOSTS: ${PAPERLESS_CORS_ALLOWED_HOSTS}
+      PAPERLESS_USE_X_FORWARD_HOST: ${PAPERLESS_USE_X_FORWARD_HOST}
+      PAPERLESS_USE_X_FORWARD_PORT: ${PAPERLESS_USE_X_FORWARD_PORT}
+      PAPERLESS_USE_X_FORWARD_PROTO: ${PAPERLESS_USE_X_FORWARD_PROTO}
       
       # OCR and language settings
-      PAPERLESS_OCR_LANGUAGE: ${{PAPERLESS_OCR_LANGUAGE}}
-      PAPERLESS_TIME_ZONE: ${{PAPERLESS_TIME_ZONE}}
+      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE}
+      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE}
       
     volumes:
-      - ${{DIR_DATA}}:/usr/src/paperless/data
-      - ${{DIR_MEDIA}}:/usr/src/paperless/media
-      - ${{DIR_EXPORT}}:/usr/src/paperless/export
-      - ${{DIR_CONSUME}}:/usr/src/paperless/consume
+      - ${DIR_DATA}:/usr/src/paperless/data
+      - ${DIR_MEDIA}:/usr/src/paperless/media
+      - ${DIR_EXPORT}:/usr/src/paperless/export
+      - ${DIR_CONSUME}:/usr/src/paperless/consume
     networks:
       - paperless
       - traefik
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik"
-      - "traefik.http.routers.paperless-{name}.rule=Host(`${{DOMAIN}}`)"
-      - "traefik.http.routers.paperless-{name}.tls=true"
-      - "traefik.http.routers.paperless-{name}.tls.certresolver=letsencrypt"
-      - "traefik.http.services.paperless-{name}.loadbalancer.server.port=8000"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.tls=true"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.tls.certresolver=letsencrypt"
+      - "traefik.http.services.paperless-INSTANCE_NAME.loadbalancer.server.port=8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/"]
       interval: 30s
@@ -572,13 +596,13 @@ services:
 
 networks:
   paperless:
-    name: paperless_net_{name}
+    name: paperless_net_INSTANCE_NAME
   traefik:
     external: true
-"""
+""".replace("INSTANCE_NAME", name).replace("${", "${").replace("}", "}")
         else:
             # Direct HTTP version with health checks and proper dependencies
-            compose_content = f"""version: '3.8'
+            compose_content = """version: '3.8'
 
 services:
   redis:
@@ -593,17 +617,17 @@ services:
       retries: 3
 
   db:
-    image: postgres:${{POSTGRES_VERSION:-15}}-alpine
+    image: postgres:${POSTGRES_VERSION:-15}-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${{POSTGRES_DB}}
-      POSTGRES_USER: ${{POSTGRES_USER}}
-      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ${{DIR_DB}}:/var/lib/postgresql/data
+      - ${DIR_DB}:/var/lib/postgresql/data
     networks: [paperless]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${{POSTGRES_USER}} -d ${{POSTGRES_DB}}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -626,7 +650,7 @@ services:
     image: ghcr.io/paperless-ngx/tika:latest
     restart: unless-stopped
     volumes:
-      - ${{DIR_TIKA_CACHE}}:/cache
+      - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
@@ -648,22 +672,22 @@ services:
     restart: unless-stopped
     environment:
       # User and timezone configuration
-      PUID: ${{PUID}}
-      PGID: ${{PGID}}
-      TZ: ${{TZ}}
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
       
       # Database configuration
       PAPERLESS_REDIS: redis://redis:6379
       PAPERLESS_DBHOST: db
       PAPERLESS_DBPORT: 5432
-      PAPERLESS_DBNAME: ${{POSTGRES_DB}}
-      PAPERLESS_DBUSER: ${{POSTGRES_USER}}
-      PAPERLESS_DBPASS: ${{POSTGRES_PASSWORD}}
+      PAPERLESS_DBNAME: ${POSTGRES_DB}
+      PAPERLESS_DBUSER: ${POSTGRES_USER}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
       
       # Authentication
-      PAPERLESS_ADMIN_USER: ${{PAPERLESS_ADMIN_USER}}
-      PAPERLESS_ADMIN_PASSWORD: ${{PAPERLESS_ADMIN_PASSWORD}}
-      PAPERLESS_URL: ${{PAPERLESS_URL}}
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      PAPERLESS_URL: ${PAPERLESS_URL}
       
       # Service integrations
       PAPERLESS_TIKA_ENABLED: "1"
@@ -671,28 +695,28 @@ services:
       PAPERLESS_TIKA_ENDPOINT: http://tika:9998
       
       # Processing configuration
-      PAPERLESS_CONSUMER_POLLING: ${{PAPERLESS_CONSUMER_POLLING}}
-      PAPERLESS_CONSUMER_RECURSIVE: ${{PAPERLESS_CONSUMER_RECURSIVE}}
-      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: ${{PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS}}
-      PAPERLESS_TASK_WORKERS: ${{PAPERLESS_TASK_WORKERS}}
-      PAPERLESS_THREADS_PER_WORKER: ${{PAPERLESS_THREADS_PER_WORKER}}
+      PAPERLESS_CONSUMER_POLLING: ${PAPERLESS_CONSUMER_POLLING}
+      PAPERLESS_CONSUMER_RECURSIVE: ${PAPERLESS_CONSUMER_RECURSIVE}
+      PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS: ${PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS}
+      PAPERLESS_TASK_WORKERS: ${PAPERLESS_TASK_WORKERS}
+      PAPERLESS_THREADS_PER_WORKER: ${PAPERLESS_THREADS_PER_WORKER}
       
       # Security settings
-      PAPERLESS_SECRET_KEY: ${{PAPERLESS_SECRET_KEY}}
-      PAPERLESS_ALLOWED_HOSTS: ${{PAPERLESS_ALLOWED_HOSTS}}
-      PAPERLESS_CORS_ALLOWED_HOSTS: ${{PAPERLESS_CORS_ALLOWED_HOSTS}}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
+      PAPERLESS_ALLOWED_HOSTS: ${PAPERLESS_ALLOWED_HOSTS}
+      PAPERLESS_CORS_ALLOWED_HOSTS: ${PAPERLESS_CORS_ALLOWED_HOSTS}
       
       # OCR and language settings
-      PAPERLESS_OCR_LANGUAGE: ${{PAPERLESS_OCR_LANGUAGE}}
-      PAPERLESS_TIME_ZONE: ${{PAPERLESS_TIME_ZONE}}
+      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE}
+      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE}
       
     volumes:
-      - ${{DIR_DATA}}:/usr/src/paperless/data
-      - ${{DIR_MEDIA}}:/usr/src/paperless/media
-      - ${{DIR_EXPORT}}:/usr/src/paperless/export
-      - ${{DIR_CONSUME}}:/usr/src/paperless/consume
+      - ${DIR_DATA}:/usr/src/paperless/data
+      - ${DIR_MEDIA}:/usr/src/paperless/media
+      - ${DIR_EXPORT}:/usr/src/paperless/export
+      - ${DIR_CONSUME}:/usr/src/paperless/consume
     ports:
-      - "${{HTTP_PORT}}:8000"
+      - "${HTTP_PORT}:8000"
     networks: [paperless]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/"]
@@ -702,8 +726,8 @@ services:
 
 networks:
   paperless:
-    name: paperless_net_{name}
-"""
+    name: paperless_net_INSTANCE_NAME
+""".replace("INSTANCE_NAME", name).replace("${", "${").replace("}", "}")
         
         compose_file = stack_path / "docker-compose.yml"
         compose_file.write_text(compose_content)
@@ -827,7 +851,7 @@ case "$1" in
         echo "Update complete"
         ;;
     "logs")
-        docker compose logs -f "${{2:-paperless}}"
+        docker compose logs -f "${2:-paperless}"
         ;;
     "shell")
         docker compose exec paperless python manage.py shell

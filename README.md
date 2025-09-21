@@ -2,6 +2,13 @@
 
 A modern, backup-centric management system for **Paperless-ngx** with multi-instance support, comprehensive backup automation, and enhanced diagnostics.
 
+> **🚀 Recent Enhancements (September 2025)**
+> - **Enhanced multi-instance diagnostics** that work across all instances automatically
+> - **Complete Paperless-ngx compliance** with health checks, service dependencies, and proper startup ordering
+> - **Robust Traefik configuration** with automatic network creation and HTTPS setup guidance
+> - **Streamlined codebase** with all duplicate/legacy code removed
+> - **Comprehensive backup system** including all configuration files and scripts
+
 ## ✨ Features
 
 ### 🏗️ Multi-Instance Management
@@ -38,9 +45,11 @@ A modern, backup-centric management system for **Paperless-ngx** with multi-inst
 
 ### Installation
 
+**Note**: Use the correct repository name `obidose-paperless-ngx-bulletproof` (not just `paperless-ngx-bulletproof`)
+
 ```bash
 # Download and run the installer
-curl -fsSL https://raw.githubusercontent.com/obidose/paperless-ngx-bulletproof/main/install.py | sudo python3
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3
 ```
 
 The installer will:
@@ -234,8 +243,8 @@ The modular architecture makes contributions straightforward:
 ### Development Setup
 
 ```bash
-git clone https://github.com/obidose/paperless-ngx-bulletproof.git
-cd paperless-ngx-bulletproof/tools
+git clone https://github.com/obidose/obidose-paperless-ngx-bulletproof.git
+cd obidose-paperless-ngx-bulletproof/tools
 python bulletproof.py --help
 ```
 
