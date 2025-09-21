@@ -401,7 +401,6 @@ HTTPS_PORT={config.get('https_port', 443)}"""
 # ===== USER CONFIGURATION =====
 PUID=1000
 PGID=1000
-TZ={config['timezone']}
 
 # ===== PAPERLESS PROCESSING SETTINGS =====
 PAPERLESS_OCR_LANGUAGE=eng
