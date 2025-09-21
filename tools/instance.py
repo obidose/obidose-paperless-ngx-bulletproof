@@ -599,7 +599,7 @@ networks:
     name: paperless_net_INSTANCE_NAME
   traefik:
     external: true
-""".replace("INSTANCE_NAME", name).replace("${", "${").replace("}", "}")
+""".replace("INSTANCE_NAME", name)
         else:
             # Direct HTTP version with health checks and proper dependencies
             compose_content = """version: '3.8'
@@ -727,7 +727,7 @@ services:
 networks:
   paperless:
     name: paperless_net_INSTANCE_NAME
-""".replace("INSTANCE_NAME", name).replace("${", "${").replace("}", "}")
+""".replace("INSTANCE_NAME", name)
         
         compose_file = stack_path / "docker-compose.yml"
         compose_file.write_text(compose_content)
@@ -735,6 +735,11 @@ networks:
         
         # Create initialization script for first-time setup
         init_script = stack_path / "init.sh"
+        
+        # Extract variables for script template
+        admin_user = config['admin_user']
+        email = config.get('email', 'admin@example.com')
+        
         init_script_content = f"""#!/bin/bash
 # Initialization script for Paperless-ngx instance: {name}
 # Ensures proper setup according to official documentation
@@ -773,7 +778,7 @@ if ! docker ps | grep -q traefik; then
     echo "  2. Start Traefik with: docker run -d --name traefik --network traefik \\"
     echo "     -p 80:80 -p 443:443 -v /var/run/docker.sock:/var/run/docker.sock \\"
     echo "     traefik:latest --providers.docker --entrypoints.web.address=:80 \\"
-    echo "     --entrypoints.websecure.address=:443 --certificatesresolvers.letsencrypt.acme.email={config.get('email', 'admin@example.com')} \\"
+    echo "     --entrypoints.websecure.address=:443     echo "     --certificatesresolvers.letsencrypt.acme.email={email} \\"\"
     echo "     --certificatesresolvers.letsencrypt.acme.storage=/acme.json \\"
     echo "     --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
     echo ""
@@ -820,7 +825,7 @@ docker compose exec -T paperless python manage.py collectstatic --noinput
 
 # Create superuser
 echo "Creating superuser..."
-docker compose exec -T paperless python manage.py createsuperuser --noinput --username {config['admin_user']} --email admin@localhost 2>/dev/null || echo "Superuser already exists"
+docker compose exec -T paperless python manage.py createsuperuser --noinput --username {admin_user} --email admin@localhost 2>/dev/null || echo "Superuser already exists"
 
 echo "Instance {name} initialized successfully!"
 echo "Access your instance at: {paperless_url}"
