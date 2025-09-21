@@ -515,10 +515,11 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
     networks:
       - paperless
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/9998 || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   paperless:
     image: ghcr.io/paperless-ngx/paperless-ngx:latest
