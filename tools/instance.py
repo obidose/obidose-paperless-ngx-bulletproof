@@ -578,8 +578,8 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - traefik
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik"
-      - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`$${DOMAIN}`)"
+      - "traefik.docker.network=traefik_net_INSTANCE_NAME"
+      - "traefik.http.routers.paperless-INSTANCE_NAME.rule=Host(`${DOMAIN}`)"
       - "traefik.http.routers.paperless-INSTANCE_NAME.tls=true"
       - "traefik.http.routers.paperless-INSTANCE_NAME.tls.certresolver=letsencrypt"
       - "traefik.http.services.paperless-INSTANCE_NAME.loadbalancer.server.port=8000"
