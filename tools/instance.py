@@ -274,47 +274,6 @@ def install_instance(name: str) -> None:
     
     # Change to stack directory and run docker compose
     try:
-        # Always create Traefik network if instance uses HTTPS (check compose file for traefik network)
-        compose_file = instance.stack_dir / "docker-compose.yml"
-        if compose_file.exists():
-            compose_content = compose_file.read_text()
-            if "traefik" in compose_content and "external: true" in compose_content:
-                # Check if traefik network exists
-                try:
-                    subprocess.run(
-                        ["docker", "network", "inspect", "traefik"],
-                        check=True,
-                        capture_output=True
-                    )
-                    say("Traefik network already exists")
-                except subprocess.CalledProcessError:
-                    # Create traefik network if it doesn't exist
-                    try:
-                        subprocess.run(
-                            ["docker", "network", "create", "traefik"],
-                            check=True,
-                            capture_output=True
-                        )
-                        say("✓ Created Traefik network")
-                    except subprocess.CalledProcessError as e:
-                        warn(f"Could not create Traefik network: {e}")
-                        
-                # Check if Traefik is installed and offer to install it
-                try:
-                    subprocess.run(
-                        ["docker", "ps", "--filter", "name=traefik", "--format", "{{.Names}}"],
-                        check=True,
-                        capture_output=True
-                    )
-                except subprocess.CalledProcessError:
-                    # Traefik is not running, offer to install it
-                    warn("⚠ Traefik reverse proxy is not running!")
-                    warn("  HTTPS will not work until Traefik is installed and configured.")
-                    warn("  This instance will start but won't be accessible via HTTPS.")
-                    
-                    if _read("  Install and configure Traefik now? [Y/n]: ").strip().lower() != 'n':
-                        install_traefik()
-        
         subprocess.run(
             ["docker", "compose", "up", "-d"],
             cwd=instance.stack_dir,
@@ -428,6 +387,7 @@ DIR_TIKA_CACHE={data_root}/tika-cache
             env_content += f"""
 DOMAIN={config['domain']}
 EMAIL={config.get('email', '')}
+LETSENCRYPT_EMAIL={config.get('email', '')}
 TRAEFIK_ENABLED=yes
 HTTPS_PORT={config.get('https_port', 443)}"""
         
@@ -480,6 +440,48 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
         if config.get('use_https'):
             # Traefik version with health checks and proper dependencies
             compose_content = """services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik-INSTANCE_NAME
+    restart: unless-stopped
+    command:
+      # Docker provider
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      
+      # Entrypoints
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      
+      # HTTPS redirect
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true
+      
+      # Let's Encrypt
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      
+      # Logs
+      - --log.level=INFO
+      - --api.dashboard=true
+      - --api.insecure=false
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/letsencrypt
+    networks: [traefik]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard-INSTANCE_NAME.rule=Host(`traefik.${{DOMAIN}}`)"
+      - "traefik.http.routers.dashboard-INSTANCE_NAME.tls=true"
+      - "traefik.http.routers.dashboard-INSTANCE_NAME.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard-INSTANCE_NAME.service=api@internal"
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -609,11 +611,14 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       timeout: 10s
       retries: 3
 
+volumes:
+  traefik-certificates:
+
 networks:
   paperless:
     name: paperless_net_INSTANCE_NAME
   traefik:
-    external: true
+    name: traefik_net_INSTANCE_NAME
 """.replace("INSTANCE_NAME", name)
         else:
             # Direct HTTP version with health checks and proper dependencies
@@ -1068,122 +1073,3 @@ def restore_instance(inst: Instance, snap: str | None = None, source: str | None
     warn("Restore functionality not yet implemented in this module")
     say("Please use the main bulletproof CLI for restore operations")
 
-
-def install_traefik() -> bool:
-    """Install and configure Traefik reverse proxy with Let's Encrypt."""
-    try:
-        say("🚀 Installing Traefik reverse proxy...")
-        
-        # Create Traefik configuration directory
-        traefik_dir = Path("/opt/traefik")
-        traefik_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create Traefik configuration file
-        traefik_config = traefik_dir / "traefik.yml"
-        traefik_config_content = """# Traefik Configuration for Paperless-ngx Bulletproof
-api:
-  dashboard: true
-  insecure: false
-
-entryPoints:
-  web:
-    address: ":80"
-    http:
-      redirections:
-        entrypoint:
-          to: websecure
-          scheme: https
-  websecure:
-    address: ":443"
-
-providers:
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false
-    network: traefik
-
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: changeme@example.com
-      storage: /acme.json
-      httpChallenge:
-        entryPoint: web
-
-# Enable access logs
-accessLog: {}
-
-# Enable Traefik logs
-log:
-  level: INFO
-"""
-        traefik_config.write_text(traefik_config_content)
-        say(f"Created Traefik configuration: {traefik_config}")
-        
-        # Create Traefik Docker Compose file
-        traefik_compose = traefik_dir / "docker-compose.yml"
-        traefik_compose_content = """services:
-  traefik:
-    image: traefik:v3.0
-    container_name: traefik
-    restart: unless-stopped
-    networks:
-      - traefik
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"  # Dashboard
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik.yml:/traefik.yml:ro
-      - ./acme.json:/acme.json
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
-      - "traefik.http.routers.dashboard.tls=true"
-      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.dashboard.service=api@internal"
-      - "traefik.http.routers.dashboard.middlewares=auth"
-      - "traefik.http.middlewares.auth.basicauth.users=admin:$$2y$$10$$8eO9j/2JmNrqwz.0h1FV4OmOo2eHCqpgV7a/2.LxTqzF.1UrYeT6W"  # admin:password
-
-networks:
-  traefik:
-    external: true
-"""
-        traefik_compose.write_text(traefik_compose_content)
-        say(f"Created Traefik compose file: {traefik_compose}")
-        
-        # Create acme.json file with correct permissions
-        acme_file = traefik_dir / "acme.json"
-        acme_file.touch()
-        acme_file.chmod(0o600)
-        
-        # Get user email for Let's Encrypt
-        email = _read("Enter email for Let's Encrypt certificates: ").strip()
-        if email:
-            # Update Traefik config with real email
-            config_content = traefik_config.read_text()
-            config_content = config_content.replace("changeme@example.com", email)
-            traefik_config.write_text(config_content)
-            say(f"Updated Let's Encrypt email to: {email}")
-        
-        # Start Traefik
-        say("Starting Traefik...")
-        subprocess.run(
-            ["docker", "compose", "up", "-d"],
-            cwd=traefik_dir,
-            check=True
-        )
-        
-        ok("✅ Traefik installed and started successfully!")
-        say("📋 Traefik Setup Complete:")
-        say("   • Dashboard: http://localhost:8080 (admin/password)")
-        say("   • HTTP traffic will auto-redirect to HTTPS")
-        say("   • Let's Encrypt certificates will be automatically generated")
-        say("   • Your Paperless instances will now work with HTTPS")
-        
-        return True
-        
-    except Exception as e:
-        error(f"Failed to install Traefik: {e}")
-        return False
