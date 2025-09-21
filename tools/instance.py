@@ -459,6 +459,20 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - traefik-certificates:/letsencrypt
     networks:
       - paperless
+    depends_on:
+      - traefik-init
+
+  traefik-init:
+    image: alpine:latest
+    command: >
+      sh -c "
+        touch /letsencrypt/acme.json &&
+        chmod 600 /letsencrypt/acme.json &&
+        echo 'ACME certificate storage initialized'
+      "
+    volumes:
+      - traefik-certificates:/letsencrypt
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -643,7 +657,7 @@ networks:
       - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
+      test: ["CMD-SHELL", "pgrep -f tika || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
