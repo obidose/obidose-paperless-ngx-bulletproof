@@ -734,17 +734,24 @@ fi
 if ! docker network ls | grep -q "traefik"; then
     echo "Creating Traefik network..."
     docker network create traefik 2>/dev/null || true
+    echo "✓ Traefik network created"
 fi
 
 # Check if Traefik is running
 if ! docker ps | grep -q traefik; then
-    echo "WARNING: Traefik is not running!"
-    echo "For HTTPS to work, you need to start Traefik first."
-    echo "You can start Traefik with your existing setup or use a basic configuration."
     echo ""
-    echo "Basic Traefik setup:"
-    echo "1. Create traefik.yml with your configuration"
-    echo "2. Start Traefik: docker run -d --name traefik --network traefik -p 80:80 -p 443:443 traefik"
+    echo "⚠ WARNING: Traefik is not running!"
+    echo "  For HTTPS to work properly, you need Traefik reverse proxy."
+    echo "  Your Paperless instance will start, but HTTPS won't work until Traefik is configured."
+    echo ""
+    echo "  Quick Traefik setup:"
+    echo "  1. Create a basic Traefik configuration"
+    echo "  2. Start Traefik with: docker run -d --name traefik --network traefik \\"
+    echo "     -p 80:80 -p 443:443 -v /var/run/docker.sock:/var/run/docker.sock \\"
+    echo "     traefik:latest --providers.docker --entrypoints.web.address=:80 \\"
+    echo "     --entrypoints.websecure.address=:443 --certificatesresolvers.letsencrypt.acme.email={config.get('email', 'admin@example.com')} \\"
+    echo "     --certificatesresolvers.letsencrypt.acme.storage=/acme.json \\"
+    echo "     --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
     echo ""
 fi
 
