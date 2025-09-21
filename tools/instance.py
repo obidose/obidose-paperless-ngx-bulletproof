@@ -514,12 +514,12 @@ EMAIL_USE_TLS={config.get('email_use_tls', 'true')}
       - ${DIR_TIKA_CACHE}:/cache
     networks:
       - paperless
-    healthcheck:
-      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/9998 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+    # healthcheck:
+    #   test: ["CMD-SHELL", "nc -z localhost 9998 || exit 1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 5
+    #   start_period: 90s
 
   paperless:
     image: ghcr.io/paperless-ngx/paperless-ngx:latest
