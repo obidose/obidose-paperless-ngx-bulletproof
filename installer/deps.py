@@ -21,39 +21,24 @@ def run(cmd: list[str], **kwargs) -> None:
 
 
 def apt(args: list[str], retries: int | None = None) -> None:
-    """Run ``apt-get`` with basic retry logic.
+    """Run apt-get with basic retry logic.
 
-    Retries are controlled by the ``APT_RETRIES`` environment variable (default
-    3). HTTP 403/404 errors are surfaced with a helpful hint so the user can
-    switch to another mirror if needed.
+    Retries are controlled by the `APT_RETRIES` environment variable (default 3).
     """
 
     if retries is None:
         retries = int(os.environ.get("APT_RETRIES", "3"))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    cmd = ["apt-get", "-o", "Acquire::ForceIPv4=true", *args]
     for attempt in range(1, retries + 1):
-        proc = subprocess.run(
-            ["apt-get", *args], text=True, capture_output=True, env=env
-        )
-        if proc.returncode == 0:
-            sys.stdout.write(proc.stdout)
-            sys.stderr.write(proc.stderr)
+        rc = subprocess.run(cmd, env=env).returncode
+        if rc == 0:
             return
-        if "403" in proc.stderr or "404" in proc.stderr:
-            warn(
-                "apt-get returned HTTP error; you may need to choose a different mirror"
-            )
         if attempt < retries:
-            say(
-                f"apt-get {' '.join(args)} failed (attempt {attempt}/{retries}); retrying…"
-            )
+            say(f"apt-get {' '.join(args)} failed (attempt {attempt}/{retries}); retrying...")
             time.sleep(2 * attempt)
         else:
-            sys.stdout.write(proc.stdout)
-            sys.stderr.write(proc.stderr)
-            proc.check_returncode()
-
-
+            raise subprocess.CalledProcessError(rc, cmd)
 def install_prereqs() -> None:
     say("Installing prerequisites…")
 

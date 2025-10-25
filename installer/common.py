@@ -72,6 +72,29 @@ def prompt(msg: str, default: str | None = None) -> str:
     return ans.strip()
 
 
+def _normalize_time(t: str) -> tuple[int, int]:
+    t = t.strip()
+    if ":" in t:
+        h, m = t.split(":", 1)
+    elif t.isdigit() and len(t) in (3, 4):
+        h, m = t[:-2], t[-2:]
+    else:
+        raise ValueError("Use HH:MM or HHMM")
+    h_i, m_i = int(h), int(m)
+    if not (0 <= h_i <= 23 and 0 <= m_i <= 59):
+        raise ValueError("Hour 0-23 and minute 0-59")
+    return h_i, m_i
+
+
+def prompt_time(msg: str, default: str) -> tuple[int, int]:
+    while True:
+        raw = prompt(msg, default)
+        try:
+            return _normalize_time(raw)
+        except ValueError as e:
+            print(f"Invalid time: {e}")
+
+
 def prompt_secret(msg: str) -> str:
     import getpass
 
@@ -116,7 +139,8 @@ class Config:
 
     rclone_remote_name: str = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     rclone_remote_path: str = os.environ.get("RCLONE_REMOTE_PATH", "backups/paperless/paperless")
-    retention_days: str = os.environ.get("RETENTION_DAYS", "30")
+    keep_fulls: str = os.environ.get("KEEP_FULLS", "3")
+    keep_incs: str = os.environ.get("KEEP_INCS", "7")
     cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
     cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
     cron_archive_time: str = os.environ.get("CRON_ARCHIVE_TIME", "")
@@ -188,19 +212,16 @@ def prompt_backup_plan() -> None:
     if " " in freq_full:
         cfg.cron_full_time = freq_full
     elif freq_full.startswith("d"):
-        t = prompt("Time (HH:MM)", "03:30")
-        h, m = t.split(":", 1)
-        cfg.cron_full_time = f"{int(m)} {int(h)} * * *"
+        h, m = prompt_time("Time (HH:MM)", "03:30")
+        cfg.cron_full_time = f"{m} {h} * * *"
     elif freq_full.startswith("w"):
         dow = prompt("Day of week (0=Sun..6=Sat)", "0")
-        t = prompt("Time (HH:MM)", "03:30")
-        h, m = t.split(":", 1)
-        cfg.cron_full_time = f"{int(m)} {int(h)} * * {dow}"
+        h, m = prompt_time("Time (HH:MM)", "03:30")
+        cfg.cron_full_time = f"{m} {h} * * {dow}"
     elif freq_full.startswith("m"):
         dom = prompt("Day of month (1-31)", "1")
-        t = prompt("Time (HH:MM)", "03:30")
-        h, m = t.split(":", 1)
-        cfg.cron_full_time = f"{int(m)} {int(h)} {dom} * *"
+        h, m = prompt_time("Time (HH:MM)", "03:30")
+        cfg.cron_full_time = f"{m} {h} {dom} * *"
     elif freq_full.startswith("c"):
         cfg.cron_full_time = prompt("Cron expression", cfg.cron_full_time)
 
@@ -213,22 +234,19 @@ def prompt_backup_plan() -> None:
         n = prompt("Every how many hours?", "1")
         cfg.cron_incr_time = f"0 */{int(n)} * * *"
     elif freq_incr.startswith("d"):
-        t = prompt("Time (HH:MM)", "00:00")
-        h, m = t.split(":", 1)
-        cfg.cron_incr_time = f"{int(m)} {int(h)} * * *"
+        h, m = prompt_time("Time (HH:MM)", "00:00")
+        cfg.cron_incr_time = f"{m} {h} * * *"
     elif freq_incr.startswith("w"):
         dow = prompt("Day of week (0=Sun..6=Sat)", "0")
-        t = prompt("Time (HH:MM)", "00:00")
-        h, m = t.split(":", 1)
-        cfg.cron_incr_time = f"{int(m)} {int(h)} * * {dow}"
+        h, m = prompt_time("Time (HH:MM)", "00:00")
+        cfg.cron_incr_time = f"{m} {h} * * {dow}"
     elif freq_incr.startswith("c"):
         cfg.cron_incr_time = prompt("Cron expression", cfg.cron_incr_time)
 
-    if confirm("Enable monthly archive backup?", False):
+    if confirm("Enable monthly archive backup?", True):
         dom = prompt("Day of month for archive", "1")
-        t = prompt("Time for archive (HH:MM)", "04:00")
-        h, m = t.split(":", 1)
-        cfg.cron_archive_time = f"{int(m)} {int(h)} {dom} * *"
+        h, m = prompt_time("Time for archive (HH:MM)", "04:00")
+        cfg.cron_archive_time = f"{m} {h} {dom} * *"
     else:
         cfg.cron_archive_time = ""
 

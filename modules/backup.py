@@ -21,6 +21,71 @@ def list_snapshots() -> list[str]:
     return sorted(snaps)
 
 
+def fetch_snapshots() -> list[tuple[str, str]]:
+    res = subprocess.run(
+        ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
+    )
+    snaps: list[tuple[str, str]] = []
+    for line in res.stdout.splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        name = parts[-1].rstrip("/")
+        mode = "?"
+        cat = subprocess.run(
+            ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cat.returncode == 0:
+            for mline in cat.stdout.splitlines():
+                if mline.startswith("mode:"):
+                    mode = mline.split(":", 1)[1].strip()
+                    break
+        snaps.append((name, mode))
+    return sorted(snaps, key=lambda x: x[0])
+
+
+def prune_snapshots(keep_fulls: int, keep_incs: int) -> None:
+    if keep_fulls <= 0 and keep_incs <= 0:
+        return
+    snaps = fetch_snapshots()
+    groups: list[list[str]] = []
+    cur: list[str] = []
+    for name, mode in snaps:
+        if mode == "full":
+            if cur:
+                groups.append(cur)
+            cur = [name]
+        elif mode == "incr":
+            if cur:
+                cur.append(name)
+            else:
+                cur = [name]
+    if cur:
+        groups.append(cur)
+
+    to_delete: list[str] = []
+    if keep_fulls > 0 and len(groups) > keep_fulls:
+        for grp in groups[:-keep_fulls]:
+            to_delete.extend(grp)
+        groups = groups[-keep_fulls:]
+
+    if keep_incs >= 0:
+        for grp in groups:
+            incs = grp[1:]
+            if keep_incs == 0:
+                to_delete.extend(incs)
+            elif len(incs) > keep_incs:
+                to_delete.extend(incs[:-keep_incs])
+
+    for snap in to_delete:
+        subprocess.run(["rclone", "purge", f"{REMOTE}/{snap}"], check=False)
+    if to_delete:
+        subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
+
+
 def load_env(path: Path) -> None:
     """Load environment variables from a .env file if present."""
     if not path.exists():
@@ -58,8 +123,6 @@ def die(msg: str) -> None:
 
 ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 load_env(ENV_FILE)
-if not ENV_FILE.exists():
-    warn(f"No .env at {ENV_FILE} — falling back to defaults.")
 
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
 STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
@@ -75,7 +138,8 @@ RCLONE_ARCHIVE_PATH = os.environ.get(
 )
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
-RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
+KEEP_FULLS = int(os.environ.get("KEEP_FULLS", "3"))
+KEEP_INCS = int(os.environ.get("KEEP_INCS", "7"))
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
@@ -194,7 +258,7 @@ def main() -> None:
     parent = snaps[-1] if snaps else ""
     if mode == "incr" and not snaps:
         mode = "full"
-    snap = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    snap = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{mode}"
     work = Path(tempfile.mkdtemp(prefix="paperless-backup."))
     if mode == "incr" and parent:
         subprocess.run(
@@ -250,19 +314,8 @@ def main() -> None:
         check=True,
     )
 
-    if mode != "archive" and RETENTION_DAYS > 0:
-        subprocess.run(
-            [
-                "rclone",
-                "delete",
-                REMOTE,
-                "--min-age",
-                f"{RETENTION_DAYS}d",
-                "--fast-list",
-            ],
-            check=False,
-        )
-        subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
+    if mode != "archive":
+        prune_snapshots(KEEP_FULLS, KEEP_INCS)
 
     ok("Backup completed")
 
