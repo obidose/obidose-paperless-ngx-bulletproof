@@ -71,6 +71,7 @@ def setup_system_traefik(email: str = "admin@example.com") -> bool:
             "--restart", "unless-stopped",
             "-p", "80:80",
             "-p", "443:443",
+            "-e", "DOCKER_API_VERSION=1.44",
             "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
             "-v", f"{acme_file}:/acme.json",
             "traefik:v3.2",
