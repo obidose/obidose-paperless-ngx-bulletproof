@@ -1238,11 +1238,28 @@ WantedBy=multi-user.target
             common.cfg.rclone_remote_name = remote_name
             common.cfg.rclone_remote_path = f"backups/paperless/{selected_instance}"
             
-            # Run restore
+            # Set paths for new instance
+            stack_dir = Path(f"/home/docker/{new_name}-setup")
+            data_root = Path(f"/home/docker/{new_name}")
+            env_file = stack_dir / ".env"
+            compose_file = stack_dir / "docker-compose.yml"
+            
+            # Run restore with proper environment
             restore_script = Path(f"/tmp/restore_{new_name}.py")
             restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "lib" / "modules" / "restore.py").read_text())
             
-            subprocess.run([sys.executable, str(restore_script), snapshot], check=True)
+            restore_env = os.environ.copy()
+            restore_env.update({
+                "INSTANCE_NAME": new_name,
+                "ENV_FILE": str(env_file),
+                "COMPOSE_FILE": str(compose_file),
+                "STACK_DIR": str(stack_dir),
+                "DATA_ROOT": str(data_root),
+                "RCLONE_REMOTE_NAME": remote_name,
+                "RCLONE_REMOTE_PATH": f"backups/paperless/{selected_instance}"
+            })
+            
+            subprocess.run([sys.executable, str(restore_script), snapshot], env=restore_env, check=True)
             
             # Register the restored instance
             self.instance_manager.add_instance(
