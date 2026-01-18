@@ -64,6 +64,18 @@ except ModuleNotFoundError:
 
 def main():
     """Main entry point."""
+    # If stdin is not a terminal (piped execution), re-exec with stdin from terminal
+    if not sys.stdin.isatty():
+        import tempfile
+        # Save script to temp file and re-execute
+        script_content = Path(__file__).read_text() if Path(__file__).exists() else sys.stdin.read()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(script_content)
+            temp_script = f.name
+        
+        # Re-execute with stdin connected to terminal
+        os.execvp(sys.executable, [sys.executable, temp_script] + sys.argv[1:])
+    
     # Check if we're on a fresh machine (no instances configured)
     from pathlib import Path
     
