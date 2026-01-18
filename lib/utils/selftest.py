@@ -89,9 +89,10 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
                 all_passed = False
         
         # Verify required containers exist
+        # Service names in compose are: paperless, db, redis, gotenberg, tika
         paperless_container = f"{project_name}-paperless-1"
-        db_container = f"{project_name}-paperless-db-1"
-        broker_container = f"{project_name}-paperless-broker-1"
+        db_container = f"{project_name}-db-1"
+        broker_container = f"{project_name}-redis-1"
         
         if paperless_container not in running_containers:
             warnings.append(f"Missing paperless container: {paperless_container}")
@@ -100,7 +101,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
             warnings.append(f"Missing database container: {db_container}")
             all_passed = False
         if broker_container not in running_containers:
-            warnings.append(f"Missing broker container: {broker_container}")
+            warnings.append(f"Missing redis container: {broker_container}")
             all_passed = False
             
         log("Containers running", all_passed)
@@ -138,7 +139,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
     db_ok = True
     try:
         result = subprocess.run(
-            base_cmd + ["exec", "-T", "paperless-db", "pg_isready", "-U", "paperless"],
+            base_cmd + ["exec", "-T", "db", "pg_isready", "-U", "paperless"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -163,7 +164,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
     redis_ok = True
     try:
         result = subprocess.run(
-            base_cmd + ["exec", "-T", "paperless-broker", "redis-cli", "ping"],
+            base_cmd + ["exec", "-T", "redis", "redis-cli", "ping"],
             capture_output=True,
             text=True,
             timeout=10,

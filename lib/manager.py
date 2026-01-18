@@ -843,7 +843,7 @@ class HealthChecker:
             return False
         try:
             result = subprocess.run(
-                self._docker_compose_cmd() + ["exec", "-T", "paperless-db", "pg_isready", "-U", "paperless"],
+                self._docker_compose_cmd() + ["exec", "-T", "db", "pg_isready", "-U", "paperless"],
                 capture_output=True,
                 timeout=10,
             )
@@ -857,7 +857,7 @@ class HealthChecker:
             return False
         try:
             result = subprocess.run(
-                self._docker_compose_cmd() + ["exec", "-T", "paperless-broker", "redis-cli", "ping"],
+                self._docker_compose_cmd() + ["exec", "-T", "redis", "redis-cli", "ping"],
                 capture_output=True,
                 text=True,
                 timeout=10,
