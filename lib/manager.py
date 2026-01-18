@@ -439,33 +439,37 @@ class InstanceManager:
         instance = self._instances[name]
         
         if delete_files:
-            import shutil
-            
-            # Stop and remove containers first
+            # Stop and remove containers first (with volumes)
             if instance.compose_file.exists():
                 try:
                     subprocess.run(
-                        ["docker", "compose", "-f", str(instance.compose_file), "down", "-v"],
+                        ["docker", "compose", "-f", str(instance.compose_file), "down", "-v", "--remove-orphans"],
                         cwd=instance.stack_dir,
                         capture_output=True,
                         check=False
                     )
-                except:
+                except Exception:
                     pass
             
-            # Delete stack directory
+            # Delete stack directory - use rm -rf for reliability with mixed ownership
             if instance.stack_dir.exists():
-                try:
-                    shutil.rmtree(instance.stack_dir)
-                except Exception as e:
-                    warn(f"Could not delete stack directory: {e}")
+                result = subprocess.run(
+                    ["rm", "-rf", str(instance.stack_dir)],
+                    capture_output=True,
+                    check=False
+                )
+                if result.returncode != 0:
+                    warn(f"Could not delete stack directory: {instance.stack_dir}")
             
-            # Delete data directory
+            # Delete data directory - use rm -rf because postgres db files are owned by different user
             if instance.data_root.exists():
-                try:
-                    shutil.rmtree(instance.data_root)
-                except Exception as e:
-                    warn(f"Could not delete data directory: {e}")
+                result = subprocess.run(
+                    ["rm", "-rf", str(instance.data_root)],
+                    capture_output=True,
+                    check=False
+                )
+                if result.returncode != 0:
+                    warn(f"Could not delete data directory: {instance.data_root}")
             
             # Stop and remove cloudflared service if exists
             try:
@@ -490,7 +494,7 @@ class InstanceManager:
                     delete_tunnel(name)
                 except Exception:
                     pass
-            except:
+            except Exception:
                 pass
         
         # Remove from tracking
@@ -5086,24 +5090,24 @@ rclone_config: {network_info['rclone']['enabled']}
             
             # Remove any remaining instance directories
             say("Cleaning remaining instance directories...")
-            import shutil
             docker_home = Path("/home/docker")
             if docker_home.exists():
                 for item in docker_home.iterdir():
-                    try:
-                        if item.is_dir():
-                            shutil.rmtree(item)
-                        else:
-                            item.unlink()
-                    except Exception as e:
-                        warn(f"Could not remove {item}: {e}")
+                    # Use rm -rf for reliability with postgres-owned db directories
+                    result = subprocess.run(
+                        ["rm", "-rf", str(item)],
+                        capture_output=True,
+                        check=False
+                    )
+                    if result.returncode != 0:
+                        warn(f"Could not remove {item}")
             
             # Optional: Remove Traefik
             if delete_traefik:
                 say("Removing Traefik configuration...")
                 traefik_dir = Path("/opt/traefik")
                 if traefik_dir.exists():
-                    shutil.rmtree(traefik_dir)
+                    subprocess.run(["rm", "-rf", str(traefik_dir)], check=False, capture_output=True)
                 ok("Traefik removed")
             
             # Optional: Delete all Cloudflare tunnels
