@@ -627,9 +627,12 @@ class PaperlessManager:
             
             # Check Traefik status
             is_running = traefik.is_traefik_running()
+            configured_email = traefik.get_traefik_email()
             
             if is_running:
                 say(colorize("✓ System Traefik is running", Colors.GREEN))
+                if configured_email:
+                    print(f"Let's Encrypt Email: {colorize(configured_email, Colors.CYAN)}")
                 print()
                 print("Traefik provides HTTPS routing for all instances.")
                 print("Each instance with Traefik enabled will automatically")
@@ -645,8 +648,9 @@ class PaperlessManager:
             if is_running:
                 options.extend([
                     ("1", "View Traefik status"),
-                    ("2", "Restart Traefik"),
-                    ("3", "Stop and remove Traefik"),
+                    ("2", "Update Let's Encrypt email"),
+                    ("3", "Restart Traefik"),
+                    ("4", "Stop and remove Traefik"),
                 ])
             else:
                 options.append(("1", "Install and start Traefik"))
@@ -670,7 +674,13 @@ class PaperlessManager:
                     input("\nPress Enter to continue...")
                 else:
                     # Install
-                    email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
+                    while True:
+                        email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
+                        if traefik.validate_email(email):
+                            break
+                        error(f"Invalid email format: {email}")
+                        say("Please enter a valid email address (e.g., admin@example.com)")
+                    
                     if traefik.setup_system_traefik(email):
                         ok("Traefik installed and started successfully!")
                         say("You can now create instances with HTTPS enabled")
@@ -678,6 +688,24 @@ class PaperlessManager:
                         error("Failed to install Traefik")
                     input("\nPress Enter to continue...")
             elif choice == "2" and is_running:
+                # Update email
+                current = configured_email or "admin@example.com"
+                say(f"Current email: {current}")
+                while True:
+                    email = get_input("New Let's Encrypt email", current)
+                    if traefik.validate_email(email):
+                        break
+                    error(f"Invalid email format: {email}")
+                    say("Please enter a valid email address (e.g., admin@example.com)")
+                
+                if confirm("Restart Traefik with new email?", True):
+                    traefik.stop_system_traefik()
+                    if traefik.setup_system_traefik(email):
+                        ok("Traefik restarted with new email")
+                    else:
+                        error("Failed to restart Traefik")
+                input("\nPress Enter to continue...")
+            elif choice == "3" and is_running:
                 # Restart
                 import subprocess
                 try:
@@ -686,7 +714,7 @@ class PaperlessManager:
                 except:
                     warn("Failed to restart Traefik")
                 input("\nPress Enter to continue...")
-            elif choice == "3" and is_running:
+            elif choice == "4" and is_running:
                 # Stop and remove
                 if confirm("Stop and remove Traefik? All HTTPS instances will become unavailable.", False):
                     traefik.stop_system_traefik()

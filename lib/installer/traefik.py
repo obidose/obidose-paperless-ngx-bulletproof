@@ -2,8 +2,15 @@
 Traefik management - system-wide reverse proxy for all instances.
 """
 import subprocess
+import re
 from pathlib import Path
 from .common import say, ok, warn, die
+
+
+def validate_email(email: str) -> bool:
+    """Validate email format for Let's Encrypt."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
 
 
 def is_traefik_running() -> bool:
@@ -18,6 +25,21 @@ def is_traefik_running() -> bool:
         return "traefik-system" in result.stdout
     except subprocess.CalledProcessError:
         return False
+
+
+def get_traefik_email() -> str | None:
+    """Get configured Let's Encrypt email from Traefik config."""
+    config_file = Path("/opt/traefik/traefik.yml")
+    if not config_file.exists():
+        return None
+    try:
+        content = config_file.read_text()
+        for line in content.splitlines():
+            if "email:" in line:
+                return line.split("email:")[1].strip()
+    except Exception:
+        pass
+    return None
 
 
 def ensure_traefik_network() -> None:
