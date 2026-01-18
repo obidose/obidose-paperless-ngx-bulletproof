@@ -4,47 +4,253 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import time
+import urllib.request
+import urllib.error
 
 
-def run_stack_tests(compose_file: Path, env_file: Path) -> bool:
-    """Run basic checks against the Paperless stack.
+def load_env(path: Path) -> dict[str, str]:
+    """Load environment variables from a .env file, returning as dict."""
+    env = {}
+    if not path.exists():
+        return env
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        env[k.strip()] = v.strip()
+    return env
 
+
+def _docker_compose_cmd(project_name: str, env_file: Path, compose_file: Path) -> list[str]:
+    """Build the base docker compose command with project name."""
+    return [
+        "docker", "compose",
+        "--project-name", project_name,
+        "--env-file", str(env_file),
+        "-f", str(compose_file),
+    ]
+
+
+def run_stack_tests(compose_file: Path, env_file: Path, project_name: str = None, verbose: bool = True) -> bool:
+    """Run comprehensive health checks against the Paperless stack.
+
+    If project_name is not provided, tries to read INSTANCE_NAME from env_file.
     Returns True if all checks pass, False otherwise.
+    
+    Checks performed:
+    1. Container status - all expected containers running
+    2. Container name verification - correct project is running
+    3. Django check - application is healthy
+    4. Database connectivity - PostgreSQL responding
+    5. Redis connectivity - broker is responding  
+    6. HTTP endpoint - web interface accessible
     """
-    ok = True
+    env = load_env(env_file)
+    instance = env.get("INSTANCE_NAME", "paperless")
+    http_port = env.get("PAPERLESS_PORT", "8000")
+    
+    if project_name is None:
+        project_name = f"paperless-{instance}"
+    
+    base_cmd = _docker_compose_cmd(project_name, env_file, compose_file)
+    all_passed = True
+    warnings = []
+    
+    def log(msg: str, success: bool = True) -> None:
+        if verbose:
+            symbol = "✓" if success else "✗"
+            color = "\033[32m" if success else "\033[31m"
+            reset = "\033[0m"
+            print(f"  {color}{symbol}{reset} {msg}")
+    
+    if verbose:
+        print(f"\n  Running health checks for {project_name}...")
+    
+    # Check 1: Verify containers are running and match expected project
     try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(env_file),
-                "-f",
-                str(compose_file),
-                "ps",
-            ],
+        result = subprocess.run(
+            base_cmd + ["ps", "--format", "{{.Name}} {{.State}}"],
+            capture_output=True,
+            text=True,
             check=True,
         )
-    except Exception:
-        ok = False
+        running_containers = {}
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                running_containers[parts[0]] = parts[1]
+        
+        # Verify the containers match the expected project name
+        expected_prefix = f"{project_name}-"
+        for container, state in running_containers.items():
+            if not container.startswith(expected_prefix):
+                warnings.append(f"Container mismatch: {container} doesn't match project {project_name}")
+                all_passed = False
+            elif state != "running":
+                warnings.append(f"Container {container} is {state}, not running")
+                all_passed = False
+        
+        # Verify required containers exist
+        paperless_container = f"{project_name}-paperless-1"
+        db_container = f"{project_name}-paperless-db-1"
+        broker_container = f"{project_name}-paperless-broker-1"
+        
+        if paperless_container not in running_containers:
+            warnings.append(f"Missing paperless container: {paperless_container}")
+            all_passed = False
+        if db_container not in running_containers:
+            warnings.append(f"Missing database container: {db_container}")
+            all_passed = False
+        if broker_container not in running_containers:
+            warnings.append(f"Missing broker container: {broker_container}")
+            all_passed = False
+            
+        log("Containers running", all_passed)
+            
+    except subprocess.CalledProcessError as e:
+        warnings.append(f"Failed to list containers: {e}")
+        all_passed = False
+        log("Containers running", False)
+    except Exception as e:
+        warnings.append(f"Container check error: {e}")
+        all_passed = False
+        log("Containers running", False)
+    
+    # Check 2: Django application check
+    django_ok = True
     try:
         subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(env_file),
-                "-f",
-                str(compose_file),
-                "exec",
-                "-T",
-                "paperless",
-                "python",
-                "manage.py",
-                "check",
-            ],
+            base_cmd + ["exec", "-T", "paperless", "python", "manage.py", "check"],
+            check=True,
+            capture_output=True,
+        )
+        log("Django check passed", True)
+    except subprocess.CalledProcessError:
+        warnings.append("Django check failed")
+        django_ok = False
+        all_passed = False
+        log("Django check passed", False)
+    except Exception as e:
+        warnings.append(f"Django check error: {e}")
+        django_ok = False
+        all_passed = False
+        log("Django check passed", False)
+    
+    # Check 3: Database connectivity
+    db_ok = True
+    try:
+        result = subprocess.run(
+            base_cmd + ["exec", "-T", "paperless-db", "pg_isready", "-U", "paperless"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            warnings.append("PostgreSQL not accepting connections")
+            db_ok = False
+            all_passed = False
+        log("Database connectivity", db_ok)
+    except subprocess.TimeoutExpired:
+        warnings.append("Database check timed out")
+        db_ok = False
+        all_passed = False
+        log("Database connectivity", False)
+    except Exception as e:
+        warnings.append(f"Database check error: {e}")
+        db_ok = False
+        all_passed = False
+        log("Database connectivity", False)
+    
+    # Check 4: Redis connectivity
+    redis_ok = True
+    try:
+        result = subprocess.run(
+            base_cmd + ["exec", "-T", "paperless-broker", "redis-cli", "ping"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if "PONG" not in result.stdout:
+            warnings.append("Redis not responding to ping")
+            redis_ok = False
+            all_passed = False
+        log("Redis connectivity", redis_ok)
+    except subprocess.TimeoutExpired:
+        warnings.append("Redis check timed out")
+        redis_ok = False
+        all_passed = False
+        log("Redis connectivity", False)
+    except Exception as e:
+        warnings.append(f"Redis check error: {e}")
+        redis_ok = False
+        all_passed = False
+        log("Redis connectivity", False)
+    
+    # Check 5: HTTP endpoint (wait a bit for app to be ready)
+    http_ok = True
+    try:
+        # Give the app a moment to fully initialize if just started
+        time.sleep(2)
+        url = f"http://localhost:{http_port}/"
+        req = urllib.request.Request(url, method='HEAD')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status >= 500:
+                warnings.append(f"HTTP endpoint returned {response.status}")
+                http_ok = False
+                all_passed = False
+        log("HTTP endpoint responding", http_ok)
+    except urllib.error.HTTPError as e:
+        # 401/403 is fine - means the app is running but needs auth
+        if e.code < 500:
+            log("HTTP endpoint responding", True)
+        else:
+            warnings.append(f"HTTP endpoint error: {e.code}")
+            http_ok = False
+            all_passed = False
+            log("HTTP endpoint responding", False)
+    except urllib.error.URLError as e:
+        warnings.append(f"HTTP endpoint unreachable: {e.reason}")
+        http_ok = False
+        all_passed = False
+        log("HTTP endpoint responding", False)
+    except Exception as e:
+        warnings.append(f"HTTP check error: {e}")
+        http_ok = False
+        all_passed = False
+        log("HTTP endpoint responding", False)
+    
+    # Print warnings if verbose
+    if verbose and warnings:
+        print()
+        for w in warnings:
+            print(f"  \033[33m[!]\033[0m {w}")
+    
+    return all_passed
+
+
+def quick_container_check(compose_file: Path, env_file: Path, project_name: str = None) -> bool:
+    """Quick check that containers are running (no app-level checks).
+    
+    Useful for fast validation without waiting for HTTP endpoints.
+    """
+    env = load_env(env_file)
+    instance = env.get("INSTANCE_NAME", "paperless")
+    
+    if project_name is None:
+        project_name = f"paperless-{instance}"
+    
+    try:
+        result = subprocess.run(
+            _docker_compose_cmd(project_name, env_file, compose_file) + 
+            ["ps", "--format", "{{.State}}", "--filter", "status=running"],
+            capture_output=True,
+            text=True,
             check=True,
         )
+        # Should have at least 3 running containers (paperless, db, broker)
+        running_count = len([s for s in result.stdout.strip().splitlines() if s == "running"])
+        return running_count >= 3
     except Exception:
-        ok = False
-    return ok
+        return False

@@ -736,22 +736,39 @@ class BackupManager:
 # ─── Health Checks ────────────────────────────────────────────────────────────
 
 class HealthChecker:
-    """Performs system health checks."""
+    """Performs comprehensive system and stack health checks."""
     
     def __init__(self, instance: Instance):
         self.instance = instance
+        self.project_name = f"paperless-{instance.name}"
+    
+    def _docker_compose_cmd(self) -> list[str]:
+        """Build base docker compose command."""
+        return [
+            "docker", "compose",
+            "--project-name", self.project_name,
+            "--env-file", str(self.instance.env_file),
+            "-f", str(self.instance.compose_file),
+        ]
     
     def check_all(self) -> dict[str, bool]:
         """Run all health checks."""
         checks = {
+            # System checks
             "Instance exists": self.check_instance_exists(),
             "Docker available": self.check_docker(),
             "Compose file exists": self.check_compose_file(),
             "Environment file exists": self.check_env_file(),
             "Data directories exist": self.check_data_dirs(),
-            "Containers running": self.check_containers(),
             "Rclone configured": self.check_rclone(),
-            "Backup remote accessible": self.check_backup_remote()
+            "Backup remote accessible": self.check_backup_remote(),
+            # Stack checks (only if instance exists)
+            "Containers running": self.check_containers(),
+            "Container names match": self.check_container_names(),
+            "Database connectivity": self.check_database(),
+            "Redis connectivity": self.check_redis(),
+            "Django healthy": self.check_django(),
+            "HTTP endpoint": self.check_http_endpoint(),
         }
         return checks
     
@@ -787,7 +804,100 @@ class HealthChecker:
     
     def check_containers(self) -> bool:
         """Check if containers are running."""
-        return self.instance.is_running
+        if not self.instance.is_running:
+            return False
+        # Verify at least 3 containers (paperless, db, broker)
+        try:
+            result = subprocess.run(
+                self._docker_compose_cmd() + ["ps", "--filter", "status=running", "-q"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            running_count = len(result.stdout.strip().splitlines())
+            return running_count >= 3
+        except Exception:
+            return False
+    
+    def check_container_names(self) -> bool:
+        """Verify container names match expected project."""
+        if not self.instance.is_running:
+            return True  # Skip if not running
+        try:
+            result = subprocess.run(
+                self._docker_compose_cmd() + ["ps", "--format", "{{.Name}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            containers = result.stdout.strip().splitlines()
+            expected_prefix = f"{self.project_name}-"
+            # All containers should have the correct project prefix
+            return all(c.startswith(expected_prefix) for c in containers if c)
+        except Exception:
+            return False
+    
+    def check_database(self) -> bool:
+        """Check PostgreSQL connectivity."""
+        if not self.instance.is_running:
+            return False
+        try:
+            result = subprocess.run(
+                self._docker_compose_cmd() + ["exec", "-T", "paperless-db", "pg_isready", "-U", "paperless"],
+                capture_output=True,
+                timeout=10,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    def check_redis(self) -> bool:
+        """Check Redis connectivity."""
+        if not self.instance.is_running:
+            return False
+        try:
+            result = subprocess.run(
+                self._docker_compose_cmd() + ["exec", "-T", "paperless-broker", "redis-cli", "ping"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return "PONG" in result.stdout
+        except Exception:
+            return False
+    
+    def check_django(self) -> bool:
+        """Check Django application health."""
+        if not self.instance.is_running:
+            return False
+        try:
+            result = subprocess.run(
+                self._docker_compose_cmd() + ["exec", "-T", "paperless", "python", "manage.py", "check"],
+                capture_output=True,
+                timeout=30,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    def check_http_endpoint(self) -> bool:
+        """Check if HTTP endpoint is responding."""
+        import urllib.request
+        import urllib.error
+        
+        if not self.instance.is_running:
+            return False
+        try:
+            http_port = self.instance.get_env_value("PAPERLESS_PORT", "8000")
+            url = f"http://localhost:{http_port}/"
+            req = urllib.request.Request(url, method='HEAD')
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return response.status < 500
+        except urllib.error.HTTPError as e:
+            # 401/403 is fine - app running but needs auth
+            return e.code < 500
+        except Exception:
+            return False
     
     def check_rclone(self) -> bool:
         """Check if rclone is installed."""
@@ -821,9 +931,26 @@ class HealthChecker:
         print_header(f"Health Check: {self.instance.name}")
         checks = self.check_all()
         
-        for check_name, passed in checks.items():
-            status = colorize("✓ PASS", Colors.GREEN) if passed else colorize("✗ FAIL", Colors.RED)
-            print(f"  {check_name:<30} {status}")
+        # Group checks
+        system_checks = ["Instance exists", "Docker available", "Compose file exists", 
+                        "Environment file exists", "Data directories exist", 
+                        "Rclone configured", "Backup remote accessible"]
+        stack_checks = ["Containers running", "Container names match", "Database connectivity",
+                       "Redis connectivity", "Django healthy", "HTTP endpoint"]
+        
+        print(f"  {colorize('System Checks:', Colors.BOLD)}")
+        for check_name in system_checks:
+            if check_name in checks:
+                passed = checks[check_name]
+                status = colorize("✓ PASS", Colors.GREEN) if passed else colorize("✗ FAIL", Colors.RED)
+                print(f"    {check_name:<28} {status}")
+        
+        print(f"\n  {colorize('Stack Checks:', Colors.BOLD)}")
+        for check_name in stack_checks:
+            if check_name in checks:
+                passed = checks[check_name]
+                status = colorize("✓ PASS", Colors.GREEN) if passed else colorize("✗ FAIL", Colors.RED)
+                print(f"    {check_name:<28} {status}")
         
         print()
         total = len(checks)
@@ -3373,13 +3500,14 @@ WantedBy=multi-user.target
         from lib.installer import traefik, cloudflared, tailscale
         
         traefik_running = traefik.is_traefik_running()
-        cloudflare_tunnels = cloudflared.list_tunnels() if cloudflared.is_authenticated() else []
+        all_cloudflare_tunnels = cloudflared.list_tunnels() if cloudflared.is_authenticated() else []
+        paperless_tunnels = [t for t in all_cloudflare_tunnels if t.get('name', '').startswith('paperless-')]
         tailscale_connected = tailscale.is_connected()
         rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
         
         print("Network configuration to backup:")
         print(f"  • Traefik: {'✓ Running' if traefik_running else '○ Not active'}")
-        print(f"  • Cloudflare Tunnels: {len(cloudflare_tunnels)} tunnel(s)")
+        print(f"  • Cloudflare Tunnels: {len(paperless_tunnels)} paperless tunnel(s)")
         print(f"  • Tailscale: {'✓ Connected' if tailscale_connected else '○ Not active'}")
         print(f"  • rclone config: {'✓ Found' if rclone_conf.exists() else '○ Not found'}")
         print()
@@ -3499,7 +3627,7 @@ WantedBy=multi-user.target
                     "enabled": True,
                     "authenticated": cloudflared.is_authenticated(),
                     "tunnels": tunnel_configs,
-                    "tunnel_count": len(cloudflare_tunnels)
+                    "tunnel_count": len(paperless_tunnels)  # Only count paperless tunnels
                 }
                 ok(f"Cloudflare config backed up ({len(tunnel_configs)} tunnel configs)")
             
@@ -4585,12 +4713,23 @@ rclone_config: {network_info['rclone']['enabled']}
                 else:
                     # List tunnels
                     tunnels = cloudflared.list_tunnels()
-                    if tunnels:
-                        print()
-                        for t in tunnels:
+                    paperless_tunnels = [t for t in tunnels if t.get('name', '').startswith('paperless-')]
+                    other_tunnels = [t for t in tunnels if not t.get('name', '').startswith('paperless-')]
+                    
+                    print()
+                    if paperless_tunnels:
+                        print(colorize("Paperless Tunnels:", Colors.BOLD))
+                        for t in paperless_tunnels:
                             print(f"  {t.get('name')} - {t.get('id')}")
                     else:
-                        say("No tunnels found")
+                        say("No paperless tunnels found")
+                    
+                    if other_tunnels:
+                        print()
+                        if confirm(f"Show {len(other_tunnels)} non-paperless tunnel(s)?", False):
+                            print(colorize("\nOther Tunnels:", Colors.BOLD))
+                            for t in other_tunnels:
+                                print(f"  {t.get('name')} - {t.get('id')}")
                 input("\nPress Enter to continue...")
             elif choice == "2" and authenticated:
                 # Enable tunnel for an instance

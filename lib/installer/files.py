@@ -297,6 +297,8 @@ def bring_up_stack() -> None:
         [
             "docker",
             "compose",
+            "--project-name",
+            f"paperless-{cfg.instance_name}",
             "--env-file",
             cfg.env_file,
             "-f",

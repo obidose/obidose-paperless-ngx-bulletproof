@@ -8,19 +8,8 @@ import subprocess
 import time
 from pathlib import Path
 
-
-def load_env(path: Path) -> dict[str, str]:
-    """Load environment variables from a .env file, returning as dict."""
-    env = {}
-    if not path.exists():
-        return env
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        env[k.strip()] = v.strip()
-    return env
+# Import shared utilities
+from lib.utils.selftest import load_env, run_stack_tests
 
 
 def load_env_to_environ(path: Path) -> None:
@@ -29,45 +18,6 @@ def load_env_to_environ(path: Path) -> None:
     for k, v in env.items():
         os.environ.setdefault(k, v)
 
-
-def run_stack_tests(compose_file: Path, env_file: Path) -> bool:
-    ok = True
-    try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(env_file),
-                "-f",
-                str(compose_file),
-                "ps",
-            ],
-            check=True,
-        )
-    except Exception:
-        ok = False
-    try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(env_file),
-                "-f",
-                str(compose_file),
-                "exec",
-                "-T",
-                "paperless",
-                "python",
-                "manage.py",
-                "check",
-            ],
-            check=True,
-        )
-    except Exception:
-        ok = False
-    return ok
 
 COLOR_BLUE = "\033[1;34m"
 COLOR_GREEN = "\033[1;32m"
@@ -102,6 +52,7 @@ else:
     warn(f"No .env at {ENV_FILE} — continuing with environment defaults")
 
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
+PROJECT_NAME = f"paperless-{INSTANCE_NAME}"
 STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/home/docker/paperless"))
 COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
@@ -111,6 +62,11 @@ POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+
+
+def docker_compose_cmd(*args: str) -> list[str]:
+    """Build a docker compose command with project name."""
+    return ["docker", "compose", "--project-name", PROJECT_NAME, "-f", str(COMPOSE_FILE), *args]
 
 
 def fetch_snapshots() -> list[tuple[str, str, str]]:
@@ -152,68 +108,28 @@ def extract_tar(tar_path: Path, dest: Path) -> None:
 def restore_db(dump: Path) -> None:
     say("Restoring database…")
     subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d", "db"],
+        docker_compose_cmd("up", "-d", "db"),
         check=True,
     )
     time.sleep(5)
     # Clear existing schema to avoid duplicate key errors when restoring over an
     # existing database volume.
     subprocess.run(
-        [
-            "docker",
-            "compose",
-            "-f",
-            str(COMPOSE_FILE),
-            "exec",
-            "-T",
-            "db",
-            "psql",
-            "-U",
-            POSTGRES_USER,
-            "-d",
-            POSTGRES_DB,
-            "-c",
-            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
-        ],
+        docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB, 
+                          "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
         check=False,
     )
     if dump.suffix == ".gz":
         proc = subprocess.Popen(["gunzip", "-c", str(dump)], stdout=subprocess.PIPE)
         subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-f",
-                str(COMPOSE_FILE),
-                "exec",
-                "-T",
-                "db",
-                "psql",
-                "-U",
-                POSTGRES_USER,
-                "-d",
-                POSTGRES_DB,
-            ],
+            docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
             stdin=proc.stdout,
             check=False,
         )
     else:
         with open(dump, "rb") as fh:
             subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    str(COMPOSE_FILE),
-                    "exec",
-                    "-T",
-                    "db",
-                    "psql",
-                    "-U",
-                    POSTGRES_USER,
-                    "-d",
-                    POSTGRES_DB,
-                ],
+                docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
                 stdin=fh,
                 check=False,
             )
@@ -252,7 +168,7 @@ def main() -> None:
         warn(f"Docker compose file not found at {COMPOSE_FILE}")
         # Try to continue without stopping services
     else:
-        subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "down"], check=False)
+        subprocess.run(docker_compose_cmd("down"), check=False)
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     first = True
@@ -312,7 +228,7 @@ def main() -> None:
     
     # Only try to start services if docker-compose file exists
     if COMPOSE_FILE.exists():
-        subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"], check=False)
+        subprocess.run(docker_compose_cmd("up", "-d"), check=False)
         if run_stack_tests(COMPOSE_FILE, ENV_FILE):
             ok("Restore complete")
         else:

@@ -146,9 +146,10 @@ Current Instance: paperless [Running]
 - Independent management
 
 **Health Monitoring**
-- 8-point system health check
-- Docker and container status
-- Data integrity validation
+- 13-point comprehensive health check
+- System checks: Docker, files, directories, rclone
+- Stack checks: containers, database, Redis, Django, HTTP
+- Container name verification (catches project mismatches)
 - Remote connectivity tests
 
 **Container Operations**
