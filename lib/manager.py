@@ -529,7 +529,8 @@ class PaperlessManager:
             ("1", colorize("▸", Colors.GREEN) + " Manage Instances" + (f" ({len(instances)})" if instances else "")),
             ("2", colorize("▸", Colors.BLUE) + " Browse Backups" + (" ✓" if self.rclone_configured else " ⚠")),
             ("3", colorize("▸", Colors.MAGENTA) + " System Backup/Restore"),
-            ("4", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
+            ("4", colorize("▸", Colors.CYAN) + " Manage Traefik (HTTPS)"),
+            ("5", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
             ("0", colorize("◀", Colors.RED) + " Quit")
         ]
         print_menu(options)
@@ -548,6 +549,8 @@ class PaperlessManager:
         elif choice == "3":
             self.system_backup_menu()
         elif choice == "4":
+            self.traefik_menu()
+        elif choice == "5":
             self.configure_backup_connection()
         else:
             warn("Invalid option")
@@ -614,6 +617,83 @@ class PaperlessManager:
             else:
                 warn("Invalid option")
     
+    def traefik_menu(self) -> None:
+        """Traefik management menu."""
+        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+        from lib.installer import traefik
+        
+        while True:
+            print_header("Manage Traefik (HTTPS)")
+            
+            # Check Traefik status
+            is_running = traefik.is_traefik_running()
+            
+            if is_running:
+                say(colorize("✓ System Traefik is running", Colors.GREEN))
+                print()
+                print("Traefik provides HTTPS routing for all instances.")
+                print("Each instance with Traefik enabled will automatically")
+                print("get SSL certificates and HTTPS access via its domain.")
+                print()
+            else:
+                say(colorize("⚠ System Traefik is not running", Colors.YELLOW))
+                print()
+                print("Install Traefik to enable HTTPS for instances.")
+                print()
+            
+            options = []
+            if is_running:
+                options.extend([
+                    ("1", "View Traefik status"),
+                    ("2", "Restart Traefik"),
+                    ("3", "Stop and remove Traefik"),
+                ])
+            else:
+                options.append(("1", "Install and start Traefik"))
+            
+            options.append(("0", "Back to main menu"))
+            
+            print_menu(options)
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                if is_running:
+                    # Show status
+                    import subprocess
+                    try:
+                        subprocess.run(["docker", "ps", "--filter", "name=traefik-system"], check=True)
+                        subprocess.run(["docker", "logs", "--tail", "50", "traefik-system"], check=True)
+                    except:
+                        warn("Failed to get Traefik status")
+                    input("\nPress Enter to continue...")
+                else:
+                    # Install
+                    email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
+                    if traefik.setup_system_traefik(email):
+                        ok("Traefik installed and started successfully!")
+                        say("You can now create instances with HTTPS enabled")
+                    else:
+                        error("Failed to install Traefik")
+                    input("\nPress Enter to continue...")
+            elif choice == "2" and is_running:
+                # Restart
+                import subprocess
+                try:
+                    subprocess.run(["docker", "restart", "traefik-system"], check=True)
+                    ok("Traefik restarted")
+                except:
+                    warn("Failed to restart Traefik")
+                input("\nPress Enter to continue...")
+            elif choice == "3" and is_running:
+                # Stop and remove
+                if confirm("Stop and remove Traefik? All HTTPS instances will become unavailable.", False):
+                    traefik.stop_system_traefik()
+                    ok("Traefik stopped and removed")
+                    warn("Existing instances with HTTPS will not be accessible until Traefik is reinstalled")
+                input("\nPress Enter to continue...")
+    
     def add_instance_menu(self) -> None:
         """Add new instance submenu."""
         print_header("Add New Instance")
@@ -657,13 +737,17 @@ class PaperlessManager:
             common.prompt_core_values()
             common.prompt_backup_plan()
             
-            # Set up system Traefik if using HTTPS
+            # Check if Traefik is needed and available
             if common.cfg.enable_traefik == "yes":
                 if not traefik.is_traefik_running():
-                    common.say("Setting up shared system Traefik for all instances...")
-                    traefik.setup_system_traefik(common.cfg.letsencrypt_email)
+                    common.warn("HTTPS enabled but system Traefik is not running!")
+                    common.say("You can install Traefik from the main menu: Manage Traefik (HTTPS)")
+                    if not confirm("Continue without HTTPS? Instance will be inaccessible until Traefik is installed.", False):
+                        common.warn("Instance creation cancelled")
+                        input("\nPress Enter to continue...")
+                        return
                 else:
-                    common.ok("Using existing system Traefik")
+                    common.ok("Using existing system Traefik for HTTPS routing")
             
             common.ensure_dir_tree(common.cfg)
             
@@ -1304,11 +1388,17 @@ class PaperlessManager:
             
             say(f"Creating system backup: {backup_name}")
             
+            # Check if Traefik is running
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import traefik
+            traefik_running = traefik.is_traefik_running()
+            
             # Backup instances.json
             system_info = {
                 "backup_date": datetime.utcnow().isoformat(),
                 "backup_name": backup_name,
                 "instance_count": len(instances),
+                "traefik_enabled": traefik_running,
                 "instances": {},
                 "instances_registry": json.loads(self.instance_manager.config_file.read_text()) if self.instance_manager.config_file.exists() else {}
             }
@@ -1477,6 +1567,8 @@ instance_count: {len(instances)}
             print(f"System backup: {backup_name}")
             print(f"Created: {system_info['backup_date']}")
             print(f"Instances: {system_info['instance_count']}")
+            traefik_was_enabled = system_info.get('traefik_enabled', False)
+            print(f"Traefik: {'Enabled' if traefik_was_enabled else 'Disabled'}")
             print()
             print("Instances in backup:")
             for inst_name, inst_data in system_info["instances"].items():
@@ -1488,6 +1580,20 @@ instance_count: {len(instances)}
                 import shutil
                 shutil.rmtree(work)
                 return
+            
+            # Check if Traefik should be restored
+            if traefik_was_enabled:
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                from lib.installer import traefik
+                if not traefik.is_traefik_running():
+                    say("System backup had Traefik enabled. Installing Traefik...")
+                    email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
+                    if traefik.setup_system_traefik(email):
+                        ok("Traefik installed and running")
+                    else:
+                        warn("Failed to install Traefik - HTTPS instances may not work")
+                else:
+                    ok("Traefik already running")
             
             # Restore instances registry from system info
             if "instances_registry" in system_info:
