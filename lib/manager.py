@@ -3394,8 +3394,29 @@ WantedBy=multi-user.target
             import shutil
             import base64
             
+            # Optional: Name the backup
+            print()
+            default_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            backup_name = get_input("Backup name (or Enter for timestamp)", default_name)
+            # Sanitize name - only allow alphanumeric, hyphens, underscores
+            backup_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in backup_name)
+            
+            # Force full backup of all running instances first
+            running_instances = [inst for inst in instances if inst.is_running]
+            if running_instances:
+                print()
+                say(f"Creating full backup of {len(running_instances)} running instance(s)...")
+                for inst in running_instances:
+                    say(f"  Backing up {inst.name}...")
+                    try:
+                        backup_mgr = BackupManager(inst)
+                        backup_mgr.run_backup(mode='full')
+                        ok(f"  {inst.name} backed up")
+                    except Exception as e:
+                        warn(f"  {inst.name} backup failed: {e}")
+                print()
+            
             # Create temp directory for system backup
-            backup_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             work = Path(tempfile.mkdtemp(prefix="paperless-system-"))
             
             say(f"Creating system backup: {backup_name}")
@@ -3604,50 +3625,89 @@ rclone_config: {network_info['rclone']['enabled']}
         input("\nPress Enter to continue...")
     
     def _view_system_backups(self) -> None:
-        """View available system backups."""
-        print_header("System Backups")
-        
-        try:
-            result = subprocess.run(
-                ["rclone", "lsd", "pcloud:backups/paperless-system"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+        """View available system backups with delete option."""
+        while True:
+            print_header("System Backups")
             
-            if result.returncode != 0 or not result.stdout.strip():
-                warn("No system backups found")
+            try:
+                result = subprocess.run(
+                    ["rclone", "lsd", "pcloud:backups/paperless-system"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    warn("No system backups found")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                backups = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()], reverse=True)
+                backup_info = []
+                
+                print(colorize("Available System Backups:", Colors.BOLD))
+                print()
+                
+                for idx, backup in enumerate(backups, 1):
+                    # Get backup info
+                    try:
+                        info = subprocess.run(
+                            ["rclone", "cat", f"pcloud:backups/paperless-system/{backup}/system-info.json"],
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        if info.returncode == 0:
+                            import json
+                            data = json.loads(info.stdout)
+                            inst_count = data.get("instance_count", "?")
+                            print(f"  {idx}) {backup} - {inst_count} instance(s)")
+                            backup_info.append((backup, inst_count))
+                        else:
+                            print(f"  {idx}) {backup}")
+                            backup_info.append((backup, "?"))
+                    except:
+                        print(f"  {idx}) {backup}")
+                        backup_info.append((backup, "?"))
+                
+                print()
+                print(f"  {colorize('d)', Colors.BOLD)} Delete a backup")
+                print(f"  {colorize('0)', Colors.BOLD)} Back")
+                print()
+                
+                choice = get_input("Select option", "0")
+                
+                if choice == "0":
+                    return
+                elif choice.lower() == "d":
+                    # Delete a backup
+                    print()
+                    del_choice = get_input(f"Enter backup number to delete [1-{len(backups)}]", "")
+                    if del_choice.isdigit() and 1 <= int(del_choice) <= len(backups):
+                        backup_to_delete = backups[int(del_choice) - 1]
+                        if confirm(f"Delete system backup '{backup_to_delete}'?", False):
+                            say(f"Deleting {backup_to_delete}...")
+                            del_result = subprocess.run(
+                                ["rclone", "purge", f"pcloud:backups/paperless-system/{backup_to_delete}"],
+                                capture_output=True,
+                                check=False
+                            )
+                            if del_result.returncode == 0:
+                                ok(f"Deleted {backup_to_delete}")
+                            else:
+                                error(f"Failed to delete: {del_result.stderr}")
+                            input("\nPress Enter to continue...")
+                    else:
+                        warn("Invalid selection")
+                        input("\nPress Enter to continue...")
+                else:
+                    # View details of a specific backup (just refresh for now)
+                    pass
+                
+            except Exception as e:
+                error(f"Failed to list system backups: {e}")
                 input("\nPress Enter to continue...")
                 return
-            
-            backups = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
-            
-            print(colorize("Available System Backups:", Colors.BOLD))
-            print()
-            
-            for idx, backup in enumerate(sorted(backups, reverse=True), 1):
-                # Get backup info
-                try:
-                    info = subprocess.run(
-                        ["rclone", "cat", f"pcloud:backups/paperless-system/{backup}/system-info.json"],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if info.returncode == 0:
-                        import json
-                        data = json.loads(info.stdout)
-                        inst_count = data.get("instance_count", "?")
-                        print(f"  {idx}) {backup} - {inst_count} instance(s)")
-                    else:
-                        print(f"  {idx}) {backup}")
-                except:
-                    print(f"  {idx}) {backup}")
-            
-        except Exception as e:
-            error(f"Failed to list system backups: {e}")
-        
-        input("\nPress Enter to continue...")
     
     def _restore_system(self) -> None:
         """Restore system from backup including network configuration."""
@@ -3778,8 +3838,9 @@ rclone_config: {network_info['rclone']['enabled']}
             print(draw_box_divider(box_width))
             print(box_line(" Instances:"))
             for inst_name, inst_data in system_info["instances"].items():
-                latest = inst_data.get("latest_backup", "no backup")
-                print(box_line(f"   • {inst_name}: {latest[:19] if latest != 'no backup' else latest}"))
+                latest = inst_data.get("latest_backup") or "no backup"
+                display = latest[:19] if latest != "no backup" else latest
+                print(box_line(f"   • {inst_name}: {display}"))
             print(draw_box_bottom(box_width))
             print()
             
@@ -4810,7 +4871,7 @@ rclone_config: {network_info['rclone']['enabled']}
         # Optional cleanups
         print(colorize("Optional cleanups (you will be asked):", Colors.YELLOW))
         print("  • Traefik configuration")
-        print("  • Cloudflare tunnels")
+        print("  • Cloudflare tunnels (only paperless-* tunnels)")
         print("  • Tailscale connection")
         print("  • All pCloud backups")
         print()
@@ -4824,7 +4885,7 @@ rclone_config: {network_info['rclone']['enabled']}
         
         # Ask about optional cleanups
         delete_traefik = confirm("Also delete Traefik configuration?", False)
-        delete_cloudflared = confirm("Also delete all Cloudflare tunnels?", False)
+        delete_cloudflared = confirm("Also delete Cloudflare tunnels? (only paperless-* tunnels)", False)
         delete_tailscale = confirm("Also disconnect Tailscale?", False)
         delete_backups = False
         if self.rclone_configured:
