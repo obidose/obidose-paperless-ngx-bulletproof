@@ -62,7 +62,42 @@ def setup_system_traefik(email: str = "admin@example.com") -> bool:
         acme_file.touch()
         acme_file.chmod(0o600)
     
-    # Start Traefik container
+    # Create Traefik static configuration file
+    config_file = traefik_dir / "traefik.yml"
+    config_content = f"""
+api:
+  insecure: false
+  dashboard: false
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: traefik
+    watch: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: {email}
+      storage: /acme.json
+      httpChallenge:
+        entryPoint: web
+"""
+    config_file.write_text(config_content.strip())
+    
+    # Start Traefik container with latest version
     try:
         subprocess.run([
             "docker", "run", "-d",
@@ -71,21 +106,10 @@ def setup_system_traefik(email: str = "admin@example.com") -> bool:
             "--restart", "unless-stopped",
             "-p", "80:80",
             "-p", "443:443",
-            "-e", "DOCKER_API_VERSION=1.44",
             "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
             "-v", f"{acme_file}:/acme.json",
-            "traefik:v3.2",
-            "--api.insecure=false",
-            "--providers.docker=true",
-            "--providers.docker.exposedbydefault=false",
-            "--providers.docker.network=traefik",
-            "--entrypoints.web.address=:80",
-            "--entrypoints.websecure.address=:443",
-            "--entrypoints.web.http.redirections.entrypoint.to=websecure",
-            "--entrypoints.web.http.redirections.entrypoint.scheme=https",
-            f"--certificatesresolvers.letsencrypt.acme.email={email}",
-            "--certificatesresolvers.letsencrypt.acme.storage=/acme.json",
-            "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web",
+            "-v", f"{config_file}:/traefik.yml:ro",
+            "traefik:latest",
         ], check=True)
         
         ok("System Traefik started successfully")
