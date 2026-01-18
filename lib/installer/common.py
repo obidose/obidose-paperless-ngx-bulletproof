@@ -94,27 +94,8 @@ def confirm(msg: str, default: bool = True) -> bool:
 @dataclass
 class Config:
     instance_name: str = os.environ.get("INSTANCE_NAME", "paperless")
-    
-    # Compute instance-specific defaults
-    _default_stack_dir: str = None
-    _default_data_root: str = None
-    
-    stack_dir: str = None
-    data_root: str = None
-    
-    def __post_init__(self):
-        # Set instance-specific defaults if not provided
-        if self.stack_dir is None:
-            if self.instance_name == "paperless":
-                self.stack_dir = os.environ.get("STACK_DIR", "/home/docker/paperless-setup")
-            else:
-                self.stack_dir = os.environ.get("STACK_DIR", f"/home/docker/{self.instance_name}-setup")
-        
-        if self.data_root is None:
-            if self.instance_name == "paperless":
-                self.data_root = os.environ.get("DATA_ROOT", "/home/docker/paperless")
-            else:
-                self.data_root = os.environ.get("DATA_ROOT", f"/home/docker/{self.instance_name}")
+    stack_dir: str = os.environ.get("STACK_DIR", "/home/docker/paperless-setup")
+    data_root: str = os.environ.get("DATA_ROOT", "/home/docker/paperless")
 
     tz: str = os.environ.get("TZ", open('/etc/timezone').read().strip() if Path('/etc/timezone').exists() else 'Etc/UTC')
     puid: str = os.environ.get("PUID", "1001")
@@ -179,12 +160,17 @@ def prompt_core_values() -> None:
     cfg.tz = prompt("Timezone (IANA, e.g., Pacific/Auckland; Enter=default)", cfg.tz)
     cfg.instance_name = prompt("Instance name (Enter=default)", cfg.instance_name)
     
-    # Update defaults based on instance name
-    cfg.__post_init__()
+    # Update defaults based on new instance name
+    if cfg.instance_name != "paperless":
+        default_data = f"/home/docker/{cfg.instance_name}"
+        default_stack = f"/home/docker/{cfg.instance_name}-setup"
+    else:
+        default_data = "/home/docker/paperless"
+        default_stack = "/home/docker/paperless-setup"
     
     # Prompt for paths with instance-specific defaults
-    cfg.data_root = prompt("Data root (persistent storage; Enter=default)", cfg.data_root)
-    cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", cfg.stack_dir)
+    cfg.data_root = prompt("Data root (persistent storage; Enter=default)", default_data)
+    cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", default_stack)
     
     # Warn if paths already exist
     if Path(cfg.stack_dir).exists():
