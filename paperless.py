@@ -64,17 +64,16 @@ except ModuleNotFoundError:
 
 def main():
     """Main entry point."""
-    # If stdin is not a terminal (piped execution), re-exec with stdin from terminal
+    # If stdin is not a terminal (piped execution), reopen it to the controlling terminal
     if not sys.stdin.isatty():
-        import tempfile
-        # Save script to temp file and re-execute
-        script_content = Path(__file__).read_text() if Path(__file__).exists() else sys.stdin.read()
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(script_content)
-            temp_script = f.name
-        
-        # Re-execute with stdin connected to terminal
-        os.execvp(sys.executable, [sys.executable, temp_script] + sys.argv[1:])
+        try:
+            sys.stdin = open('/dev/tty', 'r')
+        except:
+            print("ERROR: Cannot access terminal for interactive input.")
+            print("Please download and run the script directly:")
+            print(f"  wget https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}/paperless.py")
+            print(f"  sudo python3 paperless.py")
+            sys.exit(1)
     
     # Check if we're on a fresh machine (no instances configured)
     from pathlib import Path
