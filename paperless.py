@@ -22,6 +22,12 @@ import os
 import sys
 from pathlib import Path
 
+# Try to import config, bootstrap if needed
+try:
+    from lib import config
+except ModuleNotFoundError:
+    config = None  # Will bootstrap and import later
+
 
 def _parse_branch() -> str:
     """Parse branch from args or environment."""
@@ -45,10 +51,7 @@ def _bootstrap() -> None:
     import tempfile
     import urllib.request
 
-    url = (
-        "https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof/"
-        f"tar.gz/refs/heads/{BRANCH}"
-    )
+    url = f"{config.GITHUB_ARCHIVE_URL if config else 'https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof'}/{BRANCH}"
     tmpdir = tempfile.mkdtemp(prefix="paperless-")
     with urllib.request.urlopen(url) as resp:
         with tarfile.open(fileobj=io.BytesIO(resp.read()), mode="r:gz") as tf:
@@ -63,10 +66,12 @@ def _bootstrap() -> None:
 try:
     from lib.manager import PaperlessManager
     from lib.installer import common, deps, files, pcloud
+    from lib import config
 except ModuleNotFoundError:
     _bootstrap()
     from lib.manager import PaperlessManager
     from lib.installer import common, deps, files, pcloud
+    from lib import config
 
 
 def main():
@@ -115,7 +120,7 @@ def main():
         print()
         
         # Auto-detect and import legacy instance
-        default_env = Path("/home/docker/paperless-setup/.env")
+        default_env = Path(config.DEFAULT_STACK_DIR) / ".env"
         if default_env.exists():
             print("Detected existing instance. Importing...")
             # This will be handled by the manager on first launch
