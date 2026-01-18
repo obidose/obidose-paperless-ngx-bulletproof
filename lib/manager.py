@@ -1038,18 +1038,434 @@ class PaperlessManager:
             warn("Invalid option")
     
     def configure_backup_connection(self) -> None:
-        """Configure rclone/pCloud connection."""
-        print_header("Backup Server Connection")
+        """Configure rclone cloud backup connection with guided setup."""
+        while True:
+            print_header("Backup Server Configuration")
+            
+            box_line, box_width = create_box_helper(60)
+            
+            # Check current status
+            current_remote = None
+            remote_type = None
+            remote_ok = False
+            
+            try:
+                result = subprocess.run(
+                    ["rclone", "listremotes"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if result.returncode == 0:
+                    remotes = [r.strip().rstrip(':') for r in result.stdout.splitlines() if r.strip()]
+                    if remotes:
+                        current_remote = remotes[0]
+                        # Get remote type
+                        result = subprocess.run(
+                            ["rclone", "config", "show", current_remote],
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        if result.returncode == 0:
+                            for line in result.stdout.splitlines():
+                                if line.startswith("type = "):
+                                    remote_type = line.split("=")[1].strip()
+                                    break
+                        # Check if working
+                        result = subprocess.run(
+                            ["rclone", "about", f"{current_remote}:", "--json"],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                            check=False
+                        )
+                        remote_ok = result.returncode == 0
+            except:
+                pass
+            
+            # Display info box
+            print(draw_box_top(box_width))
+            print(box_line(" Backups are stored in the cloud using rclone, which"))
+            print(box_line(" supports 70+ cloud storage providers including:"))
+            print(box_line(""))
+            print(box_line(f"   • {colorize('pCloud', Colors.CYAN)} - Great value, EU/US servers"))
+            print(box_line(f"   • {colorize('Google Drive', Colors.CYAN)} - 15GB free"))
+            print(box_line(f"   • {colorize('Dropbox', Colors.CYAN)} - 2GB free"))
+            print(box_line(f"   • {colorize('OneDrive', Colors.CYAN)} - 5GB free"))
+            print(box_line(f"   • {colorize('Backblaze B2', Colors.CYAN)} - 10GB free, cheap storage"))
+            print(box_line(f"   • {colorize('Amazon S3', Colors.CYAN)} - Enterprise scalable"))
+            print(box_line(f"   • {colorize('SFTP/WebDAV', Colors.CYAN)} - Self-hosted options"))
+            print(box_line(""))
+            print(draw_section_header("Current Status", box_width))
+            
+            if current_remote and remote_ok:
+                status_icon = colorize("● Connected", Colors.GREEN)
+                print(box_line(f" Status:  {status_icon}"))
+                print(box_line(f" Remote:  {colorize(current_remote, Colors.CYAN)} ({remote_type or 'unknown'})"))
+                
+                # Try to get usage info
+                try:
+                    result = subprocess.run(
+                        ["rclone", "about", f"{current_remote}:", "--json"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False
+                    )
+                    if result.returncode == 0:
+                        import json as json_module
+                        about = json_module.loads(result.stdout)
+                        if "used" in about and "total" in about:
+                            used_gb = about["used"] / (1024**3)
+                            total_gb = about["total"] / (1024**3)
+                            pct = (about["used"] / about["total"]) * 100 if about["total"] > 0 else 0
+                            print(box_line(f" Storage: {used_gb:.1f} GB / {total_gb:.1f} GB ({pct:.0f}% used)"))
+                except:
+                    pass
+            elif current_remote:
+                status_icon = colorize("● Configured but not responding", Colors.YELLOW)
+                print(box_line(f" Status:  {status_icon}"))
+                print(box_line(f" Remote:  {colorize(current_remote, Colors.CYAN)} ({remote_type or 'unknown'})"))
+            else:
+                status_icon = colorize("○ Not configured", Colors.RED)
+                print(box_line(f" Status:  {status_icon}"))
+            
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # Menu options
+            if current_remote and remote_ok:
+                print(f"  {colorize('1)', Colors.BOLD)} Test connection")
+                print(f"  {colorize('2)', Colors.BOLD)} View storage usage")
+                print(f"  {colorize('3)', Colors.BOLD)} Change backup provider")
+                print(f"  {colorize('4)', Colors.BOLD)} Remove configuration")
+            else:
+                print(f"  {colorize('1)', Colors.BOLD)} {colorize('Set up pCloud', Colors.CYAN)} {colorize('(recommended)', Colors.GREEN)}")
+                print(f"  {colorize('2)', Colors.BOLD)} Set up Google Drive")
+                print(f"  {colorize('3)', Colors.BOLD)} Set up Dropbox")
+                print(f"  {colorize('4)', Colors.BOLD)} Set up other provider (advanced)")
+            
+            print()
+            print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            
+            if current_remote and remote_ok:
+                # Already configured menu
+                if choice == "1":
+                    self._test_backup_connection(current_remote)
+                elif choice == "2":
+                    self._show_storage_usage(current_remote)
+                elif choice == "3":
+                    if confirm("Replace current backup configuration?", False):
+                        self._setup_backup_provider_menu()
+                elif choice == "4":
+                    if confirm(f"Remove '{current_remote}' configuration? Backups will stop working.", False):
+                        subprocess.run(["rclone", "config", "delete", current_remote], check=False)
+                        ok("Configuration removed")
+                        self.rclone_configured = False
+                        input("\nPress Enter to continue...")
+            else:
+                # Not configured menu
+                if choice == "1":
+                    self._setup_pcloud()
+                elif choice == "2":
+                    self._setup_google_drive()
+                elif choice == "3":
+                    self._setup_dropbox()
+                elif choice == "4":
+                    self._setup_other_provider()
+            
+            # Refresh connection status
+            self.rclone_configured = self._check_rclone_connection()
+    
+    def _test_backup_connection(self, remote: str) -> None:
+        """Test the backup connection."""
+        print()
+        say("Testing connection...")
         
         try:
-            # Check if running from installed package
-            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from installer import pcloud
-            pcloud.ensure_pcloud_remote_or_menu()
-            self.rclone_configured = self._check_rclone_connection()
-            ok("Backup connection configured!")
+            result = subprocess.run(
+                ["rclone", "lsd", f"{remote}:"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False
+            )
+            if result.returncode == 0:
+                ok("Connection successful!")
+                dirs = [line.split()[-1] for line in result.stdout.splitlines() if line.strip()]
+                if dirs:
+                    say(f"Found {len(dirs)} top-level folders")
+            else:
+                error(f"Connection failed: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            error("Connection timed out")
         except Exception as e:
-            error(f"Failed to configure backup connection: {e}")
+            error(f"Test failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _show_storage_usage(self, remote: str) -> None:
+        """Show storage usage details."""
+        print()
+        say("Fetching storage information...")
+        
+        try:
+            result = subprocess.run(
+                ["rclone", "about", f"{remote}:"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False
+            )
+            if result.returncode == 0:
+                print()
+                print(result.stdout)
+            else:
+                warn("Could not fetch storage info")
+        except Exception as e:
+            error(f"Failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _setup_backup_provider_menu(self) -> None:
+        """Show provider selection menu."""
+        print()
+        print(f"  {colorize('1)', Colors.BOLD)} {colorize('pCloud', Colors.CYAN)} {colorize('(recommended)', Colors.GREEN)}")
+        print(f"  {colorize('2)', Colors.BOLD)} Google Drive")
+        print(f"  {colorize('3)', Colors.BOLD)} Dropbox")
+        print(f"  {colorize('4)', Colors.BOLD)} Other provider")
+        print()
+        
+        choice = get_input("Select provider", "")
+        
+        if choice == "1":
+            self._setup_pcloud()
+        elif choice == "2":
+            self._setup_google_drive()
+        elif choice == "3":
+            self._setup_dropbox()
+        elif choice == "4":
+            self._setup_other_provider()
+    
+    def _setup_pcloud(self) -> None:
+        """Guided pCloud setup."""
+        print()
+        box_line, box_width = create_box_helper(60)
+        
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('pCloud Setup', Colors.BOLD)}"))
+        print(box_line(""))
+        print(box_line(" pCloud offers excellent value with lifetime plans and"))
+        print(box_line(" servers in both EU and US regions."))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 1:', Colors.CYAN)} On any computer with a browser, run:"))
+        print(box_line(""))
+        print(box_line(f"   {colorize('rclone authorize \"pcloud\"', Colors.YELLOW)}"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 2:', Colors.CYAN)} Log in to pCloud in the browser"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 3:', Colors.CYAN)} Copy the token JSON that appears"))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        token = get_input("Paste token JSON (or 'cancel' to go back)", "")
+        
+        if token.lower() == "cancel" or not token:
+            return
+        
+        # Validate JSON
+        try:
+            import json as json_module
+            json_module.loads(token)
+        except:
+            error("Invalid JSON format. Make sure you copy the entire token.")
+            input("\nPress Enter to continue...")
+            return
+        
+        say("Configuring pCloud remote...")
+        
+        # Try EU region first, then US
+        for host, region in [("eapi.pcloud.com", "EU"), ("api.pcloud.com", "US")]:
+            subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                "rclone", "config", "create", "pcloud", "pcloud",
+                "token", token, "hostname", host, "--non-interactive"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Test connection
+            result = subprocess.run(
+                ["rclone", "about", "pcloud:", "--json"],
+                capture_output=True,
+                timeout=15,
+                check=False
+            )
+            if result.returncode == 0:
+                ok(f"pCloud configured successfully ({region} region)")
+                self.rclone_configured = True
+                input("\nPress Enter to continue...")
+                return
+        
+        error("Failed to connect with provided token. Please try again.")
+        input("\nPress Enter to continue...")
+    
+    def _setup_google_drive(self) -> None:
+        """Guided Google Drive setup."""
+        print()
+        box_line, box_width = create_box_helper(60)
+        
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Google Drive Setup', Colors.BOLD)}"))
+        print(box_line(""))
+        print(box_line(" Google Drive offers 15GB free storage."))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 1:', Colors.CYAN)} On any computer with a browser, run:"))
+        print(box_line(""))
+        print(box_line(f"   {colorize('rclone authorize \"drive\"', Colors.YELLOW)}"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 2:', Colors.CYAN)} Log in to Google in the browser"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 3:', Colors.CYAN)} Copy the token JSON that appears"))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        token = get_input("Paste token JSON (or 'cancel' to go back)", "")
+        
+        if token.lower() == "cancel" or not token:
+            return
+        
+        try:
+            import json as json_module
+            json_module.loads(token)
+        except:
+            error("Invalid JSON format.")
+            input("\nPress Enter to continue...")
+            return
+        
+        say("Configuring Google Drive remote...")
+        
+        subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([
+            "rclone", "config", "create", "pcloud", "drive",
+            "token", token, "--non-interactive"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        result = subprocess.run(
+            ["rclone", "about", "pcloud:", "--json"],
+            capture_output=True,
+            timeout=15,
+            check=False
+        )
+        if result.returncode == 0:
+            ok("Google Drive configured successfully")
+            self.rclone_configured = True
+        else:
+            error("Failed to connect. Please try again.")
+        
+        input("\nPress Enter to continue...")
+    
+    def _setup_dropbox(self) -> None:
+        """Guided Dropbox setup."""
+        print()
+        box_line, box_width = create_box_helper(60)
+        
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Dropbox Setup', Colors.BOLD)}"))
+        print(box_line(""))
+        print(box_line(" Dropbox offers 2GB free storage."))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 1:', Colors.CYAN)} On any computer with a browser, run:"))
+        print(box_line(""))
+        print(box_line(f"   {colorize('rclone authorize \"dropbox\"', Colors.YELLOW)}"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 2:', Colors.CYAN)} Log in to Dropbox in the browser"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Step 3:', Colors.CYAN)} Copy the token JSON that appears"))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        token = get_input("Paste token JSON (or 'cancel' to go back)", "")
+        
+        if token.lower() == "cancel" or not token:
+            return
+        
+        try:
+            import json as json_module
+            json_module.loads(token)
+        except:
+            error("Invalid JSON format.")
+            input("\nPress Enter to continue...")
+            return
+        
+        say("Configuring Dropbox remote...")
+        
+        subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([
+            "rclone", "config", "create", "pcloud", "dropbox",
+            "token", token, "--non-interactive"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        result = subprocess.run(
+            ["rclone", "about", "pcloud:", "--json"],
+            capture_output=True,
+            timeout=15,
+            check=False
+        )
+        if result.returncode == 0:
+            ok("Dropbox configured successfully")
+            self.rclone_configured = True
+        else:
+            error("Failed to connect. Please try again.")
+        
+        input("\nPress Enter to continue...")
+    
+    def _setup_other_provider(self) -> None:
+        """Advanced setup for other rclone providers."""
+        print()
+        box_line, box_width = create_box_helper(60)
+        
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Advanced Provider Setup', Colors.BOLD)}"))
+        print(box_line(""))
+        print(box_line(" rclone supports 70+ cloud providers. For full list:"))
+        print(box_line(f"   {colorize('https://rclone.org/overview/', Colors.CYAN)}"))
+        print(box_line(""))
+        print(box_line(" Common options:"))
+        print(box_line("   • Backblaze B2  - Cheap object storage"))
+        print(box_line("   • Amazon S3     - Enterprise storage"))
+        print(box_line("   • SFTP          - Any SSH server"))
+        print(box_line("   • WebDAV        - Nextcloud, ownCloud, etc."))
+        print(box_line("   • FTP           - Legacy servers"))
+        print(box_line(""))
+        print(box_line(" To configure manually, run:"))
+        print(box_line(f"   {colorize('rclone config', Colors.YELLOW)}"))
+        print(box_line(""))
+        print(box_line(f" {colorize('Important:', Colors.RED)} Name your remote 'pcloud' for"))
+        print(box_line(" compatibility with this system."))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        if confirm("Launch rclone interactive config?", True):
+            print()
+            say("Starting rclone config... Create a remote named 'pcloud'")
+            print()
+            subprocess.run(["rclone", "config"], check=False)
+            
+            # Check if it worked
+            self.rclone_configured = self._check_rclone_connection()
+            if self.rclone_configured:
+                ok("Remote configured successfully!")
+            else:
+                warn("Remote not detected. Make sure it's named 'pcloud'.")
         
         input("\nPress Enter to continue...")
     
@@ -1456,12 +1872,9 @@ class PaperlessManager:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
             
-            # Port with conflict detection
-            suggested_port = get_next_available_port(int(common.cfg.http_port))
-            if suggested_port != common.cfg.http_port:
-                warn(f"Port {common.cfg.http_port} is in use")
-                common.cfg.http_port = suggested_port
-            common.cfg.http_port = get_input("HTTP port", common.cfg.http_port)
+            # Port - find available port starting from 8000
+            available_port = get_next_available_port(8000)
+            common.cfg.http_port = get_input("HTTP port", available_port)
             
             # Tailscale option
             if net_status["tailscale_connected"]:
@@ -1471,9 +1884,9 @@ class PaperlessManager:
             else:
                 common.cfg.enable_tailscale = "no"
             
-            # Default backup schedule
+            # Default backup schedule (weekly full + 6-hourly incremental)
             common.cfg.cron_full_time = "30 3 * * 0"
-            common.cfg.cron_incr_time = "0 0 * * *"
+            common.cfg.cron_incr_time = "0 */6 * * *"
             common.cfg.refresh_paths()
             print()
             
@@ -1699,9 +2112,10 @@ class PaperlessManager:
                 common.cfg.enable_traefik = "yes"
                 common.cfg.enable_cloudflared = "no"
                 common.cfg.domain = get_input("Domain (DNS must point to this server)", f"{instance_name}.example.com")
-                common.cfg.letsencrypt_email = get_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
                 
                 if not net_status["traefik_running"]:
+                    # Only ask for email if Traefik isn't running yet (will need to be set up)
+                    common.cfg.letsencrypt_email = get_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
                     warn("Traefik is not running!")
                     say("Install from main menu: Manage Traefik (HTTPS)")
                     if not confirm("Continue anyway? (Instance won't work until Traefik is set up)", False):
@@ -1725,15 +2139,11 @@ class PaperlessManager:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
             
-            # Port selection with conflict detection
+            # Port selection - find available port BEFORE showing default
             print()
-            common.prompt_networking.__globals__['cfg'] = common.cfg  # Ensure cfg is accessible
             from lib.installer.common import get_next_available_port
-            suggested_port = get_next_available_port(int(common.cfg.http_port))
-            if suggested_port != common.cfg.http_port:
-                warn(f"Port {common.cfg.http_port} is in use")
-                common.cfg.http_port = suggested_port
-            common.cfg.http_port = get_input("HTTP port", common.cfg.http_port)
+            available_port = get_next_available_port(8000)  # Always start checking from 8000
+            common.cfg.http_port = get_input("HTTP port", available_port)
             
             # Tailscale add-on
             print()
@@ -1760,7 +2170,7 @@ class PaperlessManager:
                 say("Backup server is configured. Set your backup schedule:")
                 print()
                 
-                print(f"  {colorize('1)', Colors.BOLD)} Daily full + hourly incremental {colorize('(recommended)', Colors.GREEN)}")
+                print(f"  {colorize('1)', Colors.BOLD)} Weekly full + 6-hourly incremental {colorize('(recommended)', Colors.GREEN)}")
                 print(f"  {colorize('2)', Colors.BOLD)} Weekly full + daily incremental")
                 print(f"  {colorize('3)', Colors.BOLD)} Custom schedule")
                 print()
@@ -1768,8 +2178,8 @@ class PaperlessManager:
                 backup_choice = get_input("Choose backup plan [1-3]", "1")
                 
                 if backup_choice == "1":
-                    common.cfg.cron_full_time = "30 3 * * *"    # Daily 3:30 AM
-                    common.cfg.cron_incr_time = "0 * * * *"     # Hourly
+                    common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    common.cfg.cron_incr_time = "0 */6 * * *"   # Every 6 hours
                 elif backup_choice == "2":
                     common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
                     common.cfg.cron_incr_time = "0 0 * * *"     # Daily midnight
