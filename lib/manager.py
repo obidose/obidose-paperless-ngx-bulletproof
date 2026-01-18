@@ -765,7 +765,7 @@ class PaperlessManager:
         try:
             # Import installer modules
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from lib.installer import common, files, traefik
+            from lib.installer import common, files, traefik, cloudflared, tailscale
             
             # Run the guided setup (removed preset selection)
             common.prompt_core_values()
@@ -784,7 +784,31 @@ class PaperlessManager:
                 else:
                     common.ok("Using existing system Traefik for HTTPS routing")
             
-            # TODO: Check cloudflared and tailscale status similarly
+            # Check if Cloudflared is needed and available
+            if common.cfg.enable_cloudflared == "yes":
+                if not cloudflared.is_cloudflared_installed():
+                    common.warn("Cloudflare Tunnel enabled but cloudflared not installed!")
+                    common.say("Install cloudflared from main menu: Manage Cloudflare Tunnel")
+                    if not confirm("Continue without tunnel? Instance will be on port 8000 only.", False):
+                        common.warn("Instance creation cancelled")
+                        input("\nPress Enter to continue...")
+                        return
+                elif not cloudflared.is_authenticated():
+                    common.warn("Cloudflared installed but not authenticated!")
+                    common.say("Authenticate from main menu: Manage Cloudflare Tunnel")
+                    if not confirm("Continue without tunnel? You'll need to set it up manually.", False):
+                        common.warn("Instance creation cancelled")
+                        input("\nPress Enter to continue...")
+                        return
+            
+            # Check if Tailscale is needed
+            if common.cfg.enable_tailscale == "yes":
+                if not tailscale.is_tailscale_installed():
+                    common.warn("Tailscale enabled but not installed!")
+                    common.say("Install Tailscale from main menu: Manage Tailscale")
+                elif not tailscale.is_connected():
+                    common.warn("Tailscale installed but not connected!")
+                    common.say("Connect from main menu: Manage Tailscale")
             
             common.ensure_dir_tree(common.cfg)
             
@@ -802,6 +826,48 @@ class PaperlessManager:
                 common.warn("Self-test failed; check container logs")
             
             files.install_cron_backup()
+            
+            # Set up Cloudflare tunnel if enabled
+            if common.cfg.enable_cloudflared == "yes" and cloudflared.is_authenticated():
+                print()
+                common.say("Setting up Cloudflare Tunnel...")
+                if cloudflared.create_tunnel(common.cfg.instance_name, common.cfg.domain):
+                    common.ok(f"Cloudflare tunnel created for {common.cfg.domain}")
+                    common.say("To start the tunnel, run:")
+                    print(f"  cloudflared tunnel --config /etc/cloudflared/{common.cfg.instance_name}.yml run")
+                    print()
+                    if confirm("Start tunnel now as a background service?", True):
+                        try:
+                            # Create systemd service
+                            service_content = f"""[Unit]
+Description=Cloudflare Tunnel for {common.cfg.instance_name}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{common.cfg.instance_name}.yml run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+"""
+                            service_file = Path(f"/etc/systemd/system/cloudflared-{common.cfg.instance_name}.service")
+                            service_file.write_text(service_content)
+                            
+                            subprocess.run(["systemctl", "daemon-reload"], check=True)
+                            subprocess.run(["systemctl", "enable", f"cloudflared-{common.cfg.instance_name}"], check=True)
+                            subprocess.run(["systemctl", "start", f"cloudflared-{common.cfg.instance_name}"], check=True)
+                            
+                            common.ok(f"Tunnel service started and enabled")
+                            common.say(f"Access at: https://{common.cfg.domain}")
+                        except Exception as e:
+                            common.warn(f"Failed to create service: {e}")
+                            common.say("You can start the tunnel manually with the command above")
+                else:
+                    common.warn("Failed to create Cloudflare tunnel")
+                    common.say("You can create it manually from the Cloudflare Tunnel menu")
             
             # Register instance
             self.instance_manager.add_instance(
