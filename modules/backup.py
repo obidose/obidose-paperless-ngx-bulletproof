@@ -185,7 +185,7 @@ def test_db_restore(work: Path) -> bool:
         return False
 
 
-def main() -> None:
+def main() -> Path:
     mode = sys.argv[1] if len(sys.argv) > 1 else None
     if mode not in {"full", "incr", "archive"}:
         die("Usage: backup.py [full|incr|archive]")
@@ -265,13 +265,17 @@ def main() -> None:
         subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
 
     ok("Backup completed")
+    return work
 
 
 if __name__ == "__main__":
     import shutil
 
+    work = None
     try:
-        main()
+        work = main()
+    except Exception as e:
+        die(f"Backup failed: {e}")
     finally:
-        if 'work' in locals() and Path(work).exists():
+        if work is not None and Path(work).exists():
             shutil.rmtree(work)

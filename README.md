@@ -1,272 +1,403 @@
-# Paperless‑ngx Bulletproof Installer
+# Paperless-NGX Bulletproof
 
-A one‑shot, “batteries‑included” setup for **Paperless‑ngx** on Ubuntu 22.04/24.04 with:
-- Docker + Docker Compose
-- Optional **Traefik** reverse proxy + Let’s Encrypt (HTTPS)
-- **pCloud** off‑site backups via **rclone** (OAuth, region auto‑detect)
-- Easy **backup / restore / safe upgrades / status** via the `bulletproof` CLI
-- Cron‑based nightly snapshots with retention
+One-command setup and management for Paperless-NGX with automated backups to pCloud.
 
-> Designed for minimal input: you provide a couple of answers, the script handles the rest.
+## Quick Start
 
----
+**One command does everything** - works on fresh or existing installations:
 
-## Contents
+```bash
+# From main branch (stable)
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3 -
 
-- [What it sets up](#what-it-sets-up)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [pCloud auth (OAuth)](#pcloud-auth-oauth)
-- [Presets](#presets)
-- [Interactive wizard](#interactive-wizard)
-- [Backup & snapshots](#backup--snapshots)
-- [Restore](#restore)
-- [Bulletproof CLI](#bulletproof-cli)
-- [Troubleshooting](#troubleshooting)
-- [Uninstall / remove stack](#uninstall--remove-stack)
+# From dev branch (testing)
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py | BP_BRANCH=dev sudo -E python3 - --branch dev
+```
+
+After installation, manage with: `paperless`
 
 ---
 
-## What it sets up
+## What You Get
 
-- A Docker Compose stack for Paperless‑ngx and dependencies:
-  - **PostgreSQL**, **Redis**, **Gotenberg**, **Tika**, and optionally **Traefik**
-- Persistent data tree at (defaults):
-  - `/home/docker/paperless` — data, media, export, db, etc.
-  - `/home/docker/paperless-setup` — compose files, `.env`, helper scripts
-- **rclone** remote named `pcloud:` configured via OAuth and **auto‑switch** to the correct pCloud API region
-- `backup.py` and `restore.py` scripts placed into the stack dir
--  Cron job for nightly snapshots with retention
-- `bulletproof` command for backups, safe upgrades, listing snapshots, restores, health, and logs
+- **Paperless-NGX** with PostgreSQL, Redis, Gotenberg, Tika
+- **Optional Traefik** with automatic HTTPS (Let's Encrypt)
+- **Automated backups** to pCloud (full + incremental + optional archive)
+- **Easy restore** from any snapshot with automatic chain resolution
+- **Multi-instance** management
+- **Health monitoring** and container management
+- **Interactive TUI** for all operations
 
 ---
 
 ## Requirements
 
-- Ubuntu **22.04** or **24.04**
-- Run as **root** (or prefix commands with `sudo`)
-- A pCloud account  
-  - OAuth is used (no app password required)
+- Ubuntu 22.04 or 24.04
+- Root access (run with `sudo`)
+- pCloud account for backups
 
-> DNS should already point to your host **if** you choose Traefik + HTTPS, so Let’s Encrypt can issue certs.
+That's it! The installer handles Docker, rclone, and everything else.
 
 ---
 
-## Quick start
+## First Run
 
-The installer pulls code from the `main` branch by default. Provide a branch
-name or commit SHA with the `--branch` flag (or `BP_BRANCH` environment
-variable) to test other versions. The installer uses this value for the
-repository tarball and any preset files, so everything comes from the same
-branch.
+The unified command detects your environment and guides you:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/install.py | sudo python3 -
+### On Fresh Machine
+```
+Welcome to Paperless-NGX Bulletproof!
+
+Options:
+  1) Quick setup (guided installation)
+  2) Advanced options (manual configuration)  
+  3) Restore from existing backup
+
+Choose [1-3]:
 ```
 
-### Dev branch example
+### On Existing Installation
+Launches the interactive management TUI with all features.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/install.py \
-  | BP_BRANCH=dev sudo -E python3 - --branch dev
+---
+
+## Management Interface
+
+After installation, run: `paperless`
+
+```
+╔══════════════════════════════════════════════════════════╗
+║        Paperless-NGX Bulletproof Manager                ║
+╚══════════════════════════════════════════════════════════╝
+
+Current Instance: paperless [Running]
+
+  1) Setup new instance
+  2) Select/switch instance
+  3) Backup management
+  4) Restore from backup
+  5) System health check
+  6) Instance management
+  7) Container operations
+  q) Quit
 ```
 
-The env var and flag ensure everything comes from `dev`.
+### Features
 
-The installer will:
-1. Install/upgrade Docker, rclone, and prerequisites
-2. Help you connect **pCloud** (OAuth recommended)
-3. Offer **presets** (Traefik or Direct)
-4. Prompt for a few basics (timezone, instance name, paths, credentials, HTTPS domain/email)
-5. Start the stack
-6. Install the **bulletproof** helper CLI
+**Backup Management**
+- Manual backups (full, incremental, archive)
+- View all snapshots with metadata
+- Configure automated schedules
+- Retention policies
 
-> If you ever need to refresh the CLI manually:
-> ```bash
-> BRANCH=${BRANCH:-main}
-> curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/$BRANCH/tools/bulletproof.py \
->   | sudo tee /usr/local/bin/bulletproof >/dev/null && sudo chmod +x /usr/local/bin/bulletproof
-> ```
+**Restore Operations**
+- Interactive snapshot selection
+- Automatic incremental chain resolution
+- Safety confirmations
+- Clone to new instances
 
-Use the same `BRANCH` value when refreshing the CLI so it matches the version
-you're testing. After verifying your changes on a VPS, merge them into `main`
-(or tag a release) and run the installer without specifying a branch for
-production.
+**Multi-Instance**
+- Track unlimited instances
+- Switch between instances
+- Add/remove instances
+- Independent management
 
----
+**Health Monitoring**
+- 8-point system health check
+- Docker and container status
+- Data integrity validation
+- Remote connectivity tests
 
-## pCloud auth (OAuth)
-
-During install you’ll see:
-
-- **Paste OAuth token JSON (recommended)**  
-  Use a machine **with a browser** and run:
-  ```bash
-  rclone authorize "pcloud"
-  ```
-  Copy the printed JSON and paste it back into the installer.
-
-- **Headless OAuth helper**  
-  The installer guides you through running `rclone authorize "pcloud"` on another machine and pasting the JSON.
-
-- **Legacy WebDAV** (best‑effort only)  
-  Use only if OAuth isn’t possible. Some networks/regions block EU WebDAV; OAuth avoids this.
-
-The installer **auto‑detects EU/Global** pCloud API and configures the `pcloud:` remote accordingly.
+**Container Operations**
+- Start/stop/restart
+- View logs in real-time
+- Safe upgrades with auto-backup
+- Pull latest images
 
 ---
 
-## Presets
+## pCloud Setup
 
-You can load defaults before answering prompts:
+During installation, configure pCloud using **OAuth** (recommended):
 
-- `presets/traefik.env` – enable Traefik + HTTPS (you’ll enter domain + email)
-- `presets/direct.env` – run Paperless‑ngx bound to a local HTTP port
-- Provide a **URL** or a **local .env** file
-- Or **Skip**
+1. On any machine with a browser, run:
+   ```bash
+   rclone authorize "pcloud"
+   ```
 
-Presets are **merged** into the run so you can still change anything interactively.
+2. Copy the JSON token that's printed
 
----
+3. Paste it into the installer when prompted
 
-## Interactive wizard
+The installer auto-detects EU vs Global regions and configures accordingly.
 
-You’ll be prompted for:
-
-- **Timezone** (e.g., `Europe/London`)
-- **Instance name** (default: `paperless`)
-- **Data root** (default: `/home/docker/paperless`)
-- **Stack dir** (default: `/home/docker/paperless-setup`)
-- **Admin user / password** for Paperless‑ngx
-- **Postgres password**
-- **Enable Traefik with HTTPS?** (`yes`/`no`; `y` is accepted)
-  - If **yes**: **Domain** and **Let’s Encrypt email**
-
-The wizard writes:
-- `.env` → `/home/docker/paperless-setup/.env`
-- `docker-compose.yml` (Traefik on/off version)
-- Helper scripts: `backup.py`, `restore.py`
-- Installs `bulletproof` CLI
-
-Then it runs: `docker compose up -d` and performs a quick self-test
+**Alternative**: Legacy WebDAV (OAuth is much more reliable)
 
 ---
 
-## Backup & snapshots
+## Backup & Restore
 
-Automated cron jobs upload snapshots to pCloud:
-- **Weekly full** backup at a scheduled time
-- **Daily incremental** backups chaining to the last full
-- Optional **monthly archive** snapshot kept separately
-- Remote: `pcloud:backups/paperless/${INSTANCE_NAME}`
- - Snapshot naming: `YYYY-MM-DD_HH-MM-SS`
- - Full snapshots are self-contained; incrementals reference their parent
-- Includes:
-  - Encrypted `.env` (if enabled) or plain `.env`
-  - `compose.snapshot.yml` (set `INCLUDE_COMPOSE_IN_BACKUP=no` to skip)
-  - Tarballs of `media`, `data`, `export` (incremental)
-  - Postgres SQL dump
-  - Paperless-NGX version
-  - `manifest.yaml` with versions, file sizes + SHA-256 checksums, host info, mode & parent
-  - Integrity checks: archives are listed and the DB dump is test-restored; a `status.ok`/`status.fail` file records the result
-- Retention: keep last **N** days (configurable)
+### Automated Backups
 
-You can also trigger a backup manually (see **Bulletproof CLI**).
+Configured during installation:
+- **Full backups**: Weekly (configurable)
+- **Incremental**: Daily (configurable)
+- **Archive**: Monthly (optional)
 
-During installation you're guided through choosing the full/incremental cadence
-and whether to enable a monthly archive. Adjust these later with
-`bulletproof schedule`.
+All backups upload to: `pcloud:backups/paperless/{instance_name}/`
 
----
+Each snapshot includes:
+- PostgreSQL database dump
+- Incremental tarballs (media, data, export)
+- Environment configuration
+- Docker compose file
+- Manifest with metadata and checksums
+- Integrity verification (archives tested, DB restored to temp container)
 
-## Restore
-
-### From installer (early restore)
-If snapshots exist, the installer can **restore first**:
-- Select the latest or a specific snapshot
-- Decrypt `.env` if needed (passphrase file or prompt)
-- Restore data archives and DB, then start stack
-
-### From the CLI
-Use **Bulletproof** to pick a snapshot and restore it at any time.
-
-A self-test runs after the stack is back up.
-
-> Restores will stop the stack as needed and bring it back after import.
-
-The restore process walks any incremental chain automatically, applies the
-snapshot's `docker-compose.yml` by default (`USE_COMPOSE_SNAPSHOT=no` skips it)
-and lets you choose between the snapshot's Paperless‑NGX version or the latest
-image.
-
----
-
-## Bulletproof CLI
-
-A tiny helper wrapped around the installed scripts.
+### Manual Backups
 
 ```bash
-bulletproof          # interactive menu
-bulletproof backup [mode]    # run a backup now (full|incr|archive)
-bulletproof snapshots            # list snapshots (pick number to show manifest)
-bulletproof restore  # guided restore (choose snapshot)
-bulletproof upgrade  # backup + pull images + up -d with rollback
-bulletproof status   # container & health overview
-bulletproof logs     # tail paperless logs
-bulletproof doctor   # quick checks (disk, rclone, DNS/HTTP)
-bulletproof schedule [--full CRON] [--incr CRON] [--archive CRON]  # adjust backup times
+paperless
+# → Option 3 (Backup management)
+# → Choose full/incremental/archive
 ```
 
-**Upgrade** runs a backup, pulls new images, restarts the stack, and rolls back automatically if the health check fails.
+### Restore
 
-**Status** shows:
-- `docker compose ps` (state/ports)
-- `docker stats --no-stream` (CPU/MEM)
-- `df -h` for disk
-- rclone remote health
+```bash
+paperless
+# → Option 4 (Restore from backup)
+# → Select snapshot (or "latest")
+# → Confirm restoration
+```
 
-**Doctor** runs common checks and prints actionable tips.
+The restore process:
+1. Stops containers
+2. Downloads snapshot chain from pCloud
+3. Applies incrementals in order
+4. Restores database
+5. Restarts containers
+6. Runs health check
+
+---
+
+## Configuration
+
+### Presets
+
+During installation, choose a preset or skip:
+
+**Traefik** (`presets/traefik.env`)
+- Traefik reverse proxy
+- Automatic HTTPS with Let's Encrypt
+- Requires domain pointing to your server
+
+**Direct** (`presets/direct.env`)
+- Direct HTTP access
+- Bind to localhost port (default 8000)
+- No HTTPS
+
+### Environment Variables
+
+All settings in `/home/docker/paperless-setup/.env`:
+
+```bash
+INSTANCE_NAME=paperless
+DATA_ROOT=/home/docker/paperless
+STACK_DIR=/home/docker/paperless-setup
+
+PAPERLESS_ADMIN_USER=admin
+PAPERLESS_ADMIN_PASSWORD=...
+PAPERLESS_URL=https://your-domain.com
+
+POSTGRES_PASSWORD=...
+
+ENABLE_TRAEFIK=yes  # or "no"
+DOMAIN=paperless.example.com
+LETSENCRYPT_EMAIL=admin@example.com
+HTTP_PORT=8000  # if ENABLE_TRAEFIK=no
+
+RCLONE_REMOTE_NAME=pcloud
+RCLONE_REMOTE_PATH=backups/paperless/paperless
+RETENTION_DAYS=30
+
+CRON_FULL_TIME=30 3 * * 0     # Weekly Sunday 3:30 AM
+CRON_INCR_TIME=0 0 * * *      # Daily midnight
+CRON_ARCHIVE_TIME=            # Disabled (or set cron)
+```
+
+### Multiple Instances
+
+The manager tracks all instances in `/etc/paperless-bulletproof/instances.json`
+
+To add an existing instance:
+```bash
+paperless
+# → Option 6 (Instance management)
+# → Option 2 (Add existing instance)
+```
+
+---
+
+## File Structure
+
+```
+/usr/local/bin/
+  └── paperless@ → /usr/local/lib/paperless-bulletproof/paperless.py
+
+/usr/local/lib/paperless-bulletproof/
+  ├── paperless.py           # Main entry point
+  ├── paperless_manager.py   # TUI manager
+  ├── installer/             # Installation modules
+  │   ├── common.py
+  │   ├── deps.py
+  │   ├── files.py
+  │   └── pcloud.py
+  └── utils/
+      └── selftest.py
+
+/etc/paperless-bulletproof/
+  └── instances.json         # Instance tracking
+
+/home/docker/paperless-setup/
+  ├── .env
+  ├── docker-compose.yml
+  ├── backup.py             # Backup script
+  ├── restore.py            # Restore script
+  └── backup.log
+
+/home/docker/paperless/
+  ├── data/
+  ├── media/
+  ├── export/
+  ├── consume/
+  ├── db/
+  └── tika-cache/
+```
 
 ---
 
 ## Troubleshooting
 
-- **OAuth token fails**  
-  Make sure you paste the **exact** JSON from `rclone authorize "pcloud"` using the **same rclone version** if possible.
+### pCloud OAuth Fails
+- Ensure you paste the **complete JSON** token
+- Use the same rclone version if possible
+- Try WebDAV as fallback
 
-- **EU vs Global**  
-  The installer tests pCloud API endpoints and picks the right one automatically.
+### HTTPS Not Working
+- Verify DNS points to your server
+- Check ports 80/443 are accessible
+- Review Traefik logs: `paperless` → Option 7 → View logs → traefik
 
-- **WebDAV timeouts / 401**  
-  Prefer **OAuth**. WebDAV endpoints can be region‑/network‑sensitive.
+### No Snapshots Found
+- Run a manual backup first: `paperless` → Option 3
+- Verify rclone: `rclone lsd pcloud:`
+- Check remote path in .env file
 
-- **HTTPS not issuing**  
-  Confirm DNS points to this host and ports 80/443 are reachable. Traefik will retry challenges.
+### Containers Won't Start
+- Check Docker: `docker ps -a`
+- View logs: `paperless` → Option 7 → View logs
+- Run health check: `paperless` → Option 5
 
-- **Backup shows “No snapshots found”**
-  Run `bulletproof backup` then `bulletproof snapshots`. Verify the path shown matches
-  `pcloud:backups/paperless/${INSTANCE_NAME}`. Check rclone with `rclone about pcloud:`.
-
-- **Running without root**  
-  Use `sudo` for the installer and for `bulletproof` if your Docker requires it.
+### Backup Fails
+- Check disk space: `df -h`
+- Verify pCloud connection: `rclone about pcloud:`
+- Review backup.log: `cat /home/docker/paperless-setup/backup.log`
 
 ---
 
-## Uninstall / remove stack
+## Uninstall
+
+To remove the stack (keeps backups):
 
 ```bash
 cd /home/docker/paperless-setup
-docker compose down -v     # stop and remove containers + volumes
-# Remove data only if you really want to wipe everything:
-# rm -rf /home/docker/paperless
+docker compose down -v  # Removes containers and volumes
+
+# Optional: Remove files
+sudo rm -rf /home/docker/paperless
+sudo rm -rf /home/docker/paperless-setup
+sudo rm /usr/local/bin/paperless
+sudo rm -rf /usr/local/lib/paperless-bulletproof
+sudo rm -rf /etc/paperless-bulletproof
 ```
 
-Your off‑site snapshots remain in **pCloud**.
+Your pCloud backups remain intact for future restoration.
 
 ---
 
-## Notes
+## Architecture
 
-- Installer is idempotent: safe to rerun to pick up fixes.
-- You can change `.env` and run `docker compose up -d` anytime.
-- The `bulletproof` CLI is a Python script; read it to see what it does.
+**Entry Point** (`paperless.py`)
+- Detects fresh vs existing installation
+- Bootstraps from GitHub if needed
+- Launches installer or manager
+
+**Installer** (`installer/`)
+- Installs Docker, rclone, dependencies
+- Configures pCloud
+- Creates docker-compose.yml and .env
+- Sets up cron jobs
+
+**Manager** (`paperless_manager.py`)
+- Interactive TUI
+- Multi-instance management
+- Backup/restore operations
+- Health monitoring
+- Container control
+
+**Modules** (`modules/`)
+- `backup.py`: Snapshot creation and upload
+- `restore.py`: Snapshot download and restoration
+
+---
+
+## Development
+
+### Project Structure
+
+```
+paperless.py              # Main entry (bootstraps, detects state)
+paperless_manager.py      # TUI manager (classes for UI)
+install.py                # Legacy compat (redirects to paperless.py)
+
+installer/
+  ├── common.py           # Shared utilities, config
+  ├── deps.py             # Install Docker, rclone
+  ├── files.py            # Generate compose/env files
+  └── pcloud.py           # pCloud configuration
+
+modules/
+  ├── backup.py           # Backup operations
+  └── restore.py          # Restore operations
+
+utils/
+  └── selftest.py         # Post-install validation
+
+presets/
+  ├── traefik.env         # Traefik preset
+  └── direct.env          # Direct HTTP preset
+
+compose/
+  ├── docker-compose-traefik.yml    # Template with Traefik
+  └── docker-compose-direct.yml     # Template direct HTTP
+```
+
+### Testing Dev Branch
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py \
+  | BP_BRANCH=dev sudo -E python3 - --branch dev
+```
+
+The `--branch dev` and `BP_BRANCH=dev` ensure everything pulls from dev branch.
+
+---
+
+## License
+
+MIT
+
+## Support
+
+Issues and PRs welcome on GitHub: [obidose/obidose-paperless-ngx-bulletproof](https://github.com/obidose/obidose-paperless-ngx-bulletproof)

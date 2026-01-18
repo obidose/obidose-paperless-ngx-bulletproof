@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Python-based installer for Paperless-ngx Bulletproof.
+"""
+Legacy installer entry point - redirects to unified paperless.py
 
-When executed via ``curl ... | python3 -`` this script bootstraps the rest of the
-repository so the full installer can run without a prior ``git clone``.
+For backward compatibility, this still works but the recommended approach is:
+  curl -fsSL https://raw.githubusercontent.com/obidose/...main/paperless.py | sudo python3 -
 """
 
-from pathlib import Path
 import os
-import argparse
 import sys
 
 
 def _parse_branch() -> str:
+    import argparse
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--branch")
     args, unknown = parser.parse_known_args()
@@ -23,9 +23,7 @@ BRANCH = _parse_branch()
 
 
 def _bootstrap() -> None:
-    """Download repository sources into a temporary directory and load them."""
     import io
-    import sys
     import tarfile
     import tempfile
     import urllib.request
@@ -44,13 +42,16 @@ def _bootstrap() -> None:
     sys.path.insert(0, repo)
 
 
-try:  # first attempt to import locally present modules
+# Import or bootstrap
+try:
     from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
 except ModuleNotFoundError:
     _bootstrap()
     from installer import common, deps, files, pcloud
     from utils.selftest import run_stack_tests
+
+from pathlib import Path
 
 cfg = common.cfg
 say = common.say
@@ -61,26 +62,22 @@ prompt_core_values = common.prompt_core_values
 pick_and_merge_preset = common.pick_and_merge_preset
 ok = common.ok
 warn = common.warn
-# ``prompt_backup_plan`` was added in newer releases; fall back to a no-op if
-# running against an older checkout that lacks it.
 prompt_backup_plan = getattr(common, "prompt_backup_plan", lambda: None)
 
 
 def main() -> None:
     need_root()
     say(f"Fetching assets from branch '{BRANCH}'")
-
     say("Starting Paperless-ngx setup wizard...")
+    
     preflight_ubuntu()
     deps.install_prereqs()
     deps.ensure_user()
     deps.install_docker()
     deps.install_rclone()
-
-    # pCloud
     pcloud.ensure_pcloud_remote_or_menu()
-
     ensure_dir_tree(cfg)
+    
     restore_existing_backup_if_present = getattr(
         files, "restore_existing_backup_if_present", lambda: False
     )
@@ -98,14 +95,11 @@ def main() -> None:
         files.show_status()
         return
 
-    # Presets and prompts
     pick_and_merge_preset(
         f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
     )
     prompt_core_values()
     prompt_backup_plan()
-
-    # Directories and files
     ensure_dir_tree(cfg)
     files.write_env_file()
     files.write_compose_file()

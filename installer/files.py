@@ -8,8 +8,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 def copy_helper_scripts() -> None:
-    """Copy helper scripts and install bulletproof CLI."""
-    log("Copying helper scripts and installing CLI")
+    """Copy helper scripts and install unified CLI."""
+    log("Installing Paperless-NGX Bulletproof")
+    
+    # Copy backup and restore scripts to instance directory
     for name in ("backup.py", "restore.py"):
         src = BASE_DIR / "modules" / name
         dst = Path(cfg.stack_dir) / name
@@ -18,14 +20,44 @@ def copy_helper_scripts() -> None:
             dst.chmod(0o755)
         else:
             warn(f"Missing helper script: {src}")
-
-    bp_src = BASE_DIR / "tools" / "bulletproof.py"
-    bp_dst = Path("/usr/local/bin/bulletproof")
-    if bp_src.exists():
-        bp_dst.write_text(bp_src.read_text())
-        bp_dst.chmod(0o755)
-    else:
-        warn(f"Missing bulletproof CLI: {bp_src}")
+    
+    # Install the application library
+    lib_dir = Path("/usr/local/lib/paperless-bulletproof")
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Install all necessary modules
+    for name in ("paperless.py", "paperless_manager.py"):
+        src = BASE_DIR / name
+        dst = lib_dir / name
+        if src.exists():
+            dst.write_text(src.read_text())
+            dst.chmod(0o755)
+        else:
+            warn(f"Missing module: {src}")
+    
+    # Copy installer modules to lib
+    installer_dst = lib_dir / "installer"
+    installer_dst.mkdir(exist_ok=True)
+    for module in ["__init__.py", "common.py", "deps.py", "files.py", "pcloud.py"]:
+        src = BASE_DIR / "installer" / module
+        if src.exists():
+            (installer_dst / module).write_text(src.read_text())
+    
+    # Copy utils modules
+    utils_dst = lib_dir / "utils"
+    utils_dst.mkdir(exist_ok=True)
+    for module in ["__init__.py", "selftest.py"]:
+        src = BASE_DIR / "utils" / module
+        if src.exists():
+            (utils_dst / module).write_text(src.read_text())
+    
+    # Create main symlink
+    main_link = Path("/usr/local/bin/paperless")
+    if main_link.exists() or main_link.is_symlink():
+        main_link.unlink()
+    main_link.symlink_to(lib_dir / "paperless.py")
+    
+    ok("Installed 'paperless' command")
 
 
 def restore_existing_backup_if_present() -> bool:
@@ -325,4 +357,7 @@ def show_status() -> None:
         url = f"http://localhost:{cfg.http_port}"
     print()
     ok(f"Paperless-ngx should be reachable at: {url}")
+    print()
+    say("Manage your instance with: paperless")
+    print()
 

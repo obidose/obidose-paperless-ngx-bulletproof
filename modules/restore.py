@@ -269,10 +269,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import shutil
+
+    tmp = None
+    dump_dir = None
     try:
         main()
+    except Exception as e:
+        die(f"Restore failed: {e}")
     finally:
-        if 'tmp' in locals() and Path(tmp).exists():
-            subprocess.run(["rm", "-rf", str(tmp)])
-        if 'dump_dir' in locals() and Path(dump_dir).exists():
-            subprocess.run(["rm", "-rf", str(dump_dir)])
+        # These are cleaned up inside main(), but just in case
+        pass
