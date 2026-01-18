@@ -148,7 +148,6 @@ ingress:
         config_file.write_text(config_content)
         
         # Create or ensure DNS record
-        # First try to delete any existing record (in case it points to old tunnel)
         say(f"Ensuring DNS record for {domain}")
         result = subprocess.run(
             ["cloudflared", "tunnel", "route", "dns", tunnel_name, domain],
@@ -157,13 +156,18 @@ ingress:
             check=False
         )
         
-        # If failed because record exists, try with --overwrite-dns
+        # If failed because record exists, use --force to overwrite
         if result.returncode != 0 and "already exists" in result.stderr:
-            say(f"DNS record exists, updating to point to new tunnel...")
-            subprocess.run(
-                ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", tunnel_name, domain],
+            say(f"DNS record exists, forcing update to new tunnel...")
+            result = subprocess.run(
+                ["cloudflared", "tunnel", "route", "dns", "-f", tunnel_name, domain],
+                capture_output=True,
+                text=True,
                 check=False
             )
+            if result.returncode != 0:
+                warn(f"Could not update DNS automatically. Please delete the existing CNAME record for {domain} in Cloudflare dashboard, then re-run setup.")
+                warn(f"Error: {result.stderr.strip()}")
         
         ok(f"Cloudflare tunnel ready for {domain}")
         say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
@@ -205,9 +209,9 @@ def update_tunnel_dns(instance_name: str, domain: str) -> bool:
     
     say(f"Updating DNS for {domain} to point to tunnel {tunnel_name}...")
     
-    # Try with --overwrite-dns flag first
+    # Use -f (force) flag to overwrite existing DNS record
     result = subprocess.run(
-        ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", tunnel_name, domain],
+        ["cloudflared", "tunnel", "route", "dns", "-f", tunnel_name, domain],
         capture_output=True,
         text=True,
         check=False
@@ -218,6 +222,7 @@ def update_tunnel_dns(instance_name: str, domain: str) -> bool:
         return True
     else:
         warn(f"Failed to update DNS: {result.stderr}")
+        warn("You may need to manually delete the CNAME record in Cloudflare dashboard")
         return False
 
 
