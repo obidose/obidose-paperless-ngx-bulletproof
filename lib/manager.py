@@ -4376,6 +4376,20 @@ rclone_config: {network_info['rclone']['enabled']}
             
             shutil.rmtree(work)
             
+            # Offer to reconnect Tailscale if it was previously enabled
+            if ts_info.get("enabled"):
+                print()
+                from lib.installer.tailscale import is_tailscale_installed, is_connected, connect
+                if is_tailscale_installed() and not is_connected():
+                    if confirm("Reconnect Tailscale now?", True):
+                        say("Starting Tailscale authentication...")
+                        if connect():
+                            ok("Tailscale reconnected!")
+                            # Note: Serve paths need to be re-enabled per instance
+                            say("Note: Re-enable Tailscale Serve for each instance if needed")
+                        else:
+                            warn("Tailscale connection failed - reconnect from Manage Tailscale menu")
+            
         except Exception as e:
             error(f"System restore failed: {e}")
             import traceback

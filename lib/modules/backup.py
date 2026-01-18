@@ -16,6 +16,9 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+# Add the library path so we can import from lib.*
+sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+
 from lib.utils.common import load_env_to_environ, say, ok, warn, die
 
 

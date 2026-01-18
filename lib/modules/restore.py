@@ -13,6 +13,9 @@ import subprocess
 import time
 from pathlib import Path
 
+# Add the library path so we can import from lib.*
+sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+
 from lib.utils.common import load_env, load_env_to_environ, say, ok, warn, die
 from lib.utils.selftest import run_stack_tests
 
