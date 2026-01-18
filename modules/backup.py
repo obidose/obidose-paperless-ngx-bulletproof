@@ -154,6 +154,48 @@ def verify_archives(work: Path) -> bool:
     return all_ok
 
 
+def capture_docker_versions(work: Path) -> None:
+    """Capture Docker image versions for restoration."""
+    if not COMPOSE_FILE.exists():
+        return
+    
+    say("Capturing Docker image versions…")
+    try:
+        # Get currently running images with their digests
+        result = subprocess.run(
+            [
+                "docker", "compose",
+                "-f", str(COMPOSE_FILE),
+                "images", "--format", "json"
+            ],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            # Store raw docker images output
+            (work / "docker-images.json").write_text(result.stdout)
+        
+        # Also capture from compose file for reference
+        result = subprocess.run(
+            [
+                "docker", "compose",
+                "-f", str(COMPOSE_FILE),
+                "config", "--images"
+            ],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            (work / "docker-images.txt").write_text(result.stdout)
+            
+    except Exception as e:
+        warn(f"Failed to capture Docker versions: {e}")
+
+
 def test_db_restore(work: Path) -> bool:
     """Attempt to restore the dumped DB into a temporary container."""
     dump = work / "postgres.sql"
@@ -217,6 +259,9 @@ def main() -> Path:
     if COMPOSE_FILE.exists():
         shutil_path = work / "compose.snapshot.yml"
         shutil_path.write_text(COMPOSE_FILE.read_text())
+    
+    # Capture Docker image versions for restoration
+    capture_docker_versions(work)
 
     manifest_lines = [f"mode: {mode}", f"created: {datetime.utcnow().isoformat()}"]
     if mode == "incr" and parent:

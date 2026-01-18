@@ -796,11 +796,12 @@ class PaperlessManager:
             options = [
                 ("1", "View details"),
                 ("2", "Health check"),
-                ("3", "Backup now"),
-                ("4", "Restore/revert from backup"),
-                ("5", "Container operations"),
-                ("6", "Edit settings"),
-                ("7", "Delete instance"),
+                ("3", "Update instance (backup + upgrade)"),
+                ("4", "Backup now"),
+                ("5", "Restore/revert from backup"),
+                ("6", "Container operations"),
+                ("7", "Edit settings"),
+                ("8", "Delete instance"),
                 ("0", "Back")
             ]
             print_menu(options)
@@ -814,14 +815,16 @@ class PaperlessManager:
             elif choice == "2":
                 self.health_check(instance)
             elif choice == "3":
-                self.backup_instance(instance)
+                self.update_instance(instance)
             elif choice == "4":
-                self.revert_instance(instance)
+                self.backup_instance(instance)
             elif choice == "5":
-                self.container_operations(instance)
+                self.revert_instance(instance)
             elif choice == "6":
-                self.edit_instance(instance)
+                self.container_operations(instance)
             elif choice == "7":
+                self.edit_instance(instance)
+            elif choice == "8":
                 if confirm(f"Delete instance '{instance.name}' from tracking?", False):
                     self.instance_manager.remove_instance(instance.name)
                     ok(f"Instance '{instance.name}' removed from tracking")
@@ -855,6 +858,131 @@ class PaperlessManager:
         """Run health check on instance."""
         checker = HealthChecker(instance)
         checker.print_report()
+        input("\nPress Enter to continue...")
+    
+    def update_instance(self, instance: Instance) -> None:
+        """Update instance with automatic backup and Docker version tracking."""
+        print_header(f"Update Instance: {instance.name}")
+        
+        if not self.rclone_configured:
+            warn("Backup server not configured - updates without backup are risky!")
+            if not confirm("Continue anyway?", False):
+                return
+        
+        say("This will:")
+        print("  1. Create a FULL backup (with current Docker versions)")
+        print("  2. Pull latest container images")
+        print("  3. Recreate containers with new images")
+        print("  4. Test health")
+        print("  5. If it fails, you can restore from the backup\n")
+        
+        if not confirm("Continue with update?", True):
+            return
+        
+        # Step 1: Full backup with Docker versions
+        if self.rclone_configured:
+            say("Creating full backup before update...")
+            backup_mgr = BackupManager(instance)
+            if not backup_mgr.run_backup("full"):
+                error("Backup failed! Update aborted for safety.")
+                input("\nPress Enter to continue...")
+                return
+            ok("Backup completed with Docker version info")
+            print()
+        
+        # Step 2: Get current image versions before upgrade
+        say("Recording current Docker versions...")
+        current_versions = {}
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "compose",
+                    "-f", str(instance.compose_file),
+                    "images", "--format", "{{.Service}}: {{.Repository}}:{{.Tag}}"
+                ],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().splitlines():
+                    if ":" in line:
+                        current_versions[line.split(":")[0].strip()] = line
+                print("Current versions:")
+                for version in current_versions.values():
+                    print(f"  {version}")
+                print()
+        except Exception as e:
+            warn(f"Could not capture current versions: {e}")
+        
+        # Step 3: Pull latest images
+        say("Pulling latest container images...")
+        try:
+            self._docker_command(instance, "pull")
+            ok("Images pulled successfully")
+            print()
+        except subprocess.CalledProcessError:
+            error("Failed to pull images")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Step 4: Recreate containers
+        say("Recreating containers with new images...")
+        try:
+            self._docker_command(instance, "up", "-d", "--force-recreate")
+            ok("Containers recreated")
+            print()
+        except subprocess.CalledProcessError:
+            error("Failed to recreate containers!")
+            warn("You may need to restore from backup")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Step 5: Wait a moment for containers to stabilize
+        say("Waiting for containers to stabilize...")
+        import time
+        time.sleep(10)
+        
+        # Step 6: Health check
+        say("Running health check...")
+        checker = HealthChecker(instance)
+        checks = checker.check_all()
+        
+        passed = sum(checks.values())
+        total = len(checks)
+        
+        print()
+        if passed == total:
+            ok(f"✓ Update successful! All {total} health checks passed")
+            say("Your instance is now running the latest container versions")
+        else:
+            warn(f"⚠ Update completed but {total - passed}/{total} health checks failed")
+            error("Instance may not be fully functional")
+            print()
+            print("You can:")
+            print(f"  1. Check logs: docker compose -f {instance.compose_file} logs")
+            print("  2. Restore from backup (will restore previous working versions)")
+            print()
+        
+        # Show new versions
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "compose",
+                    "-f", str(instance.compose_file),
+                    "images", "--format", "{{.Service}}: {{.Repository}}:{{.Tag}}"
+                ],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                print("\nNew versions:")
+                for line in result.stdout.strip().splitlines():
+                    print(f"  {line}")
+        except Exception:
+            pass
+        
         input("\nPress Enter to continue...")
     
     def backup_instance(self, instance: Instance) -> None:
@@ -1030,9 +1158,303 @@ class PaperlessManager:
     
     def backups_menu(self) -> None:
         """Backups explorer and management."""
-        print_header("Backups")
-        warn("Backup explorer is under development")
-        warn("For now, use the instance-specific restore menu")
+        while True:
+            print_header("Backup Explorer")
+            
+            say("Scanning backup server...")
+            
+            try:
+                # Get all instance folders from backup
+                result = subprocess.run(
+                    ["rclone", "lsd", "pcloud:backups/paperless"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    warn("No backups found or unable to connect")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Parse instance names
+                backup_instances = []
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split()
+                    if parts:
+                        backup_instances.append(parts[-1])
+                
+                if not backup_instances:
+                    warn("No backup instances found")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Show instances
+                print(f"Backed up instances ({len(backup_instances)}):")
+                for idx, name in enumerate(backup_instances, 1):
+                    # Count snapshots for this instance
+                    snap_result = subprocess.run(
+                        ["rclone", "lsd", f"pcloud:backups/paperless/{name}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5
+                    )
+                    snap_count = len([l for l in snap_result.stdout.splitlines() if l.strip()])
+                    print(f"  {idx}) {name} ({snap_count} snapshots)")
+                print()
+                
+                options = [(str(i), f"Explore '{backup_instances[i-1]}'" ) for i in range(1, len(backup_instances) + 1)]
+                options.append(("0", "Back to main menu"))
+                print_menu(options)
+                
+                choice = get_input("Select instance", "")
+                
+                if choice == "0":
+                    break
+                elif choice.isdigit() and 1 <= int(choice) <= len(backup_instances):
+                    self._explore_instance_backups(backup_instances[int(choice) - 1])
+                else:
+                    warn("Invalid option")
+                    
+            except Exception as e:
+                error(f"Failed to list backups: {e}")
+                input("\nPress Enter to continue...")
+                return
+    
+    def _explore_instance_backups(self, instance_name: str) -> None:
+        """Explore backups for a specific instance."""
+        while True:
+            print_header(f"Backups: {instance_name}")
+            
+            remote_path = f"pcloud:backups/paperless/{instance_name}"
+            
+            try:
+                # Get snapshots
+                result = subprocess.run(
+                    ["rclone", "lsd", remote_path],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    warn(f"No snapshots found for {instance_name}")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Parse snapshots with metadata
+                snapshots = []
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    snap_name = parts[-1]
+                    
+                    # Get manifest info
+                    mode = parent = created = "?"
+                    manifest = subprocess.run(
+                        ["rclone", "cat", f"{remote_path}/{snap_name}/manifest.yaml"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if manifest.returncode == 0:
+                        for mline in manifest.stdout.splitlines():
+                            if ":" in mline:
+                                k, v = mline.split(":", 1)
+                                k, v = k.strip(), v.strip()
+                                if k == "mode":
+                                    mode = v
+                                elif k == "parent":
+                                    parent = v
+                                elif k == "created":
+                                    created = v[:19]  # Just date/time
+                    
+                    # Check for docker versions file
+                    has_versions = subprocess.run(
+                        ["rclone", "lsf", f"{remote_path}/{snap_name}/docker-images.txt"],
+                        capture_output=True,
+                        check=False
+                    ).returncode == 0
+                    
+                    snapshots.append((snap_name, mode, parent, created, has_versions))
+                
+                snapshots = sorted(snapshots, key=lambda x: x[0])
+                
+                # Display snapshots
+                print(f"{'#':<4} {'Name':<30} {'Mode':<8} {'Created':<20} {'Docker'}")
+                print("─" * 85)
+                
+                for idx, (name, mode, parent, created, has_vers) in enumerate(snapshots, 1):
+                    mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN
+                    vers_icon = "✓" if has_vers else "✗"
+                    print(f"{idx:<4} {name:<30} {colorize(mode, mode_color):<18} {created:<20} {vers_icon}")
+                print()
+                
+                # Options
+                options = [(str(i), f"View details") for i in range(1, len(snapshots) + 1)]
+                options.append((str(len(snapshots) + 1), "Restore to new instance"))
+                options.append((str(len(snapshots) + 2), "Delete snapshot"))
+                options.append(("0", "Back"))
+                print_menu(options)
+                
+                choice = get_input("Select option", "")
+                
+                if choice == "0":
+                    break
+                elif choice.isdigit() and 1 <= int(choice) <= len(snapshots):
+                    self._view_snapshot_details(instance_name, snapshots[int(choice) - 1])
+                elif choice == str(len(snapshots) + 1):
+                    self._restore_from_explorer(instance_name, snapshots)
+                elif choice == str(len(snapshots) + 2):
+                    self._delete_snapshot(instance_name, snapshots)
+                else:
+                    warn("Invalid option")
+                    
+            except Exception as e:
+                error(f"Failed to explore backups: {e}")
+                input("\nPress Enter to continue...")
+                return
+    
+    def _view_snapshot_details(self, instance_name: str, snapshot: tuple) -> None:
+        """View detailed information about a snapshot."""
+        name, mode, parent, created, has_versions = snapshot
+        
+        print_header(f"Snapshot Details: {name}")
+        
+        print(f"Instance: {instance_name}")
+        print(f"Snapshot: {name}")
+        print(f"Mode: {mode}")
+        print(f"Created: {created}")
+        if mode == "incr" and parent != "?":
+            print(f"Parent: {parent}")
+        print()
+        
+        remote_path = f"pcloud:backups/paperless/{instance_name}/{name}"
+        
+        # Show files in snapshot
+        say("Snapshot contents:")
+        result = subprocess.run(
+            ["rclone", "ls", remote_path],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2:
+                    size_bytes = int(parts[0])
+                    filename = parts[1]
+                    # Convert to human readable
+                    if size_bytes < 1024:
+                        size = f"{size_bytes}B"
+                    elif size_bytes < 1024 * 1024:
+                        size = f"{size_bytes / 1024:.1f}KB"
+                    elif size_bytes < 1024 * 1024 * 1024:
+                        size = f"{size_bytes / (1024 * 1024):.1f}MB"
+                    else:
+                        size = f"{size_bytes / (1024 * 1024 * 1024):.2f}GB"
+                    print(f"  {size:>10}  {filename}")
+        
+        print()
+        
+        # Show Docker versions if available
+        if has_versions:
+            say("Docker images at backup time:")
+            versions = subprocess.run(
+                ["rclone", "cat", f"{remote_path}/docker-images.txt"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if versions.returncode == 0:
+                for line in versions.stdout.strip().splitlines():
+                    print(f"  {line}")
+            print()
+        
+        input("\nPress Enter to continue...")
+    
+    def _restore_from_explorer(self, instance_name: str, snapshots: list) -> None:
+        """Restore a snapshot to a new instance."""
+        print_header("Restore to New Instance")
+        
+        print("Select snapshot to restore:")
+        for idx, (name, mode, parent, created, _) in enumerate(snapshots, 1):
+            print(f"  {idx}) {name} ({mode}, {created})")
+        print()
+        
+        choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
+        
+        if choice == "latest":
+            snapshot_name = snapshots[-1][0]
+        elif choice.isdigit() and 1 <= int(choice) <= len(snapshots):
+            snapshot_name = snapshots[int(choice) - 1][0]
+        else:
+            return
+        
+        new_instance = get_input("New instance name", f"{instance_name}-restored")
+        
+        if confirm(f"Restore {instance_name}/{snapshot_name} as '{new_instance}'?", False):
+            try:
+                say("Restoring instance...")
+                # Use the existing restore flow
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                from installer import common
+                
+                common.cfg.instance_name = new_instance
+                common.cfg.rclone_remote_name = "pcloud"
+                common.cfg.rclone_remote_path = f"backups/paperless/{instance_name}"
+                common.cfg.refresh_paths()
+                
+                restore_script = Path("/usr/local/lib/paperless-bulletproof/modules/restore.py")
+                subprocess.run([sys.executable, str(restore_script), snapshot_name], check=True)
+                
+                # Register instance
+                self.instance_manager.add_instance(
+                    new_instance,
+                    Path(common.cfg.stack_dir),
+                    Path(common.cfg.data_root)
+                )
+                
+                ok(f"Instance '{new_instance}' restored successfully!")
+            except Exception as e:
+                error(f"Restore failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _delete_snapshot(self, instance_name: str, snapshots: list) -> None:
+        """Delete a snapshot from backup server."""
+        print_header("Delete Snapshot")
+        
+        warn("⚠️  DANGER: This permanently deletes the backup!")
+        print()
+        
+        print("Select snapshot to DELETE:")
+        for idx, (name, mode, parent, created, _) in enumerate(snapshots, 1):
+            print(f"  {idx}) {name} ({mode}, {created})")
+        print()
+        
+        choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'cancel'", "cancel")
+        
+        if not choice.isdigit() or not (1 <= int(choice) <= len(snapshots)):
+            return
+        
+        snapshot_name = snapshots[int(choice) - 1][0]
+        
+        print()
+        if confirm(f"PERMANENTLY DELETE {instance_name}/{snapshot_name}?", False):
+            remote_path = f"pcloud:backups/paperless/{instance_name}/{snapshot_name}"
+            try:
+                say(f"Deleting {snapshot_name}...")
+                subprocess.run(["rclone", "purge", remote_path], check=True)
+                ok("Snapshot deleted")
+            except Exception as e:
+                error(f"Failed to delete snapshot: {e}")
+        
         input("\nPress Enter to continue...")
 
 
