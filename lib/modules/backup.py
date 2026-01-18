@@ -24,14 +24,23 @@ from lib.utils.common import load_env_to_environ, say, ok, warn, die
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
+# Auto-detect stack directory from script location (backup.py is copied to each instance's stack_dir)
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Look for .env relative to script location first, then fall back to explicit ENV_FILE or legacy default
+if (SCRIPT_DIR / ".env").exists():
+    ENV_FILE = SCRIPT_DIR / ".env"
+else:
+    ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
+
 load_env_to_environ(ENV_FILE)
 if not ENV_FILE.exists():
     warn(f"No .env at {ENV_FILE} — using defaults")
 
+# STACK_DIR should match where this script lives (for multi-instance support)
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
-STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
-DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/home/docker/paperless"))
+STACK_DIR = Path(os.environ.get("STACK_DIR", str(SCRIPT_DIR)))
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
 DIR_EXPORT = DATA_ROOT / "export"
 DIR_MEDIA = DATA_ROOT / "media"
 DIR_DATA = DATA_ROOT / "data"

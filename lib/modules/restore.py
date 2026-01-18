@@ -20,7 +20,14 @@ from lib.utils.common import load_env, load_env_to_environ, say, ok, warn, die
 from lib.utils.selftest import run_stack_tests
 
 
-ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
+# Auto-detect stack directory from script location (restore.py is copied to each instance's stack_dir)
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Look for .env relative to script location first, then fall back to explicit ENV_FILE or legacy default
+if (SCRIPT_DIR / ".env").exists():
+    ENV_FILE = SCRIPT_DIR / ".env"
+else:
+    ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 
 # Only try to load env if it exists, warn but continue if it doesn't
 if ENV_FILE.exists():
@@ -28,10 +35,11 @@ if ENV_FILE.exists():
 else:
     warn(f"No .env at {ENV_FILE} — continuing with environment defaults")
 
+# STACK_DIR should match where this script lives (for multi-instance support)
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
 PROJECT_NAME = f"paperless-{INSTANCE_NAME}"
-STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
-DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/home/docker/paperless"))
+STACK_DIR = Path(os.environ.get("STACK_DIR", str(SCRIPT_DIR)))
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
 COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
