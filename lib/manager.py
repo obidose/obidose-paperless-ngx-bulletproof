@@ -604,7 +604,7 @@ class PaperlessManager:
             else:
                 traefik_status = f"{colorize('✓', Colors.GREEN)} Running"
         else:
-            traefik_status = colorize("○ Not installed", Colors.DARK_GRAY)
+            traefik_status = colorize("○ Not installed", Colors.CYAN)
         traefik_line = f" Traefik:        {traefik_status}"
         clean_line = re.sub(r'\033\[[0-9;]+m', '', traefik_line)
         padding = max(0, box_width - len(clean_line) - 2)
@@ -622,7 +622,7 @@ class PaperlessManager:
             except:
                 cloudflared_status = f"{colorize('✓', Colors.GREEN)} Installed"
         else:
-            cloudflared_status = colorize("○ Not installed", Colors.DARK_GRAY)
+            cloudflared_status = colorize("○ Not installed", Colors.CYAN)
         cloudflared_line = f" Cloudflare:     {cloudflared_status}"
         clean_line = re.sub(r'\033\[[0-9;]+m', '', cloudflared_line)
         padding = max(0, box_width - len(clean_line) - 2)
@@ -640,7 +640,7 @@ class PaperlessManager:
             else:
                 tailscale_status = f"{colorize('○', Colors.YELLOW)} Installed • Disconnected"
         else:
-            tailscale_status = colorize("○ Not installed", Colors.DARK_GRAY)
+            tailscale_status = colorize("○ Not installed", Colors.CYAN)
         tailscale_line = f" Tailscale:      {tailscale_status}"
         clean_line = re.sub(r'\033\[[0-9;]+m', '', tailscale_line)
         padding = max(0, box_width - len(clean_line) - 2)
