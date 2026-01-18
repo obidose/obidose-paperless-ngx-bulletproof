@@ -1855,24 +1855,24 @@ class PaperlessManager:
             from lib.installer.common import get_next_available_port
             
             # ─── Detect Conflicts ─────────────────────────────────────────────
-            # Check what ports are in use
+            # Check what ports are in use (use bind() method like get_next_available_port)
             original_port = backup_env.get("HTTP_PORT", "8000")
             port_conflict = False
             try:
                 import socket
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex(('127.0.0.1', int(original_port)))
-                sock.close()
-                port_conflict = (result == 0)
-            except:
-                pass
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('', int(original_port)))
+                # If we get here, port is available
+                port_conflict = False
+            except OSError:
+                # Port is in use
+                port_conflict = True
             
-            # Check if instance name conflicts
+            # Check if instance name conflicts with REGISTERED instances
             original_name = backup_env.get("INSTANCE_NAME", backup_instance)
             name_conflict = original_name in existing_instances
             
-            # Check if paths exist
+            # Check if paths exist (separate from name conflict - paths may exist without registration)
             original_data_root = backup_env.get("DATA_ROOT", f"/home/docker/{original_name}")
             original_stack_dir = backup_env.get("STACK_DIR", f"/home/docker/{original_name}-setup")
             path_conflict = Path(original_data_root).exists() or Path(original_stack_dir).exists()
@@ -1929,8 +1929,11 @@ class PaperlessManager:
             print()
             
             # Instance name - force change if conflict
-            if name_conflict or path_conflict:
-                warn(f"Instance name '{original_name}' conflicts with existing instance")
+            if name_conflict:
+                warn(f"Instance name '{original_name}' conflicts with existing registered instance")
+                suggested_name = f"{original_name}-restored"
+            elif path_conflict:
+                warn(f"Paths for '{original_name}' already exist - using new name")
                 suggested_name = f"{original_name}-restored"
             else:
                 suggested_name = original_name
