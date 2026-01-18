@@ -209,7 +209,21 @@ class Instance:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     ip = result.stdout.strip()
-                    urls.append(("🔐 Tailscale", f"http://{ip}:{port}"))
+                    # Check for Tailscale Serve path
+                    serve_path = self.get_env_value("TAILSCALE_SERVE_PATH", "")
+                    if serve_path:
+                        # Get hostname for Tailscale Serve URL
+                        try:
+                            from lib.installer.tailscale import get_hostname
+                            hostname = get_hostname()
+                            if hostname:
+                                urls.append(("🔐 Tailscale HTTPS", f"https://{hostname}{serve_path}"))
+                            else:
+                                urls.append(("🔐 Tailscale", f"http://{ip}:{port}"))
+                        except:
+                            urls.append(("🔐 Tailscale", f"http://{ip}:{port}"))
+                    else:
+                        urls.append(("🔐 Tailscale", f"http://{ip}:{port}"))
             except:
                 urls.append(("🔐 Tailscale", f"http://tailscale-ip:{port}"))
         
@@ -2098,9 +2112,19 @@ WantedBy=multi-user.target
         if current == "yes":
             if confirm("Disable Tailscale access for this instance?", False):
                 self._update_instance_env(instance, "ENABLE_TAILSCALE", "no")
+                
+                # Remove Tailscale Serve if configured
+                from lib.installer.tailscale import remove_serve, is_serve_available
+                if is_serve_available():
+                    path = f"/{instance.name}"
+                    remove_serve(path)
+                
                 ok("Tailscale access disabled")
         else:
-            from lib.installer.tailscale import is_tailscale_installed, is_connected, get_ip
+            from lib.installer.tailscale import (
+                is_tailscale_installed, is_connected, get_ip, get_hostname,
+                is_serve_available, add_serve, get_serve_url
+            )
             if not is_tailscale_installed():
                 error("Tailscale is not installed!")
                 say("Install from main menu: Manage Tailscale")
@@ -2111,7 +2135,30 @@ WantedBy=multi-user.target
                 self._update_instance_env(instance, "ENABLE_TAILSCALE", "yes")
                 ip = get_ip()
                 port = instance.get_env_value("HTTP_PORT", "8000")
-                ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                
+                # Try to set up Tailscale Serve for HTTPS access
+                if is_serve_available():
+                    hostname = get_hostname()
+                    if hostname:
+                        print()
+                        say(f"Tailscale Serve can provide HTTPS: https://{hostname}/{instance.name}")
+                        if confirm("Configure Tailscale Serve for HTTPS access?", True):
+                            path = f"/{instance.name}"
+                            if add_serve(path, int(port)):
+                                serve_url = get_serve_url(path)
+                                self._update_instance_env(instance, "TAILSCALE_SERVE_PATH", path)
+                                ok(f"Tailscale Serve configured: {serve_url}")
+                            else:
+                                warn("Tailscale Serve setup failed - using direct IP access")
+                                ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                        else:
+                            ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                    else:
+                        ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                else:
+                    ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                    say("Tip: Tailscale Serve (HTTPS) requires a paid Tailscale plan")
+                
                 say("Note: Tailscale works alongside other access methods")
         
         input("\nPress Enter to continue...")
@@ -3131,8 +3178,17 @@ instance_count: {len(instances)}
             else:
                 say(colorize("✓ Tailscale connected", Colors.GREEN))
                 ip = tailscale.get_ip()
+                hostname = tailscale.get_hostname()
+                serve_available = tailscale.is_serve_available()
+                
+                if hostname:
+                    print(f"Hostname: {colorize(hostname, Colors.CYAN)}")
                 if ip:
-                    print(f"Tailscale IP: {colorize(ip, Colors.CYAN)}")
+                    print(f"IP: {colorize(ip, Colors.CYAN)}")
+                if serve_available:
+                    print(f"Tailscale Serve: {colorize('Available', Colors.GREEN)}")
+                else:
+                    print(f"Tailscale Serve: {colorize('Not available (requires paid plan)', Colors.YELLOW)}")
                 
                 # Show per-instance Tailscale status
                 instances = self.instance_manager.list_instances()
@@ -3142,21 +3198,39 @@ instance_count: {len(instances)}
                     for inst in instances:
                         ts_enabled = inst.get_env_value("ENABLE_TAILSCALE", "no") == "yes"
                         port = inst.get_env_value("HTTP_PORT", "8000")
+                        serve_path = inst.get_env_value("TAILSCALE_SERVE_PATH", "")
+                        
                         if ts_enabled:
-                            status = colorize("● Enabled", Colors.GREEN)
-                            print(f"  {inst.name}: {status} → http://{ip}:{port}")
+                            if serve_path and hostname:
+                                status = colorize("● HTTPS", Colors.GREEN)
+                                print(f"  {inst.name}: {status} → https://{hostname}{serve_path}")
+                            else:
+                                status = colorize("● HTTP", Colors.GREEN)
+                                print(f"  {inst.name}: {status} → http://{ip}:{port}")
                         else:
                             status = colorize("○ Not enabled", Colors.CYAN)
                             print(f"  {inst.name}: {status}")
+                
+                # Show current Tailscale Serve paths
+                serve_paths = tailscale.list_serve_paths()
+                if serve_paths:
+                    print()
+                    print(colorize("Active Tailscale Serve paths:", Colors.BOLD))
+                    for path, target, port in serve_paths:
+                        print(f"  {path} → {target}")
                 
                 print()
                 options = [
                     ("1", "View status"),
                     ("2", "Enable Tailscale for an instance"),
                     ("3", "Disable Tailscale for an instance"),
-                    ("4", "Disconnect from Tailscale"),
-                    ("0", "Back to main menu")
                 ]
+                if serve_available:
+                    options.append(("4", "Manage Tailscale Serve paths"))
+                options.extend([
+                    ("5", "Disconnect from Tailscale"),
+                    ("0", "Back to main menu")
+                ])
             
             print_menu(options)
             choice = get_input("Select option", "")
@@ -3208,9 +3282,105 @@ instance_count: {len(instances)}
                         inst = enabled[int(sel) - 1]
                         self._toggle_instance_tailscale(inst)
                 input("\nPress Enter to continue...")
-            elif choice == "4" and connected:
+            elif choice == "4" and connected and tailscale.is_serve_available():
+                # Manage Tailscale Serve
+                self._tailscale_serve_menu(tailscale)
+            elif choice == "5" and connected:
                 if tailscale.disconnect():
                     ok("Disconnected from Tailscale")
+                input("\nPress Enter to continue...")
+    
+    def _tailscale_serve_menu(self, tailscale) -> None:
+        """Submenu for managing Tailscale Serve paths."""
+        while True:
+            print_header("Tailscale Serve Management")
+            
+            hostname = tailscale.get_hostname()
+            if hostname:
+                say(f"Your Tailscale hostname: {colorize(hostname, Colors.CYAN)}")
+            print()
+            
+            # Show current serve paths
+            serve_paths = tailscale.list_serve_paths()
+            if serve_paths:
+                print(colorize("Current Serve paths:", Colors.BOLD))
+                for idx, (path, target, port) in enumerate(serve_paths, 1):
+                    print(f"  {idx}) https://{hostname}{path} → {target}")
+                print()
+            else:
+                say("No Tailscale Serve paths configured")
+                print()
+            
+            # Show instances that could be served
+            instances = self.instance_manager.list_instances()
+            unserved = []
+            for inst in instances:
+                serve_path = inst.get_env_value("TAILSCALE_SERVE_PATH", "")
+                if not serve_path:
+                    unserved.append(inst)
+            
+            options = [
+                ("1", "Add Serve path for an instance"),
+                ("2", "Remove a Serve path"),
+                ("3", "Reset all Serve paths"),
+                ("0", "Back")
+            ]
+            print_menu(options)
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                if not unserved:
+                    say("All instances already have Serve paths")
+                else:
+                    print("\nSelect instance to add Serve path:")
+                    for idx, inst in enumerate(unserved, 1):
+                        port = inst.get_env_value("HTTP_PORT", "8000")
+                        print(f"  {idx}) {inst.name} (port {port})")
+                    
+                    sel = get_input(f"Select [1-{len(unserved)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(unserved):
+                        inst = unserved[int(sel) - 1]
+                        port = inst.get_env_value("HTTP_PORT", "8000")
+                        default_path = f"/{inst.name}"
+                        
+                        path = get_input(f"Serve path (e.g., /{inst.name})", default_path)
+                        if not path.startswith("/"):
+                            path = "/" + path
+                        
+                        if tailscale.add_serve(path, int(port)):
+                            self._update_instance_env(inst, "TAILSCALE_SERVE_PATH", path)
+                            self._update_instance_env(inst, "ENABLE_TAILSCALE", "yes")
+                            serve_url = tailscale.get_serve_url(path)
+                            ok(f"Serve path added: {serve_url}")
+                input("\nPress Enter to continue...")
+            elif choice == "2":
+                if not serve_paths:
+                    say("No serve paths to remove")
+                else:
+                    print("\nSelect path to remove:")
+                    for idx, (path, target, port) in enumerate(serve_paths, 1):
+                        print(f"  {idx}) {path}")
+                    
+                    sel = get_input(f"Select [1-{len(serve_paths)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(serve_paths):
+                        path, _, _ = serve_paths[int(sel) - 1]
+                        if tailscale.remove_serve(path):
+                            # Update instance env if this was linked
+                            for inst in instances:
+                                if inst.get_env_value("TAILSCALE_SERVE_PATH", "") == path:
+                                    self._update_instance_env(inst, "TAILSCALE_SERVE_PATH", "")
+                            ok(f"Removed serve path: {path}")
+                input("\nPress Enter to continue...")
+            elif choice == "3":
+                if confirm("Reset all Tailscale Serve paths?", False):
+                    if tailscale.reset_serve():
+                        # Clear all instance serve paths
+                        for inst in instances:
+                            self._update_instance_env(inst, "TAILSCALE_SERVE_PATH", "")
+                        ok("All serve paths reset")
                 input("\nPress Enter to continue...")
     
     def nuke_setup(self) -> None:
