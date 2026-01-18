@@ -84,4 +84,4 @@ services:
 
 networks:
   paperless:
-    name: paperless_net
+    name: ${COMPOSE_PROJECT_NAME}_net

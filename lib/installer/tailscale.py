@@ -56,7 +56,7 @@ def is_connected() -> bool:
         )
         # If status command succeeds and doesn't show "Logged out", we're connected
         return result.returncode == 0 and "Logged out" not in result.stdout
-    except:
+    except Exception:
         return False
 
 
@@ -70,7 +70,7 @@ def get_status() -> str:
             check=True
         )
         return result.stdout
-    except:
+    except Exception:
         return "Unable to get Tailscale status"
 
 
@@ -84,7 +84,7 @@ def get_ip() -> str | None:
             check=True
         )
         return result.stdout.strip()
-    except:
+    except Exception:
         return None
 
 
@@ -101,7 +101,7 @@ def get_hostname() -> str | None:
         dns_name = data.get("Self", {}).get("DNSName", "")
         # Remove trailing dot if present
         return dns_name.rstrip(".") if dns_name else None
-    except:
+    except Exception:
         return None
 
 
@@ -117,7 +117,7 @@ def get_serve_config() -> dict | None:
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
         return {}
-    except:
+    except Exception:
         return None
 
 
@@ -141,7 +141,7 @@ def list_serve_paths() -> list[tuple[str, str, int]]:
                 try:
                     port = int(proxy.split(":")[-1])
                     paths.append((path, proxy, port))
-                except:
+                except (ValueError, IndexError):
                     paths.append((path, proxy, 0))
     
     return paths
@@ -289,7 +289,7 @@ def reset_serve() -> bool:
     except subprocess.TimeoutExpired:
         warn("Tailscale serve reset timed out")
         return False
-    except:
+    except Exception:
         return False
 
 
@@ -343,7 +343,7 @@ def is_serve_available() -> bool:
             check=False
         )
         return result.returncode == 0
-    except:
+    except Exception:
         return False
 
 
@@ -357,5 +357,5 @@ def is_funnel_available() -> bool:
             check=False
         )
         return result.returncode == 0
-    except:
+    except Exception:
         return False

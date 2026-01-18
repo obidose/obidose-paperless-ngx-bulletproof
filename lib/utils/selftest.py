@@ -46,7 +46,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
     """
     env = load_env(env_file)
     instance = env.get("INSTANCE_NAME", "paperless")
-    http_port = env.get("PAPERLESS_PORT", "8000")
+    http_port = env.get("HTTP_PORT", "8000")
     
     if project_name is None:
         project_name = f"paperless-{instance}"

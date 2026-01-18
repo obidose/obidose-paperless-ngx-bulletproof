@@ -17,7 +17,7 @@ def is_cloudflared_installed() -> bool:
             check=False
         )
         return result.returncode == 0
-    except:
+    except Exception:
         return False
 
 
@@ -72,7 +72,7 @@ def list_tunnels() -> list[dict]:
         if result.stdout.strip():
             return json.loads(result.stdout)
         return []
-    except:
+    except Exception:
         return []
 
 
@@ -244,5 +244,5 @@ def restart_tunnel_service(instance_name: str) -> bool:
         ok(f"Tunnel service cloudflared-{instance_name} restarted")
         return True
     except subprocess.CalledProcessError:
-        warn(f"Failed to restart tunnel service")
+        warn("Failed to restart tunnel service")
         return False
