@@ -2140,12 +2140,14 @@ instance_count: {len(instances)}
         error("Backups on pCloud will NOT be deleted")
         print()
         
-        if not confirm("Type 'NUKE' to confirm complete deletion", False):
+        # First confirmation
+        response = get_input("Type 'YES' to proceed", "")
+        if response != "YES":
             say("Cancelled")
             input("\nPress Enter to continue...")
             return
         
-        # Double confirm
+        # Double confirm with NUKE
         confirmation = get_input("Type the word NUKE in capitals to confirm", "")
         if confirmation != "NUKE":
             say("Cancelled - confirmation did not match")
@@ -2215,6 +2217,9 @@ instance_count: {len(instances)}
             tracking_file = Path("/root/.paperless_instances.json")
             if tracking_file.exists():
                 tracking_file.unlink()
+            
+            # Reload instance manager to reflect changes
+            self.instance_manager = InstanceManager()
             
             ok("Nuclear cleanup complete!")
             say("System is now in clean state")
