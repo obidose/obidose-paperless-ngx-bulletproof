@@ -142,6 +142,17 @@ def main():
     """Main entry point."""
     from pathlib import Path
     
+    # Reconnect stdin to TTY if we're being piped (curl | python3)
+    # This allows interactive prompts to work
+    if not sys.stdin.isatty():
+        try:
+            sys.stdin = open('/dev/tty', 'r')
+        except OSError:
+            # No TTY available (e.g., running in CI)
+            print("\n[!] No interactive terminal available.")
+            print("    Run 'paperless' to launch the manager.\n")
+            sys.exit(0)
+    
     # Check if this is first run (base system not installed)
     rclone_installed = Path("/usr/bin/rclone").exists()
     docker_installed = Path("/usr/bin/docker").exists()
