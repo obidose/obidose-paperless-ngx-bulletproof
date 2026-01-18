@@ -710,8 +710,9 @@ class PaperlessManager:
             clean = re.sub(r'\033\[[0-9;]+m', '', content)
             padding = box_inner_width - len(clean)
             if padding < 0:
-                # Truncate if too long
-                return colorize("│", Colors.CYAN) + content[:box_inner_width] + colorize("│", Colors.CYAN)
+                # Content too long - truncate clean version and lose colors
+                truncated = clean[:box_inner_width-3] + "..."
+                return colorize("│", Colors.CYAN) + truncated + colorize("│", Colors.CYAN)
             return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
         
         print(colorize("╭" + "─" * box_inner_width + "╮", Colors.CYAN))
@@ -751,7 +752,7 @@ class PaperlessManager:
                 backup_status = colorize("✓ Connected", Colors.GREEN)
                 backup_detail = f"{backed_up_count} backed up"
                 if latest_backup != "none":
-                    backup_detail += f" • Last: {latest_backup}"
+                    backup_detail += f" • {latest_backup}"
             except:
                 backup_status = colorize("✓ Connected", Colors.GREEN)
                 backup_detail = "Ready"
