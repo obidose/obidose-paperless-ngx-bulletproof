@@ -153,28 +153,51 @@ def add_serve(path: str, port: int, https: bool = True) -> bool:
     
     Example: add_serve("/paperless", 8000)
     Creates: https://myserver.tail12345.ts.net/paperless -> localhost:8000
+    
+    Modern tailscale serve syntax:
+      tailscale serve [--bg] [--https=port] [--http=port] [mount-point] <target>
+    Examples:
+      tailscale serve / http://127.0.0.1:8000
+      tailscale serve --bg /app 3000
     """
     say(f"Adding Tailscale Serve: {path} -> localhost:{port}")
     try:
-        cmd = ["tailscale", "serve"]
-        if https:
-            cmd.append("--https=443")
-        cmd.extend([f"--set-path={path}", f"http://127.0.0.1:{port}"])
+        # Modern syntax: tailscale serve [flags] <mount-point> <target>
+        # Use --bg to run in background (non-blocking)
+        # The path is the mount point, followed by the target (port or URL)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        # Try modern syntax first: tailscale serve --bg /path http://127.0.0.1:port
+        cmd = ["tailscale", "serve", "--bg", path, f"http://127.0.0.1:{port}"]
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=False,
+            timeout=30
+        )
         
         if result.returncode != 0:
-            # Try simpler syntax for older versions
-            cmd = ["tailscale", "serve", "--bg"]
-            if path != "/":
-                cmd.extend([f"--set-path={path}"])
-            cmd.append(f"http://127.0.0.1:{port}")
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            # Try with just port number: tailscale serve --bg /path port
+            cmd = ["tailscale", "serve", "--bg", path, str(port)]
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                check=False,
+                timeout=30
+            )
         
         if result.returncode != 0:
-            # Even simpler - just the port
-            cmd = ["tailscale", "serve", "--bg", str(port)]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            # For root path, try without explicit path
+            if path == "/":
+                cmd = ["tailscale", "serve", "--bg", str(port)]
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    check=False,
+                    timeout=30
+                )
         
         if result.returncode == 0:
             hostname = get_hostname()
@@ -184,8 +207,12 @@ def add_serve(path: str, port: int, https: bool = True) -> bool:
                 ok(f"Tailscale Serve configured for path {path}")
             return True
         else:
-            warn(f"Failed to configure serve: {result.stderr}")
+            error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+            warn(f"Failed to configure serve: {error_msg}")
             return False
+    except subprocess.TimeoutExpired:
+        warn("Tailscale serve command timed out - check if tailscale is responsive")
+        return False
     except Exception as e:
         warn(f"Failed to add Tailscale Serve: {e}")
         return False
@@ -195,29 +222,38 @@ def remove_serve(path: str) -> bool:
     """Remove a Tailscale Serve path."""
     say(f"Removing Tailscale Serve path: {path}")
     try:
-        # Try to remove specific path
+        # Modern syntax: tailscale serve off <mount-point>
+        # Or: tailscale serve off to remove everything
+        
+        # Try to turn off specific path first
         result = subprocess.run(
-            ["tailscale", "serve", "--remove", f"--set-path={path}"],
+            ["tailscale", "serve", "off", path],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            timeout=30
         )
         
         if result.returncode != 0:
-            # Try reset all
+            # Try older syntax with status to see what's there, then reset
             result = subprocess.run(
                 ["tailscale", "serve", "reset"],
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                timeout=30
             )
         
         if result.returncode == 0:
             ok(f"Removed Tailscale Serve path: {path}")
             return True
         else:
-            warn(f"Failed to remove serve path: {result.stderr}")
+            error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+            warn(f"Failed to remove serve path: {error_msg}")
             return False
+    except subprocess.TimeoutExpired:
+        warn("Tailscale serve command timed out")
+        return False
     except Exception as e:
         warn(f"Failed to remove Tailscale Serve: {e}")
         return False
@@ -226,15 +262,32 @@ def remove_serve(path: str) -> bool:
 def reset_serve() -> bool:
     """Reset all Tailscale Serve configuration."""
     try:
+        # Modern syntax: tailscale serve off
+        # Turns off all serve configurations
         result = subprocess.run(
-            ["tailscale", "serve", "reset"],
+            ["tailscale", "serve", "off"],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            timeout=30
         )
+        
+        if result.returncode != 0:
+            # Try reset command
+            result = subprocess.run(
+                ["tailscale", "serve", "reset"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30
+            )
+        
         if result.returncode == 0:
             ok("Tailscale Serve configuration reset")
             return True
+        return False
+    except subprocess.TimeoutExpired:
+        warn("Tailscale serve reset timed out")
         return False
     except:
         return False
