@@ -42,6 +42,16 @@ def get_traefik_email() -> str | None:
     return None
 
 
+def get_base_domain() -> str | None:
+    """Extract base domain from Let's Encrypt email (e.g., admin@dromey.co.uk -> dromey.co.uk)."""
+    email = get_traefik_email()
+    if email and "@" in email:
+        domain = email.split("@")[1]
+        if "." in domain and "example.com" not in domain:
+            return domain
+    return None
+
+
 def ensure_traefik_network() -> None:
     """Ensure the shared traefik network exists."""
     try:

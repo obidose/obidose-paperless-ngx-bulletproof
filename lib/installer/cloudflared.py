@@ -76,6 +76,31 @@ def list_tunnels() -> list[dict]:
         return []
 
 
+def get_base_domain() -> str | None:
+    """Extract base domain from existing Cloudflare tunnel configs."""
+    config_dir = Path("/etc/cloudflared")
+    if not config_dir.exists():
+        return None
+    
+    for config_file in config_dir.glob("*.yml"):
+        try:
+            content = config_file.read_text()
+            for line in content.splitlines():
+                if "hostname:" in line:
+                    domain = line.split("hostname:")[1].strip()
+                    if domain and "." in domain:
+                        # Extract base domain (e.g., "cft.dromey.co.uk" -> "dromey.co.uk")
+                        parts = domain.split(".")
+                        if len(parts) >= 2:
+                            # Handle TLDs like .co.uk, .com.au
+                            if len(parts) >= 3 and len(parts[-2]) <= 3:
+                                return ".".join(parts[-3:])
+                            return ".".join(parts[-2:])
+        except Exception:
+            continue
+    return None
+
+
 def get_tunnel_for_instance(instance_name: str) -> dict | None:
     """Get tunnel info for a specific instance."""
     tunnels = list_tunnels()

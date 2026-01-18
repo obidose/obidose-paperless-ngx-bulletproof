@@ -2196,7 +2196,8 @@ class PaperlessManager:
             return
         
         # Get existing instances for validation
-        existing_instances = [i.name for i in self.instance_manager.list_instances()]
+        instances = self.instance_manager.list_instances()
+        existing_instances = [i.name for i in instances]
         
         # Check networking service availability upfront
         net_status = check_networking_dependencies()
@@ -2301,22 +2302,51 @@ class PaperlessManager:
             if access_choice == "2":
                 common.cfg.enable_traefik = "yes"
                 common.cfg.enable_cloudflared = "no"
-                common.cfg.domain = get_input("Domain (DNS must point to this server)", f"{instance_name}.example.com")
+                # Get base domain from Traefik config (from Let's Encrypt email)
+                from lib.installer.traefik import get_base_domain as get_traefik_domain
+                traefik_base = get_traefik_domain()
+                default_domain = f"{instance_name}.{traefik_base}" if traefik_base else f"{instance_name}.example.com"
+                common.cfg.domain = get_input("Domain (DNS must point to this server)", default_domain)
                 
                 if not net_status["traefik_running"]:
                     # Only ask for email if Traefik isn't running yet (will need to be set up)
                     common.cfg.letsencrypt_email = get_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
                     warn("Traefik is not running!")
-                    say("Install from main menu: Manage Traefik (HTTPS)")
-                    if not confirm("Continue anyway? (Instance won't work until Traefik is set up)", False):
+                    print()
+                    print("  1) Set up Traefik now (recommended)")
+                    print("  2) Continue anyway (configure Traefik later)")
+                    print("  0) Cancel")
+                    print()
+                    traefik_choice = get_input("Choose option", "1")
+                    
+                    if traefik_choice == "0":
                         say("Setup cancelled")
                         input("\nPress Enter to continue...")
                         return
+                    elif traefik_choice == "1":
+                        # Set up Traefik inline
+                        say("Setting up Traefik...")
+                        from lib.installer.traefik import setup_system_traefik
+                        if setup_system_traefik(common.cfg.letsencrypt_email):
+                            ok("Traefik installed and running")
+                            # Update net_status
+                            net_status["traefik_running"] = True
+                        else:
+                            error("Failed to set up Traefik")
+                            if not confirm("Continue anyway?", False):
+                                say("Setup cancelled")
+                                input("\nPress Enter to continue...")
+                                return
+                    # traefik_choice == "2" just continues
                         
             elif access_choice == "3":
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "yes"
-                common.cfg.domain = get_input("Domain (configured in Cloudflare)", f"{instance_name}.example.com")
+                # Get base domain from existing Cloudflare tunnel configs
+                from lib.installer.cloudflared import get_base_domain as get_cloudflare_domain
+                cloudflare_base = get_cloudflare_domain()
+                default_domain = f"{instance_name}.{cloudflare_base}" if cloudflare_base else f"{instance_name}.example.com"
+                common.cfg.domain = get_input("Domain (configured in Cloudflare)", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
                     warn("Cloudflare Tunnel not configured!")
@@ -4805,6 +4835,11 @@ rclone_config: {network_info['rclone']['enabled']}
         say("Starting nuclear cleanup...")
         print()
         
+        # Check if Traefik was running (to restart it after cleanup)
+        from lib.installer.traefik import is_traefik_running, get_traefik_email
+        traefik_was_running = is_traefik_running() if not delete_traefik else False
+        traefik_email = get_traefik_email() if traefik_was_running else None
+        
         try:
             # Use consolidated instance deletion
             if instances:
@@ -4927,6 +4962,18 @@ rclone_config: {network_info['rclone']['enabled']}
             
             # Reload instance manager to reflect changes
             self.instance_manager = InstanceManager()
+            
+            # Restart Traefik if it was running and not deleted
+            if traefik_was_running:
+                say("Restarting Traefik (was running before nuke)...")
+                try:
+                    from lib.installer.traefik import setup_system_traefik
+                    if setup_system_traefik(traefik_email or "admin@example.com"):
+                        ok("Traefik restarted")
+                    else:
+                        warn("Could not restart Traefik - use Manage Traefik menu")
+                except Exception as e:
+                    warn(f"Could not restart Traefik: {e}")
             
             ok("Nuclear cleanup complete!")
             say("System is now in clean state")
