@@ -648,7 +648,7 @@ class PaperlessManager:
         try:
             # Import installer modules
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from lib.installer import common, files
+            from lib.installer import common, files, traefik
             
             # Run the guided setup
             common.pick_and_merge_preset(
@@ -656,6 +656,15 @@ class PaperlessManager:
             )
             common.prompt_core_values()
             common.prompt_backup_plan()
+            
+            # Set up system Traefik if using HTTPS
+            if common.cfg.enable_traefik == "yes":
+                if not traefik.is_traefik_running():
+                    common.say("Setting up shared system Traefik for all instances...")
+                    traefik.setup_system_traefik(common.cfg.letsencrypt_email)
+                else:
+                    common.ok("Using existing system Traefik")
+            
             common.ensure_dir_tree(common.cfg)
             
             files.write_env_file()

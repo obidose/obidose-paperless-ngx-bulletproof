@@ -140,6 +140,8 @@ def write_compose_file() -> None:
     log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik})")
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
     if cfg.enable_traefik == "yes":
+        # Use shared system Traefik - instances connect to external traefik network
+        # and have labels for routing
         compose = textwrap.dedent(
             f"""
             services:
@@ -199,40 +201,21 @@ def write_compose_file() -> None:
                   - {cfg.dir_consume}:/usr/src/paperless/consume
                 labels:
                   - traefik.enable=true
-                  - traefik.http.routers.paperless.rule=Host(`{cfg.domain}`)
-                  - traefik.http.routers.paperless.entrypoints=websecure
-                  - traefik.http.routers.paperless.tls.certresolver=le
-                  - traefik.http.services.paperless.loadbalancer.server.port=8000
-                networks: [paperless]
-
-              traefik:
-                image: traefik:v3.0
-                restart: unless-stopped
-                command:
-                  - --providers.docker=true
-                  - --providers.docker.exposedbydefault=false
-                  - --entrypoints.web.address=:80
-                  - --entrypoints.websecure.address=:443
-                  - --certificatesresolvers.le.acme.httpchallenge=true
-                  - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-                  - --certificatesresolvers.le.acme.email={cfg.letsencrypt_email}
-                  - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-                ports:
-                  - 80:80
-                  - 443:443
-                volumes:
-                  - /var/run/docker.sock:/var/run/docker.sock:ro
-                  - {cfg.stack_dir}/letsencrypt:/letsencrypt
-                networks: [paperless]
+                  - traefik.http.routers.{cfg.instance_name}.rule=Host(`{cfg.domain}`)
+                  - traefik.http.routers.{cfg.instance_name}.entrypoints=websecure
+                  - traefik.http.routers.{cfg.instance_name}.tls.certresolver=letsencrypt
+                  - traefik.http.services.{cfg.instance_name}.loadbalancer.server.port=8000
+                networks:
+                  - paperless
+                  - traefik
 
             networks:
               paperless:
-                name: paperless_net
+                name: paperless_{cfg.instance_name}_net
+              traefik:
+                external: true
             """
         ).strip() + "\n"
-        Path(f"{cfg.stack_dir}/letsencrypt").mkdir(parents=True, exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").touch(exist_ok=True)
-        Path(f"{cfg.stack_dir}/letsencrypt/acme.json").chmod(0o600)
     else:
         compose = textwrap.dedent(
             f"""
