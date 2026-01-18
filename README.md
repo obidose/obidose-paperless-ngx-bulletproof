@@ -57,11 +57,11 @@ paperless
 
 ## Requirements
 
-- Ubuntu 22.04 or 24.04 LTS
+- Ubuntu 24.04 LTS (may well work on other distros but tested on 24.04)
 - 4GB RAM minimum (8GB+ for multiple instances)
 - 20GB+ disk space
 - Root/sudo access
-- pCloud account for backups (free 10GB available)
+- pCloud account for backups (will probably work with other Rclone providers, have also added some options for dropbox and google drive, but all untested)
 
 ---
 
@@ -98,7 +98,7 @@ Each instance runs independently with its own database and backups.
 
 ```
 ╔══════════════════════════════════════════════════════════╗
-║        Paperless-NGX Bulletproof Manager                ║
+║        Paperless-NGX Bulletproof Manager                 ║
 ╚══════════════════════════════════════════════════════════╝
 
 Current Instance: paperless [Running]
