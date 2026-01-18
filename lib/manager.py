@@ -299,6 +299,13 @@ class InstanceManager:
                 if service_file.exists():
                     service_file.unlink()
                 subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+                # Delete Cloudflare tunnel itself
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                try:
+                    from lib.installer.cloudflared import delete_tunnel
+                    delete_tunnel(name)
+                except Exception:
+                    pass
             except:
                 pass
         
@@ -1260,13 +1267,20 @@ WantedBy=multi-user.target
             domain = instance.get_env_value("DOMAIN", "localhost")
             url = instance.get_env_value("PAPERLESS_URL", "")
             
-            print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
-            print(colorize("│", Colors.CYAN) + f" Status: {status}" + " " * (58 - len("Status: ") - 10) + colorize("│", Colors.CYAN))
-            print(colorize("│", Colors.CYAN) + f" Domain: {colorize(domain, Colors.BOLD)}" + " " * (58 - len("Domain: ") - len(domain)) + colorize("│", Colors.CYAN))
+            import re
+            box_width = 62
+            def pad_line(content: str) -> str:
+                clean = re.sub(r"\033\[[0-9;]+m", "", content)
+                padding = max(0, box_width - len(clean) - 2)
+                return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+            
+            print(colorize("╭" + "─" * (box_width - 2) + "╮", Colors.CYAN))
+            print(pad_line(f" Status: {status}"))
+            print(pad_line(f" Domain: {colorize(domain, Colors.BOLD)}"))
             if url:
-                print(colorize("│", Colors.CYAN) + f" URL:    {colorize(url, Colors.CYAN)}" + " " * (58 - len("URL:    ") - len(url)) + colorize("│", Colors.CYAN))
-            print(colorize("│", Colors.CYAN) + f" Stack:  {instance.stack_dir}" + " " * (58 - len("Stack:  ") - len(str(instance.stack_dir))) + colorize("│", Colors.CYAN))
-            print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
+                print(pad_line(f" URL:    {colorize(url, Colors.CYAN)}"))
+            print(pad_line(f" Stack:  {instance.stack_dir}"))
+            print(colorize("╰" + "─" * (box_width - 2) + "╯", Colors.CYAN))
             print()
             
             options = [
@@ -2471,8 +2485,8 @@ instance_count: {len(instances)}
         else:
             say(f"Folder '{instance_name}' is empty")
         print()
-        confirm_text = get_input(f"Type DELETE {instance_name} to confirm", "")
-        if confirm_text != f"DELETE {instance_name}":
+        confirm_text = get_input(f"Type DELETE {instance_name} to confirm (or just 'DELETE')", "")
+        if confirm_text not in (f"DELETE {instance_name}", "DELETE"):
             say("Cancelled")
             input("\nPress Enter to continue...")
             return
@@ -2604,18 +2618,25 @@ instance_count: {len(instances)}
                 input("\nPress Enter to continue...")
     
     def nuke_setup(self) -> None:
-        """Nuclear option - delete all instances and Docker resources."""
+        """Nuclear option - delete all instances and Docker resources with optional cleanups."""
         print_header("Nuke Setup (Clean Start)")
         
-        warn("This will DELETE EVERYTHING:")
+        instances = self.instance_manager.list_instances()
+        
+        warn("This will DELETE core system components:")
         print("  • All Docker containers (stopped and running)")
         print("  • All Docker networks")
         print("  • All Docker volumes")
         print("  • All instance directories (/home/docker/*)")
         print("  • All instance tracking data")
-        print("  • Traefik configuration")
         print()
-        error("Backups on pCloud will NOT be deleted")
+        
+        # Optional cleanups
+        print(colorize("Optional cleanups (you will be asked):", Colors.YELLOW))
+        print("  • Traefik configuration")
+        print("  • Cloudflare tunnels")
+        print("  • Tailscale connection")
+        print("  • All pCloud backups")
         print()
         
         # Single confirmation with NUKE
@@ -2625,11 +2646,30 @@ instance_count: {len(instances)}
             input("\nPress Enter to continue...")
             return
         
+        # Ask about optional cleanups
+        delete_traefik = confirm("Also delete Traefik configuration?", False)
+        delete_cloudflared = confirm("Also delete all Cloudflare tunnels?", False)
+        delete_tailscale = confirm("Also disconnect Tailscale?", False)
+        delete_backups = False
+        if self.rclone_configured:
+            warn("⚠️  DANGER: This will permanently delete ALL backups!")
+            delete_backups = confirm("Also delete ALL pCloud backups?", False)
+        
+        print()
         say("Starting nuclear cleanup...")
         print()
         
         try:
-            # Stop all containers
+            # Use consolidated instance deletion
+            if instances:
+                say(f"Deleting {len(instances)} instance(s) with all data...")
+                for inst in instances:
+                    try:
+                        self.instance_manager.remove_instance(inst.name, delete_files=True)
+                    except Exception as e:
+                        warn(f"Error deleting {inst.name}: {e}")
+            
+            # Stop all remaining containers
             say("Stopping all Docker containers...")
             subprocess.run(
                 ["docker", "stop", "$(docker ps -aq)"],
@@ -2663,8 +2703,8 @@ instance_count: {len(instances)}
             say("Pruning Docker volumes...")
             subprocess.run(["docker", "volume", "prune", "-f"], check=False, capture_output=True)
             
-            # Remove instance directories
-            say("Removing instance directories...")
+            # Remove any remaining instance directories
+            say("Cleaning remaining instance directories...")
             import shutil
             docker_home = Path("/home/docker")
             if docker_home.exists():
@@ -2677,11 +2717,56 @@ instance_count: {len(instances)}
                     except Exception as e:
                         warn(f"Could not remove {item}: {e}")
             
-            # Remove Traefik config
-            say("Removing Traefik configuration...")
-            traefik_dir = Path("/opt/traefik")
-            if traefik_dir.exists():
-                shutil.rmtree(traefik_dir)
+            # Optional: Remove Traefik
+            if delete_traefik:
+                say("Removing Traefik configuration...")
+                traefik_dir = Path("/opt/traefik")
+                if traefik_dir.exists():
+                    shutil.rmtree(traefik_dir)
+                ok("Traefik removed")
+            
+            # Optional: Delete all Cloudflare tunnels
+            if delete_cloudflared:
+                say("Deleting all Cloudflare tunnels...")
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                try:
+                    from lib.installer.cloudflared import list_tunnels
+                    tunnels = list_tunnels()
+                    for tunnel in tunnels:
+                        if tunnel.get('name', '').startswith('paperless-'):
+                            try:
+                                subprocess.run(
+                                    ["cloudflared", "tunnel", "delete", "-f", tunnel.get('name')],
+                                    check=False,
+                                    capture_output=True
+                                )
+                            except:
+                                pass
+                    ok("Cloudflare tunnels deleted")
+                except Exception as e:
+                    warn(f"Could not delete tunnels: {e}")
+            
+            # Optional: Disconnect Tailscale
+            if delete_tailscale:
+                say("Disconnecting Tailscale...")
+                try:
+                    subprocess.run(["tailscale", "logout"], check=False, capture_output=True)
+                    ok("Tailscale disconnected")
+                except:
+                    warn("Could not disconnect Tailscale")
+            
+            # Optional: Delete all backups
+            if delete_backups:
+                warn("Deleting ALL pCloud backups...")
+                try:
+                    subprocess.run(
+                        ["rclone", "purge", "pcloud:backups/paperless"],
+                        check=False,
+                        capture_output=True
+                    )
+                    ok("All backups deleted")
+                except Exception as e:
+                    warn(f"Could not delete backups: {e}")
             
             # Remove instance tracking
             say("Removing instance tracking...")
@@ -2699,6 +2784,8 @@ instance_count: {len(instances)}
             
             ok("Nuclear cleanup complete!")
             say("System is now in clean state")
+            if not delete_backups:
+                say("Backups preserved on pCloud")
             say("You can start fresh by creating new instances")
             
         except Exception as e:

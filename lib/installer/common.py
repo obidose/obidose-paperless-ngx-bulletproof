@@ -166,9 +166,12 @@ def prompt_core_values() -> None:
     if cfg.instance_name != "paperless":
         cfg.data_root = f"/home/docker/{cfg.instance_name}"
         cfg.stack_dir = f"/home/docker/{cfg.instance_name}-setup"
+        # Ensure backups go under the instance name
+        cfg.rclone_remote_path = f"backups/paperless/{cfg.instance_name}"
     else:
         cfg.data_root = "/home/docker/paperless"
         cfg.stack_dir = "/home/docker/paperless-setup"
+        cfg.rclone_remote_path = "backups/paperless/paperless"
     
     # Show computed defaults
     print()

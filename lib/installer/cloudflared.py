@@ -89,33 +89,28 @@ def create_tunnel(instance_name: str, domain: str) -> bool:
     """Create a Cloudflare tunnel for an instance."""
     tunnel_name = f"paperless-{instance_name}"
     
-    say(f"Creating Cloudflare tunnel: {tunnel_name}")
+    say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
     try:
-        # Create tunnel
-        subprocess.run([
-            "cloudflared", "tunnel", "create", tunnel_name
-        ], check=True)
-        
-        # Get tunnel info
-        tunnels = list_tunnels()
-        tunnel = None
-        for t in tunnels:
-            if t.get("name") == tunnel_name:
-                tunnel = t
-                break
-        
+        # Check existing tunnel
+        tunnel = get_tunnel_for_instance(instance_name)
         if not tunnel:
-            warn("Tunnel created but couldn't find it in list")
-            return False
+            # Create tunnel
+            try:
+                subprocess.run(["cloudflared", "tunnel", "create", tunnel_name], check=True)
+            except subprocess.CalledProcessError as e:
+                # If already exists, continue
+                warn(f"Create failed or already exists: {e}")
+            tunnel = get_tunnel_for_instance(instance_name)
+            if not tunnel:
+                warn("Tunnel not found after creation attempt")
+                return False
         
         tunnel_id = tunnel.get("id")
         
-        # Create config directory
+        # Create config file pointing to the tunnel
         config_dir = Path("/etc/cloudflared")
         config_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create config file
         config_file = config_dir / f"{instance_name}.yml"
         config_content = f"""tunnel: {tunnel_id}
 credentials-file: /root/.cloudflared/{tunnel_id}.json
@@ -127,18 +122,16 @@ ingress:
 """
         config_file.write_text(config_content)
         
-        # Create DNS record
-        say(f"Creating DNS record for {domain}")
-        subprocess.run([
-            "cloudflared", "tunnel", "route", "dns", tunnel_name, domain
-        ], check=True)
+        # Create or ensure DNS record
+        say(f"Ensuring DNS record for {domain}")
+        subprocess.run(["cloudflared", "tunnel", "route", "dns", tunnel_name, domain], check=False)
         
-        ok(f"Cloudflare tunnel created for {domain}")
+        ok(f"Cloudflare tunnel ready for {domain}")
         say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
         return True
         
-    except subprocess.CalledProcessError as e:
-        warn(f"Failed to create tunnel: {e}")
+    except Exception as e:
+        warn(f"Failed to set up tunnel: {e}")
         return False
 
 
@@ -147,10 +140,8 @@ def delete_tunnel(instance_name: str) -> bool:
     tunnel_name = f"paperless-{instance_name}"
     
     try:
-        # Delete tunnel
-        subprocess.run([
-            "cloudflared", "tunnel", "delete", "-f", tunnel_name
-        ], check=True)
+        # Delete tunnel (ignore errors if it was already removed)
+        subprocess.run(["cloudflared", "tunnel", "delete", "-f", tunnel_name], check=False)
         
         # Remove config file
         config_file = Path(f"/etc/cloudflared/{instance_name}.yml")
