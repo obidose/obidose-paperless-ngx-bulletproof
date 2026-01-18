@@ -8,10 +8,10 @@ One-command setup and management for Paperless-NGX with automated backups to pCl
 
 ```bash
 # From main branch (stable)
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3 -
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py
 
 # From dev branch (testing)
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py | BP_BRANCH=dev sudo -E python3 - --branch dev
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py --branch dev
 ```
 
 After installation, manage with: `paperless`

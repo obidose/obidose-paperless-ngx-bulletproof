@@ -106,6 +106,13 @@ def write_env_file() -> None:
         STACK_DIR={cfg.stack_dir}
         DATA_ROOT={cfg.data_root}
 
+        # Data directories
+        DIR_DATA={cfg.dir_data}
+        DIR_MEDIA={cfg.dir_media}
+        DIR_EXPORT={cfg.dir_export}
+        DIR_CONSUME={cfg.dir_consume}
+        DIR_DB={cfg.dir_db}
+
         PUID={cfg.puid}
         PGID={cfg.pgid}
         TZ={cfg.tz}

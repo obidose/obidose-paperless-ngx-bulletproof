@@ -404,16 +404,25 @@ class PaperlessManager:
     
     def __init__(self):
         self.instance_manager = InstanceManager()
-        self.current_instance: Optional[Instance] = None
-        
-        # Auto-select single instance if only one exists
-        instances = self.instance_manager.list_instances()
-        if len(instances) == 1:
-            self.current_instance = instances[0]
+        self.rclone_configured = self._check_rclone_connection()
+    
+    def _check_rclone_connection(self) -> bool:
+        """Check if pCloud/rclone is configured."""
+        try:
+            result = subprocess.run(
+                ["rclone", "listremotes"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            return "pcloud:" in result.stdout
+        except Exception:
+            return False
     
     def run(self) -> None:
         """Run the main menu loop."""
         while True:
+            self._scan_system()
             self.show_main_menu()
             choice = get_input("Select option", "").lower()
             
@@ -423,27 +432,38 @@ class PaperlessManager:
             
             self.handle_main_choice(choice)
     
+    def _scan_system(self) -> None:
+        """Scan for instances and check backup connection."""
+        # Reload instances to pick up any changes
+        self.instance_manager.load_instances()
+        
+        # Check backup connection
+        self.rclone_configured = self._check_rclone_connection()
+    
     def show_main_menu(self) -> None:
         """Display the main menu."""
         print_header("Paperless-NGX Bulletproof Manager")
         
-        # Show current instance
-        if self.current_instance:
-            status = colorize("Running", Colors.GREEN) if self.current_instance.is_running else colorize("Stopped", Colors.YELLOW)
-            print(f"Current Instance: {colorize(self.current_instance.name, Colors.CYAN)} [{status}]")
-        else:
-            print(f"Current Instance: {colorize('None selected', Colors.YELLOW)}")
+        # Show system status
+        instances = self.instance_manager.list_instances()
+        backup_status = colorize("Connected", Colors.GREEN) if self.rclone_configured else colorize("Not configured", Colors.YELLOW)
+        
+        print(f"Backup Server: {backup_status}")
+        print(f"Instances: {len(instances)}")
+        
+        if instances:
+            print("\nInstances:")
+            for instance in instances:
+                status = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
+                print(f"  {status} {instance.name} ({instance.stack_dir})")
+        
         print()
         
         # Main menu options
         options = [
-            ("1", "Setup new instance"),
-            ("2", "Select/switch instance"),
-            ("3", "Backup management"),
-            ("4", "Restore from backup"),
-            ("5", "System health check"),
-            ("6", "Instance management"),
-            ("7", "Container operations"),
+            ("1", "Configure backup server connection"),
+            ("2", "Instances"),
+            ("3", "Backups"),
             ("q", "Quit")
         ]
         print_menu(options)
@@ -451,104 +471,148 @@ class PaperlessManager:
     def handle_main_choice(self, choice: str) -> None:
         """Handle main menu selection."""
         if choice == "1":
-            self.setup_new_instance()
+            self.configure_backup_connection()
         elif choice == "2":
-            self.select_instance()
+            self.instances_menu()
         elif choice == "3":
-            if self.ensure_instance_selected():
-                self.backup_menu()
-        elif choice == "4":
-            if self.ensure_instance_selected():
-                self.restore_menu()
-        elif choice == "5":
-            if self.ensure_instance_selected():
-                self.health_check()
-        elif choice == "6":
-            self.instance_management()
-        elif choice == "7":
-            if self.ensure_instance_selected():
-                self.container_operations()
+            if not self.rclone_configured:
+                warn("Backup server not configured!")
+                if confirm("Configure now?", True):
+                    self.configure_backup_connection()
+            else:
+                self.backups_menu()
         else:
             warn("Invalid option")
     
-    def ensure_instance_selected(self) -> bool:
-        """Ensure an instance is selected, prompt if not."""
-        if self.current_instance:
-            return True
-        
-        warn("No instance selected!")
-        instances = self.instance_manager.list_instances()
-        if not instances:
-            error("No instances configured. Please setup a new instance first.")
-            return False
-        
-        if confirm("Would you like to select an instance now?", True):
-            self.select_instance()
-            return self.current_instance is not None
-        return False
-    
-    def setup_new_instance(self) -> None:
-        """Setup a new Paperless-NGX instance."""
-        print_header("Setup New Instance")
-        
-        say("This will run the installer to create a new instance.")
-        if not confirm("Continue?", True):
-            return
+    def configure_backup_connection(self) -> None:
+        """Configure rclone/pCloud connection."""
+        print_header("Backup Server Connection")
         
         try:
-            # Run the installer
-            subprocess.run([sys.executable, str(Path(__file__).parent / "install.py")], check=True)
-            
-            # Reload instances to pick up the new one
-            self.instance_manager.load_instances()
-            ok("Instance setup complete!")
-        except subprocess.CalledProcessError:
-            error("Installation failed")
-        except KeyboardInterrupt:
-            warn("Installation cancelled")
+            # Check if running from installed package
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from installer import pcloud
+            pcloud.ensure_pcloud_remote_or_menu()
+            self.rclone_configured = self._check_rclone_connection()
+            ok("Backup connection configured!")
+        except Exception as e:
+            error(f"Failed to configure backup connection: {e}")
+        
+        input("\nPress Enter to continue...")
     
-    def select_instance(self) -> None:
-        """Select an instance to work with."""
-        instances = self.instance_manager.list_instances()
-        if not instances:
-            warn("No instances configured")
+    def instances_menu(self) -> None:
+        """Instances management menu."""
+        while True:
+            instances = self.instance_manager.list_instances()
+            
+            print_header("Instances")
+            
+            if instances:
+                for idx, instance in enumerate(instances, 1):
+                    status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
+                    print(f"  {idx}) {instance.name} [{status}]")
+                    print(f"      Stack: {instance.stack_dir}")
+                    print(f"      Data:  {instance.data_root}")
+                print()
+            else:
+                print("  No instances configured\n")
+            
+            options = [
+                ("a", "Add new instance"),
+                ("d", "Delete all instances"),
+            ]
+            
+            # Add instance selection options
+            for idx in range(1, len(instances) + 1):
+                options.insert(idx, (str(idx), f"Manage '{instances[idx-1].name}'"))
+            
+            options.append(("b", "Back to main menu"))
+            
+            print_menu(options)
+            
+            choice = get_input("Select option", "").lower()
+            
+            if choice == "b":
+                break
+            elif choice == "a":
+                self.add_instance_menu()
+            elif choice == "d":
+                if confirm("Delete ALL instances from tracking?", False):
+                    for inst in instances:
+                        self.instance_manager.remove_instance(inst.name)
+                    ok("All instances removed from tracking")
+                    input("\nPress Enter to continue...")
+            elif choice.isdigit() and 1 <= int(choice) <= len(instances):
+                self.instance_detail_menu(instances[int(choice) - 1])
+            else:
+                warn("Invalid option")
+    
+    def add_instance_menu(self) -> None:
+        """Add new instance submenu."""
+        print_header("Add New Instance")
+        
+        options = [
+            ("1", "Create fresh instance"),
+            ("2", "Restore from backup"),
+            ("b", "Back")
+        ]
+        print_menu(options)
+        
+        choice = get_input("Select option", "").lower()
+        
+        if choice == "1":
+            self.create_fresh_instance()
+        elif choice == "2":
+            self.restore_instance_from_backup()
+        # else back
+    
+    def create_fresh_instance(self) -> None:
+        """Create a new fresh instance."""
+        print_header("Create Fresh Instance")
+        
+        say("This will guide you through creating a new Paperless-NGX instance")
+        
+        # This needs to call the installer with proper parameters
+        # For now, show message
+        warn("This feature requires completing the instance creation workflow")
+        warn("Coming soon - will integrate with installer.common for guided setup")
+        
+        input("\nPress Enter to continue...")
+    
+    def restore_instance_from_backup(self) -> None:
+        """Restore instance from backup."""
+        if not self.rclone_configured:
+            error("Backup server not configured!")
             return
         
-        print_header("Select Instance")
-        for idx, instance in enumerate(instances, 1):
-            status = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
-            print(f"  {idx}) {status} {instance.name} ({instance.stack_dir})")
-        print()
+        print_header("Restore Instance from Backup")
         
-        choice = get_input(f"Select instance [1-{len(instances)}]", "")
-        if choice.isdigit() and 1 <= int(choice) <= len(instances):
-            self.current_instance = instances[int(choice) - 1]
-            ok(f"Selected instance: {self.current_instance.name}")
-        else:
-            warn("Invalid selection")
+        # Show available backups
+        # This will be implemented in backups_menu
+        warn("Use the Backups menu to browse and restore")
+        
+        input("\nPress Enter to continue...")
     
-    def backup_menu(self) -> None:
-        """Backup management menu."""
-        assert self.current_instance is not None  # Type checker hint
-        backup_mgr = BackupManager(self.current_instance)
-        
+    def instance_detail_menu(self, instance: Instance) -> None:
+        """Detail menu for a specific instance."""
         while True:
-            print_header(f"Backup Management: {self.current_instance.name}")
+            print_header(f"Instance: {instance.name}")
             
-            # Show snapshot count
-            snapshots = backup_mgr.fetch_snapshots()
-            latest = snapshots[-1][0] if snapshots else "none"
-            print(f"Remote: {colorize(backup_mgr.remote, Colors.CYAN)}")
-            print(f"Snapshots: {colorize(str(len(snapshots)), Colors.YELLOW)} (latest: {latest})")
+            status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
+            print(f"Status: {status}")
+            print(f"Stack: {instance.stack_dir}")
+            print(f"Data:  {instance.data_root}")
             print()
             
             options = [
-                ("1", "Run backup (incremental)"),
-                ("2", "Run backup (full)"),
-                ("3", "Run backup (archive)"),
-                ("4", "View snapshots"),
-                ("5", "Configure backup schedule"),
-                ("b", "Back to main menu")
+                ("1", "View details"),
+                ("2", "Health check"),
+                ("3", "Backup now"),
+                ("4", "Restore/revert from backup"),
+                ("5", "Container operations"),
+                ("6", "Edit settings"),
+                ("7", "Delete instance"),
+                ("b", "Back")
             ]
             print_menu(options)
             
@@ -557,41 +621,101 @@ class PaperlessManager:
             if choice == "b":
                 break
             elif choice == "1":
-                say("Starting incremental backup...")
-                if backup_mgr.run_backup("incr"):
-                    ok("Backup completed successfully!")
-                else:
-                    error("Backup failed!")
+                self.view_instance_details(instance)
             elif choice == "2":
-                say("Starting full backup...")
-                if backup_mgr.run_backup("full"):
-                    ok("Backup completed successfully!")
-                else:
-                    error("Backup failed!")
+                self.health_check(instance)
             elif choice == "3":
-                say("Starting archive backup...")
-                if backup_mgr.run_backup("archive"):
-                    ok("Backup completed successfully!")
-                else:
-                    error("Backup failed!")
+                self.backup_instance(instance)
             elif choice == "4":
-                self.view_snapshots(backup_mgr)
+                self.revert_instance(instance)
             elif choice == "5":
-                self.configure_backup_schedule()
+                self.container_operations(instance)
+            elif choice == "6":
+                self.edit_instance(instance)
+            elif choice == "7":
+                if confirm(f"Delete instance '{instance.name}' from tracking?", False):
+                    self.instance_manager.remove_instance(instance.name)
+                    ok(f"Instance '{instance.name}' removed from tracking")
+                    input("\nPress Enter to continue...")
+                    break
             else:
                 warn("Invalid option")
-            
-            if choice != "b":
-                input("\nPress Enter to continue...")
     
-    def view_snapshots(self, backup_mgr: BackupManager) -> None:
-        """View available snapshots."""
-        snapshots = backup_mgr.fetch_snapshots()
-        if not snapshots:
-            warn("No snapshots found")
+    def view_instance_details(self, instance: Instance) -> None:
+        """View detailed information about an instance."""
+        print_header(f"Details: {instance.name}")
+        
+        print(f"Name: {instance.name}")
+        print(f"Status: {'Running' if instance.is_running else 'Stopped'}")
+        print(f"Stack Directory: {instance.stack_dir}")
+        print(f"Data Root: {instance.data_root}")
+        print(f"Env File: {instance.env_file}")
+        print(f"Compose File: {instance.compose_file}")
+        print()
+        
+        # Show key settings from env file
+        if instance.env_file.exists():
+            print("Settings:")
+            for key in ["PAPERLESS_URL", "POSTGRES_DB", "TZ", "ENABLE_TRAEFIK", "DOMAIN"]:
+                value = instance.get_env_value(key, "not set")
+                print(f"  {key}: {value}")
+        
+        input("\nPress Enter to continue...")
+    
+    def health_check(self, instance: Instance) -> None:
+        """Run health check on instance."""
+        checker = HealthChecker(instance)
+        checker.print_report()
+        input("\nPress Enter to continue...")
+    
+    def backup_instance(self, instance: Instance) -> None:
+        """Backup an instance."""
+        if not self.rclone_configured:
+            error("Backup server not configured!")
+            input("\nPress Enter to continue...")
             return
         
-        print_header("Available Snapshots")
+        print_header(f"Backup: {instance.name}")
+        
+        options = [
+            ("1", "Incremental backup"),
+            ("2", "Full backup"),
+            ("3", "Archive backup"),
+            ("b", "Cancel")
+        ]
+        print_menu(options)
+        
+        choice = get_input("Select backup type", "1")
+        
+        mode_map = {"1": "incr", "2": "full", "3": "archive"}
+        
+        if choice in mode_map:
+            backup_mgr = BackupManager(instance)
+            say(f"Starting {mode_map[choice]} backup...")
+            if backup_mgr.run_backup(mode_map[choice]):
+                ok("Backup completed successfully!")
+            else:
+                error("Backup failed!")
+        
+        input("\nPress Enter to continue...")
+    
+    def revert_instance(self, instance: Instance) -> None:
+        """Revert instance from backup."""
+        if not self.rclone_configured:
+            error("Backup server not configured!")
+            input("\nPress Enter to continue...")
+            return
+        
+        print_header(f"Restore/Revert: {instance.name}")
+        
+        backup_mgr = BackupManager(instance)
+        snapshots = backup_mgr.fetch_snapshots()
+        
+        if not snapshots:
+            warn("No backups found for this instance")
+            input("\nPress Enter to continue...")
+            return
+        
         print(f"{'#':<5} {'Name':<35} {'Mode':<10} {'Parent'}")
         print("─" * 80)
         
@@ -601,198 +725,26 @@ class PaperlessManager:
             print(f"{idx:<5} {name:<35} {colorize(mode, mode_color):<20} {parent_display}")
         print()
         
-        # Option to view manifest
-        if confirm("View manifest for a snapshot?", False):
-            choice = get_input(f"Snapshot number [1-{len(snapshots)}]", "")
-            if choice.isdigit() and 1 <= int(choice) <= len(snapshots):
-                snapshot = snapshots[int(choice) - 1][0]
-                try:
-                    result = subprocess.run(
-                        ["rclone", "cat", f"{backup_mgr.remote}/{snapshot}/manifest.yaml"],
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    print("\n" + colorize("Manifest:", Colors.BOLD))
-                    print(result.stdout)
-                except subprocess.CalledProcessError:
-                    error("Failed to fetch manifest")
-    
-    def configure_backup_schedule(self) -> None:
-        """Configure automated backup schedule."""
-        print_header("Configure Backup Schedule")
-        warn("This feature is under development")
-        # TODO: Implement cron configuration UI
-    
-    def restore_menu(self) -> None:
-        """Restore menu."""
-        assert self.current_instance is not None  # Type checker hint
-        backup_mgr = BackupManager(self.current_instance)
+        choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'cancel'", "cancel")
         
-        print_header(f"Restore: {self.current_instance.name}")
-        
-        snapshots = backup_mgr.fetch_snapshots()
-        if not snapshots:
-            warn("No snapshots available to restore")
-            return
-        
-        print(f"{'#':<5} {'Name':<35} {'Mode':<10} {'Parent'}")
-        print("─" * 80)
-        
-        for idx, (name, mode, parent) in enumerate(snapshots, 1):
-            parent_display = parent if mode == "incr" else "-"
-            mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW
-            print(f"{idx:<5} {name:<35} {colorize(mode, mode_color):<20} {parent_display}")
-        print()
-        
-        print(colorize("⚠️  WARNING:", Colors.RED) + " Restore will stop the instance and replace current data!")
-        print()
-        
-        choice = get_input(f"Snapshot to restore [1-{len(snapshots)}] or 'latest'", "latest")
-        
-        if choice == "latest":
-            snapshot = None  # restore script will use latest
-        elif choice.isdigit() and 1 <= int(choice) <= len(snapshots):
+        if choice.isdigit() and 1 <= int(choice) <= len(snapshots):
             snapshot = snapshots[int(choice) - 1][0]
-        else:
-            warn("Invalid selection")
-            return
-        
-        if not confirm("Are you SURE you want to proceed with restore?", False):
-            say("Restore cancelled")
-            return
-        
-        say("Starting restore operation...")
-        if backup_mgr.run_restore(snapshot):
-            ok("Restore completed successfully!")
-        else:
-            error("Restore failed!")
-        
-        input("\nPress Enter to continue...")
-    
-    def health_check(self) -> None:
-        """Run health check on current instance."""
-        assert self.current_instance is not None  # Type checker hint
-        checker = HealthChecker(self.current_instance)
-        checker.print_report()
-        input("\nPress Enter to continue...")
-    
-    def instance_management(self) -> None:
-        """Instance management menu."""
-        while True:
-            print_header("Instance Management")
             
-            options = [
-                ("1", "List all instances"),
-                ("2", "Add existing instance"),
-                ("3", "Remove instance from tracking"),
-                ("4", "Clone instance"),
-                ("b", "Back to main menu")
-            ]
-            print_menu(options)
-            
-            choice = get_input("Select option", "").lower()
-            
-            if choice == "b":
-                break
-            elif choice == "1":
-                self.list_instances()
-            elif choice == "2":
-                self.add_existing_instance()
-            elif choice == "3":
-                self.remove_instance()
-            elif choice == "4":
-                self.clone_instance()
-            else:
-                warn("Invalid option")
-            
-            if choice != "b":
-                input("\nPress Enter to continue...")
-    
-    def list_instances(self) -> None:
-        """List all configured instances."""
-        instances = self.instance_manager.list_instances()
-        if not instances:
-            warn("No instances configured")
-            return
-        
-        print()
-        for instance in instances:
-            status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
-            print(f"  • {colorize(instance.name, Colors.BOLD)} [{status}]")
-            print(f"    Stack: {instance.stack_dir}")
-            print(f"    Data:  {instance.data_root}")
             print()
+            warn("This will stop the instance and restore data!")
+            if confirm("Continue with restore?", False):
+                say("Starting restore...")
+                if backup_mgr.run_restore(snapshot):
+                    ok("Restore completed!")
+                else:
+                    error("Restore failed!")
+        
+        input("\nPress Enter to continue...")
     
-    def add_existing_instance(self) -> None:
-        """Add an existing instance to tracking."""
-        print_header("Add Existing Instance")
-        
-        name = get_input("Instance name", "")
-        if not name:
-            warn("Name required")
-            return
-        
-        stack_dir = Path(get_input("Stack directory", "/home/docker/paperless-setup"))
-        data_root = Path(get_input("Data root directory", "/home/docker/paperless"))
-        
-        if not stack_dir.exists():
-            error(f"Stack directory does not exist: {stack_dir}")
-            return
-        
-        if not data_root.exists():
-            error(f"Data directory does not exist: {data_root}")
-            return
-        
-        self.instance_manager.add_instance(name, stack_dir, data_root)
-        ok(f"Instance '{name}' added successfully!")
-    
-    def remove_instance(self) -> None:
-        """Remove an instance from tracking."""
-        instances = self.instance_manager.list_instances()
-        if not instances:
-            warn("No instances to remove")
-            return
-        
-        print_header("Remove Instance")
-        for idx, instance in enumerate(instances, 1):
-            print(f"  {idx}) {instance.name}")
-        print()
-        
-        choice = get_input(f"Select instance to remove [1-{len(instances)}]", "")
-        if not choice.isdigit() or not (1 <= int(choice) <= len(instances)):
-            warn("Invalid selection")
-            return
-        
-        instance = instances[int(choice) - 1]
-        
-        print()
-        warn("This will only remove the instance from tracking.")
-        warn("Docker containers and data files will NOT be deleted.")
-        print()
-        
-        if not confirm(f"Remove '{instance.name}' from tracking?", False):
-            say("Cancelled")
-            return
-        
-        self.instance_manager.remove_instance(instance.name)
-        if self.current_instance == instance:
-            self.current_instance = None
-        ok(f"Instance '{instance.name}' removed from tracking")
-    
-    def clone_instance(self) -> None:
-        """Clone an instance by restoring from its backup."""
-        print_header("Clone Instance")
-        warn("This feature allows you to create a new instance from a backup")
-        warn("This is under development")
-        # TODO: Implement instance cloning
-    
-    def container_operations(self) -> None:
-        """Container operations menu."""
-        assert self.current_instance is not None  # Type checker hint
-        
+    def container_operations(self, instance: Instance) -> None:
+        """Container operations for an instance."""
         while True:
-            print_header(f"Container Operations: {self.current_instance.name}")
+            print_header(f"Containers: {instance.name}")
             
             options = [
                 ("1", "Start containers"),
@@ -801,8 +753,7 @@ class PaperlessManager:
                 ("4", "View status"),
                 ("5", "View logs"),
                 ("6", "Upgrade containers"),
-                ("7", "Pull latest images"),
-                ("b", "Back to main menu")
+                ("b", "Back")
             ]
             print_menu(options)
             
@@ -811,31 +762,30 @@ class PaperlessManager:
             if choice == "b":
                 break
             elif choice == "1":
-                self.docker_command("up", "-d")
+                self._docker_command(instance, "up", "-d")
+                input("\nPress Enter to continue...")
             elif choice == "2":
-                self.docker_command("down")
+                self._docker_command(instance, "down")
+                input("\nPress Enter to continue...")
             elif choice == "3":
-                self.docker_command("restart")
+                self._docker_command(instance, "restart")
+                input("\nPress Enter to continue...")
             elif choice == "4":
-                self.docker_command("ps")
+                self._docker_command(instance, "ps")
+                input("\nPress Enter to continue...")
             elif choice == "5":
-                self.view_logs()
+                self._view_logs(instance)
             elif choice == "6":
-                self.upgrade_containers()
-            elif choice == "7":
-                self.docker_command("pull")
+                self._upgrade_containers(instance)
             else:
                 warn("Invalid option")
-            
-            if choice != "b" and choice in ["1", "2", "3", "6", "7"]:
-                input("\nPress Enter to continue...")
     
-    def docker_command(self, *args: str) -> None:
+    def _docker_command(self, instance: Instance, *args: str) -> None:
         """Run a docker compose command."""
-        assert self.current_instance is not None  # Type checker hint
         cmd = [
             "docker", "compose",
-            "-f", str(self.current_instance.compose_file),
+            "-f", str(instance.compose_file),
+            "--env-file", str(instance.env_file),
             *args
         ]
         try:
@@ -843,13 +793,13 @@ class PaperlessManager:
         except subprocess.CalledProcessError as e:
             error(f"Command failed with exit code {e.returncode}")
     
-    def view_logs(self) -> None:
+    def _view_logs(self, instance: Instance) -> None:
         """View container logs."""
-        assert self.current_instance is not None  # Type checker hint
         service = get_input("Service name (blank for all)", "")
         cmd = [
             "docker", "compose",
-            "-f", str(self.current_instance.compose_file),
+            "-f", str(instance.compose_file),
+            "--env-file", str(instance.env_file),
             "logs", "--tail", "100", "--timestamps"
         ]
         if service:
@@ -862,27 +812,39 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
-    def upgrade_containers(self) -> None:
+    def _upgrade_containers(self, instance: Instance) -> None:
         """Upgrade containers with automatic backup."""
-        assert self.current_instance is not None  # Type checker hint
-        
-        if not confirm("Run backup before upgrade?", True):
-            say("Skipping backup...")
-        else:
-            backup_mgr = BackupManager(self.current_instance)
+        if confirm("Run backup before upgrade?", True):
+            backup_mgr = BackupManager(instance)
             say("Running full backup before upgrade...")
             if not backup_mgr.run_backup("full"):
                 error("Backup failed! Upgrade aborted.")
+                input("\nPress Enter to continue...")
                 return
             ok("Backup completed")
         
         say("Pulling latest images...")
-        self.docker_command("pull")
+        self._docker_command(instance, "pull")
         
         say("Recreating containers...")
-        self.docker_command("up", "-d")
+        self._docker_command(instance, "up", "-d")
         
         ok("Upgrade complete!")
+        input("\nPress Enter to continue...")
+    
+    def edit_instance(self, instance: Instance) -> None:
+        """Edit instance settings."""
+        print_header(f"Edit: {instance.name}")
+        warn("Instance editing requires stopping containers and updating configuration")
+        warn("This feature is under development")
+        input("\nPress Enter to continue...")
+    
+    def backups_menu(self) -> None:
+        """Backups explorer and management."""
+        print_header("Backups")
+        warn("Backup explorer is under development")
+        warn("For now, use the instance-specific restore menu")
+        input("\nPress Enter to continue...")
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

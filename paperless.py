@@ -6,8 +6,12 @@ Single command for everything: install, manage, backup, restore, health check.
 Can be run on fresh machine or existing installation.
 
 Usage:
-  # Fresh machine (downloads and runs)
-  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3 -
+  # Fresh machine (downloads and runs) - TWO step process for interactive prompts:
+  wget https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py
+  sudo python3 paperless.py
+
+  # Or one-liner (downloads to temp and executes):
+  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py
 
   # Installed system
   paperless
@@ -64,113 +68,56 @@ except ModuleNotFoundError:
 
 def main():
     """Main entry point."""
-    # If stdin is not a terminal (piped execution), reopen it to the controlling terminal
-    if not sys.stdin.isatty():
-        try:
-            sys.stdin = open('/dev/tty', 'r')
-        except:
-            print("ERROR: Cannot access terminal for interactive input.")
-            print("Please download and run the script directly:")
-            print(f"  wget https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}/paperless.py")
-            print(f"  sudo python3 paperless.py")
-            sys.exit(1)
-    
-    # Check if we're on a fresh machine (no instances configured)
     from pathlib import Path
     
-    config_file = Path("/etc/paperless-bulletproof/instances.json")
-    is_fresh = not config_file.exists()
+    # Check if this is first run (base system not installed)
+    rclone_installed = Path("/usr/bin/rclone").exists()
+    docker_installed = Path("/usr/bin/docker").exists()
     
-    # Check for existing default installation
-    default_env = Path("/home/docker/paperless-setup/.env")
-    has_default = default_env.exists()
-    
-    if is_fresh and not has_default:
-        # Completely fresh machine - offer quick setup
+    if not (rclone_installed and docker_installed):
+        # First time setup - install base system
         print("\n" + "="*70)
         print("  Welcome to Paperless-NGX Bulletproof!")
         print("="*70)
-        print("\nThis appears to be a fresh installation.")
-        print("\nOptions:")
-        print("  1) Quick setup (guided installation)")
-        print("  2) Advanced options (manual configuration)")
-        print("  3) Restore from existing backup")
+        print("\nFirst-time setup: Installing base system...")
         print()
         
-        choice = input("Choose [1-3] [1]: ").strip() or "1"
+        if os.geteuid() != 0:
+            print("ERROR: Installation requires root privileges. Please run with sudo.")
+            sys.exit(1)
         
-        if choice == "1":
-            # Run full installer
-            print("\n Starting guided installation...\n")
-            if os.geteuid() != 0:
-                print("ERROR: Installation requires root privileges. Please run with sudo.")
-                sys.exit(1)
-            
-            common.say(f"Fetching assets from branch '{BRANCH}'")
-            common.preflight_ubuntu()
-            deps.install_prereqs()
-            deps.ensure_user()
-            deps.install_docker()
-            deps.install_rclone()
-            pcloud.ensure_pcloud_remote_or_menu()
-            common.ensure_dir_tree(common.cfg)
-            
-            if files.restore_existing_backup_if_present():
-                files.copy_helper_scripts()
-                files.install_cron_backup()
-                files.show_status()
-                return
-            
-            common.pick_and_merge_preset(
-                f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
-            )
-            common.prompt_core_values()
-            common.prompt_backup_plan()
-            common.ensure_dir_tree(common.cfg)
-            files.write_env_file()
-            files.write_compose_file()
-            files.copy_helper_scripts()
-            files.bring_up_stack()
-            
-            from utils.selftest import run_stack_tests
-            if run_stack_tests(Path(common.cfg.compose_file), Path(common.cfg.env_file)):
-                common.ok("Self-test passed")
-            else:
-                common.warn("Self-test failed; check container logs")
-            
-            files.install_cron_backup()
-            files.show_status()
-            
-            print("\n" + "="*70)
-            print("  Installation complete! You can now run: paperless")
-            print("="*70 + "\n")
-            return
-            
-        elif choice == "3":
-            # Restore from backup
-            print("\n Starting restore wizard...\n")
-            if os.geteuid() != 0:
-                print("ERROR: Restore requires root privileges. Please run with sudo.")
-                sys.exit(1)
-            
-            common.say("Checking for backups...")
-            deps.install_rclone()
-            pcloud.ensure_pcloud_remote_or_menu()
-            
-            if files.restore_existing_backup_if_present():
-                files.copy_helper_scripts()
-                files.install_cron_backup()
-                files.show_status()
-                return
-            else:
-                print("\nNo backups found. Would you like to run a fresh installation instead?")
-                if input("Continue with installation? [Y/n]: ").strip().lower() != 'n':
-                    # Fall through to normal manager
-                    pass
-                else:
-                    return
+        common.say(f"Fetching assets from branch '{BRANCH}'")
+        common.preflight_ubuntu()
+        deps.install_prereqs()
+        deps.ensure_user()
+        deps.install_docker()
+        deps.install_rclone()
+        
+        # Set up pCloud connection
+        print("\n" + "="*70)
+        print("  Backup Configuration")
+        print("="*70)
+        print()
+        pcloud.ensure_pcloud_remote_or_menu()
+        
+        # Install the manager
+        files.copy_helper_scripts()
+        
+        print("\n" + "="*70)
+        print("  Base system installed!")
+        print("="*70)
+        print("\nYou can now:")
+        print("  - Run 'paperless' to manage instances")
+        print("  - Add instances from backups or create new ones")
+        print()
+        
+        # Auto-detect and import legacy instance
+        default_env = Path("/home/docker/paperless-setup/.env")
+        if default_env.exists():
+            print("Detected existing instance. Importing...")
+            # This will be handled by the manager on first launch
     
-    # Launch the manager (fresh or existing installation)
+    # Launch the manager
     try:
         app = PaperlessManager()
         app.run()
