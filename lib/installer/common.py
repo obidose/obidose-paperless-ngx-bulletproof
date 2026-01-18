@@ -197,6 +197,20 @@ def prompt_core_values() -> None:
     cfg.refresh_paths()
 
 
+def get_next_available_port(start_port: int = 8000) -> str:
+    """Find the next available port starting from start_port."""
+    import socket
+    port = start_port
+    while port < 65535:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('', port))
+                return str(port)
+            except OSError:
+                port += 1
+    return str(start_port)  # Fallback
+
+
 def prompt_networking() -> None:
     """Ask how the instance should be accessed."""
     print()
@@ -218,6 +232,12 @@ def prompt_networking() -> None:
     else:
         cfg.enable_traefik = "no"
         cfg.enable_cloudflared = "no"
+    
+    # Find next available port if default is in use
+    suggested_port = get_next_available_port(int(cfg.http_port))
+    if suggested_port != cfg.http_port:
+        warn(f"Port {cfg.http_port} is in use, suggesting {suggested_port}")
+        cfg.http_port = suggested_port
     
     # Always set an http_port (needed for direct access or as backend)
     cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)

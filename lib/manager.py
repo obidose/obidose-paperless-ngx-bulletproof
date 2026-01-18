@@ -90,6 +90,125 @@ def draw_box_bottom(width: int = 58) -> str:
     return colorize("╰" + "─" * width + "╯", Colors.CYAN)
 
 
+def draw_section_header(title: str, width: int = 58) -> str:
+    """Draw a section header within content area."""
+    padding = width - len(title) - 2
+    left_pad = padding // 2
+    right_pad = padding - left_pad
+    return colorize("│", Colors.CYAN) + " " + colorize("─" * left_pad, Colors.CYAN) + f" {colorize(title, Colors.BOLD)} " + colorize("─" * right_pad, Colors.CYAN) + " " + colorize("│", Colors.CYAN)
+
+
+# ─── Shared Instance Setup Helpers ────────────────────────────────────────────
+
+def setup_instance_config(instance_name: str, existing_instances: list[str] = None) -> tuple[bool, str]:
+    """
+    Set up instance configuration with validation.
+    Returns (success, error_message).
+    """
+    if existing_instances is None:
+        existing_instances = []
+    
+    # Validate instance name
+    if instance_name in existing_instances:
+        return False, f"Instance '{instance_name}' already exists"
+    
+    if not instance_name or not instance_name.replace("-", "").replace("_", "").isalnum():
+        return False, "Instance name must be alphanumeric (hyphens and underscores allowed)"
+    
+    # Import and configure
+    sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+    from lib.installer import common
+    
+    # Set instance name and compute paths
+    common.cfg.instance_name = instance_name
+    common.cfg.data_root = f"/home/docker/{instance_name}"
+    common.cfg.stack_dir = f"/home/docker/{instance_name}-setup"
+    common.cfg.rclone_remote_path = f"backups/paperless/{instance_name}"
+    common.cfg.refresh_paths()
+    
+    return True, ""
+
+
+def check_networking_dependencies() -> dict[str, bool]:
+    """Check availability of networking services. Returns dict of service -> available."""
+    sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+    from lib.installer import traefik, cloudflared, tailscale
+    
+    return {
+        "traefik_running": traefik.is_traefik_running(),
+        "cloudflared_installed": cloudflared.is_cloudflared_installed(),
+        "cloudflared_authenticated": cloudflared.is_authenticated(),
+        "tailscale_installed": tailscale.is_tailscale_installed(),
+        "tailscale_connected": tailscale.is_connected(),
+    }
+
+
+def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
+    """Set up Cloudflare tunnel for an instance. Returns success status."""
+    sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+    from lib.installer import cloudflared, common
+    
+    if not cloudflared.is_authenticated():
+        return False
+    
+    print()
+    common.say("Setting up Cloudflare Tunnel...")
+    
+    if not cloudflared.create_tunnel(instance_name, domain):
+        common.warn("Failed to create Cloudflare tunnel")
+        return False
+    
+    common.ok(f"Cloudflare tunnel ready for {domain}")
+    common.say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
+    
+    if confirm("Start tunnel as systemd service?", True):
+        try:
+            service_content = f"""[Unit]
+Description=Cloudflare Tunnel for {instance_name}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+"""
+            service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
+            service_file.write_text(service_content)
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
+            subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
+            common.ok("Tunnel service started")
+            return True
+        except Exception as e:
+            common.warn(f"Failed to create service: {e}")
+            return False
+    
+    return True
+
+
+def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: str, 
+                           stack_dir: Path, data_root: Path, enable_cloudflared: str, 
+                           domain: str) -> None:
+    """Finalize instance setup - register and set up optional services."""
+    sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+    from lib.installer import common, files
+    
+    # Install backup cron
+    files.install_cron_backup()
+    
+    # Set up Cloudflare tunnel if enabled
+    if enable_cloudflared == "yes":
+        setup_cloudflare_tunnel(instance_name, domain)
+    
+    # Register instance
+    instance_manager.add_instance(instance_name, stack_dir, data_root)
+
+
 # ─── Instance Configuration ───────────────────────────────────────────────────
 
 @dataclass
@@ -1105,15 +1224,23 @@ class PaperlessManager:
                 input("\nPress Enter to continue...")
     
     def add_instance_menu(self) -> None:
-        """Add new instance submenu."""
+        """Add new instance submenu with modern styling."""
         print_header("Add New Instance")
         
-        options = [
-            ("1", "Create fresh instance"),
-            ("2", "Restore from backup"),
-            ("0", "Back")
-        ]
-        print_menu(options)
+        box_line, box_width = create_box_helper(60)
+        
+        print(draw_box_top(box_width))
+        print(box_line(" Choose how to create your new instance:"))
+        print(box_line(""))
+        print(box_line(f"   {colorize('1)', Colors.BOLD)} {colorize('Create fresh instance', Colors.CYAN)}"))
+        print(box_line("      Start with a clean Paperless installation"))
+        print(box_line(""))
+        print(box_line(f"   {colorize('2)', Colors.BOLD)} {colorize('Restore from backup', Colors.CYAN)}"))
+        print(box_line("      Restore documents and settings from cloud backup"))
+        print(draw_box_bottom(box_width))
+        print()
+        print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+        print()
         
         choice = get_input("Select option", "")
         
@@ -1124,7 +1251,7 @@ class PaperlessManager:
         # else back (0 or any other)
     
     def restore_instance_from_backup(self, backup_instance: str = None, snapshot: str = None) -> None:
-        """Unified restore method that creates instance structure before restoring data.
+        """Restore an instance from cloud backup with guided setup.
         
         Args:
             backup_instance: Name of the backup instance to restore from (prompts if None)
@@ -1132,21 +1259,34 @@ class PaperlessManager:
         """
         if not self.rclone_configured:
             error("Backup server not configured!")
+            say("Configure from main menu: Configure Backup Server")
             input("\nPress Enter to continue...")
             return
         
-        print_header("Restore Instance from Backup")
+        print_header("Restore from Backup")
+        
+        # Get existing instances for validation
+        existing_instances = [i.name for i in self.instance_manager.list_instances()]
+        
+        # Check networking availability
+        net_status = check_networking_dependencies()
         
         # Get rclone remote settings
         remote_name = "pcloud"  # TODO: make configurable
         remote_base = f"{remote_name}:backups/paperless"
         
+        box_line, box_width = create_box_helper(60)
+        
         try:
+            # ─── Step 1: Select Backup Source ─────────────────────────────────
+            print(colorize("Step 1 of 3: Select Backup", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
             # Select backup instance if not provided
             if not backup_instance:
-                say("Scanning for available backups...")
+                say("Scanning backup server...")
                 
-                # List all instance folders in backup
                 result = subprocess.run(
                     ["rclone", "lsd", remote_base],
                     capture_output=True,
@@ -1155,7 +1295,7 @@ class PaperlessManager:
                 )
                 
                 if result.returncode != 0 or not result.stdout.strip():
-                    warn("No backups found")
+                    warn("No backups found on server")
                     input("\nPress Enter to continue...")
                     return
                 
@@ -1171,26 +1311,31 @@ class PaperlessManager:
                     input("\nPress Enter to continue...")
                     return
                 
-                # Show available instances
-                print("Available backup instances:")
+                # Show available instances in a nice format
+                print(draw_box_top(box_width))
+                print(box_line(f" {colorize('Available Backups', Colors.BOLD)}"))
+                print(box_line(""))
                 for idx, inst_name in enumerate(backup_instances, 1):
-                    print(f"  {idx}) {inst_name}")
+                    print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD)} {inst_name}"))
+                print(draw_box_bottom(box_width))
                 print()
                 
-                selected = get_input(f"Select instance [1-{len(backup_instances)}] or 'cancel'", "cancel")
+                selected = get_input(f"Select backup [1-{len(backup_instances)}] or 'cancel'", "cancel")
                 
-                if selected == "cancel" or not selected.isdigit():
+                if selected.lower() == "cancel" or not selected.isdigit():
                     return
                 
                 idx = int(selected)
                 if not (1 <= idx <= len(backup_instances)):
+                    warn("Invalid selection")
                     return
                 
                 backup_instance = backup_instances[idx - 1]
             
-            # Select snapshot if not provided
+            # Select snapshot
             if not snapshot:
-                # List snapshots for selected instance
+                say(f"Loading snapshots for '{backup_instance}'...")
+                
                 result = subprocess.run(
                     ["rclone", "lsd", f"{remote_base}/{backup_instance}"],
                     capture_output=True,
@@ -1203,7 +1348,6 @@ class PaperlessManager:
                     input("\nPress Enter to continue...")
                     return
                 
-                # Parse snapshots
                 snapshots = []
                 for line in result.stdout.splitlines():
                     parts = line.strip().split()
@@ -1212,68 +1356,176 @@ class PaperlessManager:
                 
                 snapshots = sorted(snapshots)
                 
-                print(f"\nSnapshots for '{backup_instance}':")
+                print()
+                print(draw_box_top(box_width))
+                print(box_line(f" {colorize('Available Snapshots', Colors.BOLD)} ({backup_instance})"))
+                print(box_line(""))
                 for idx, snap in enumerate(snapshots, 1):
-                    print(f"  {idx}) {snap}")
+                    # Parse date from snapshot name (format: YYYY-MM-DD_HH-MM-SS)
+                    display = snap
+                    try:
+                        date_part = snap.split("_")[0]
+                        time_part = snap.split("_")[1].replace("-", ":")
+                        display = f"{date_part} {time_part}"
+                    except:
+                        pass
+                    latest_marker = colorize(" (latest)", Colors.GREEN) if idx == len(snapshots) else ""
+                    print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD)} {display}{latest_marker}"))
+                print(draw_box_bottom(box_width))
                 print()
                 
                 snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
                 
-                if snap_choice == "latest":
+                if snap_choice.lower() == "latest":
                     snapshot = snapshots[-1]
                 elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
                     snapshot = snapshots[int(snap_choice) - 1]
                 else:
+                    warn("Invalid selection")
                     return
             
-            # Prompt for new instance name
-            new_name = get_input("New instance name", backup_instance)
+            ok(f"Selected: {backup_instance}/{snapshot}")
+            print()
             
-            # IMPORTANT: Create instance structure first
-            say(f"Setting up new instance '{new_name}'...")
+            # ─── Step 2: Configure New Instance ───────────────────────────────
+            print(colorize("Step 2 of 3: Configure Instance", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
             
+            # Instance name with validation
+            suggested_name = backup_instance if backup_instance not in existing_instances else f"{backup_instance}-restored"
+            
+            while True:
+                new_name = get_input("New instance name", suggested_name)
+                
+                if new_name in existing_instances:
+                    warn(f"Instance '{new_name}' already exists")
+                    suggested_name = f"{new_name}-2"
+                    continue
+                
+                if not new_name or not new_name.replace("-", "").replace("_", "").isalnum():
+                    warn("Name must be alphanumeric (hyphens and underscores allowed)")
+                    continue
+                
+                break
+            
+            # Set up paths using shared helper
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.installer import common, files, traefik, cloudflared, tailscale
+            from lib.installer.common import get_next_available_port
             
-            # Set up basic config
             common.cfg.instance_name = new_name
+            common.cfg.data_root = f"/home/docker/{new_name}"
+            common.cfg.stack_dir = f"/home/docker/{new_name}-setup"
             common.cfg.rclone_remote_name = remote_name
-            common.cfg.rclone_remote_path = f"backups/paperless/{new_name}"  # Future backups go here
-            
-            # Ask for networking (or use sensible defaults for restore)
-            print()
-            say("Configure access for restored instance:")
-            common.prompt_networking()
-            
-            # Use default backup schedule
-            common.cfg.backup_full_freq = "weekly"
-            common.cfg.backup_full_day = 0
-            common.cfg.backup_full_time = "03:30"
-            common.cfg.backup_incr_freq = "daily"
-            common.cfg.backup_incr_time = "00:00"
-            common.cfg.backup_enable_archive = "no"
-            
-            # Refresh paths
+            common.cfg.rclone_remote_path = f"backups/paperless/{new_name}"
             common.cfg.refresh_paths()
             
-            # Check networking dependencies
-            if common.cfg.enable_traefik == "yes" and not traefik.is_traefik_running():
-                common.warn("Traefik not running - instance will be on HTTP port only")
-            if common.cfg.enable_cloudflared == "yes" and not cloudflared.is_authenticated():
-                common.warn("Cloudflared not authenticated - tunnel won't be created")
-            if common.cfg.enable_tailscale == "yes" and not tailscale.is_connected():
-                common.warn("Tailscale not connected")
+            print()
+            say(f"Instance '{colorize(new_name, Colors.BOLD)}' will use:")
+            print(f"  Data:  {colorize(common.cfg.data_root, Colors.CYAN)}")
+            print(f"  Stack: {colorize(common.cfg.stack_dir, Colors.CYAN)}")
+            print()
             
-            # Create directory structure
+            # Network access (simplified options)
+            say("How should this instance be accessed?")
+            print()
+            print(f"  {colorize('1)', Colors.BOLD)} {colorize('Direct HTTP', Colors.CYAN)} - Simple port binding")
+            print(f"  {colorize('2)', Colors.BOLD)} {colorize('HTTPS via Traefik', Colors.CYAN)}" + (
+                "" if net_status["traefik_running"] else colorize(" (not running)", Colors.YELLOW)))
+            print(f"  {colorize('3)', Colors.BOLD)} {colorize('Cloudflare Tunnel', Colors.CYAN)}" + (
+                "" if net_status["cloudflared_authenticated"] else colorize(" (not configured)", Colors.YELLOW)))
+            print()
+            
+            access_choice = get_input("Choose [1-3]", "1")
+            
+            # Update domain suggestion based on old backup name
+            default_domain = common.cfg.domain
+            if backup_instance in default_domain:
+                default_domain = default_domain.replace(backup_instance, new_name)
+            
+            if access_choice == "2":
+                common.cfg.enable_traefik = "yes"
+                common.cfg.enable_cloudflared = "no"
+                common.cfg.domain = get_input("Domain", default_domain)
+            elif access_choice == "3":
+                common.cfg.enable_traefik = "no"
+                common.cfg.enable_cloudflared = "yes"
+                common.cfg.domain = get_input("Domain", default_domain)
+            else:
+                common.cfg.enable_traefik = "no"
+                common.cfg.enable_cloudflared = "no"
+            
+            # Port with conflict detection
+            suggested_port = get_next_available_port(int(common.cfg.http_port))
+            if suggested_port != common.cfg.http_port:
+                warn(f"Port {common.cfg.http_port} is in use")
+                common.cfg.http_port = suggested_port
+            common.cfg.http_port = get_input("HTTP port", common.cfg.http_port)
+            
+            # Tailscale option
+            if net_status["tailscale_connected"]:
+                print()
+                if confirm("Also enable Tailscale access?", False):
+                    common.cfg.enable_tailscale = "yes"
+            else:
+                common.cfg.enable_tailscale = "no"
+            
+            # Default backup schedule
+            common.cfg.cron_full_time = "30 3 * * 0"
+            common.cfg.cron_incr_time = "0 0 * * *"
+            common.cfg.refresh_paths()
+            print()
+            
+            # ─── Step 3: Restore ──────────────────────────────────────────────
+            print(colorize("Step 3 of 3: Restore Data", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
+            # Summary before proceeding
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('Restore Summary', Colors.BOLD)}"))
+            print(box_line(""))
+            print(box_line(f" Source:  {backup_instance}/{snapshot}"))
+            print(box_line(f" Target:  {colorize(new_name, Colors.CYAN)}"))
+            print(box_line(f" Path:    {common.cfg.data_root}"))
+            
+            if common.cfg.enable_cloudflared == "yes":
+                print(box_line(f" Access:  ☁️  https://{common.cfg.domain}"))
+            elif common.cfg.enable_traefik == "yes":
+                print(box_line(f" Access:  🔒 https://{common.cfg.domain}"))
+            else:
+                print(box_line(f" Access:  🌐 http://localhost:{common.cfg.http_port}"))
+            print(draw_box_bottom(box_width))
+            print()
+            
+            if not confirm("Proceed with restore?", True):
+                say("Restore cancelled")
+                input("\nPress Enter to continue...")
+                return
+            
+            print()
+            
+            # Check dependencies
+            if common.cfg.enable_traefik == "yes" and not net_status["traefik_running"]:
+                warn("Traefik not running - HTTPS won't work until configured")
+            if common.cfg.enable_cloudflared == "yes" and not net_status["cloudflared_authenticated"]:
+                warn("Cloudflare not configured - tunnel won't be created")
+            
+            # Create directories
+            say("Creating directories...")
             common.ensure_dir_tree(common.cfg)
+            ok("Directories created")
             
             # Write config files
+            say("Writing configuration...")
             files.write_env_file()
             files.write_compose_file()
             files.copy_helper_scripts()
+            ok("Configuration written")
             
-            # NOW restore the data using the centralized helper
-            say(f"Restoring data from {backup_instance}/{snapshot}...")
+            # Restore data
+            say(f"Restoring data from backup...")
             
             success = run_restore_with_env(
                 snapshot=snapshot,
@@ -1283,53 +1535,47 @@ class PaperlessManager:
                 stack_dir=Path(common.cfg.stack_dir),
                 data_root=Path(common.cfg.data_root),
                 rclone_remote_name=remote_name,
-                rclone_remote_path=f"backups/paperless/{backup_instance}"  # Read from original
+                rclone_remote_path=f"backups/paperless/{backup_instance}"
             )
             
             if not success:
                 raise Exception("Restore operation failed")
             
-            ok(f"Data restored from {backup_instance}/{snapshot}")
+            ok("Data restored successfully")
             
             # Install backup cron
             files.install_cron_backup()
+            ok("Backup schedule configured")
             
             # Set up Cloudflare tunnel if enabled
-            if common.cfg.enable_cloudflared == "yes" and cloudflared.is_authenticated():
-                print()
-                common.say("Setting up Cloudflare Tunnel...")
-                if cloudflared.create_tunnel(new_name, common.cfg.domain):
-                    if confirm("Start tunnel as systemd service?", True):
-                        service_content = f"""[Unit]
-Description=Cloudflare Tunnel for {new_name}
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{new_name}.yml run
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-"""
-                        service_file = Path(f"/etc/systemd/system/cloudflared-{new_name}.service")
-                        service_file.write_text(service_content)
-                        subprocess.run(["systemctl", "daemon-reload"], check=True)
-                        subprocess.run(["systemctl", "enable", f"cloudflared-{new_name}"], check=True)
-                        subprocess.run(["systemctl", "start", f"cloudflared-{new_name}"], check=True)
-                        common.ok("Tunnel service started")
+            if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
+                setup_cloudflare_tunnel(new_name, common.cfg.domain)
             
-            # Register the restored instance
+            # Register instance
             self.instance_manager.add_instance(
                 new_name,
                 Path(common.cfg.stack_dir),
                 Path(common.cfg.data_root)
             )
             
-            ok(f"Instance '{new_name}' restored successfully!")
+            # Success message
+            print()
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('✓ Restore Complete!', Colors.GREEN)}"))
+            print(box_line(""))
+            if common.cfg.enable_cloudflared == "yes":
+                print(box_line(f" Access: {colorize(f'https://{common.cfg.domain}', Colors.CYAN)}"))
+            elif common.cfg.enable_traefik == "yes":
+                print(box_line(f" Access: {colorize(f'https://{common.cfg.domain}', Colors.CYAN)}"))
+            else:
+                print(box_line(f" Access: {colorize(f'http://localhost:{common.cfg.http_port}', Colors.CYAN)}"))
+            print(box_line(""))
+            print(box_line(" Your documents and settings have been restored."))
+            print(draw_box_bottom(box_width))
             
+        except KeyboardInterrupt:
+            print()
+            say("Restore cancelled")
         except Exception as e:
             error(f"Restore failed: {e}")
             import traceback
@@ -1338,123 +1584,276 @@ WantedBy=multi-user.target
         input("\nPress Enter to continue...")
     
     def create_fresh_instance(self) -> None:
-        """Create a new fresh instance."""
-        print_header("Create Fresh Instance")
-        
-        say("This will guide you through creating a new Paperless-NGX instance")
-        print()
+        """Create a new fresh instance with guided setup."""
+        print_header("Create New Instance")
         
         if os.geteuid() != 0:
             error("Creating instances requires root privileges. Please run with sudo.")
             input("\nPress Enter to continue...")
             return
         
+        # Get existing instances for validation
+        existing_instances = [i.name for i in self.instance_manager.list_instances()]
+        
+        # Check networking service availability upfront
+        net_status = check_networking_dependencies()
+        
+        # Display welcome box with system status
+        box_line, box_width = create_box_helper(60)
+        print(draw_box_top(box_width))
+        print(box_line(" Welcome to the Paperless-NGX instance creator!"))
+        print(box_line(""))
+        print(box_line(" This wizard will guide you through setting up a new"))
+        print(box_line(" Paperless-NGX instance with your preferred options."))
+        print(box_line(""))
+        print(draw_section_header("System Status", box_width))
+        
+        # Show networking availability
+        traefik_status = colorize("● Ready", Colors.GREEN) if net_status["traefik_running"] else colorize("○ Not running", Colors.YELLOW)
+        cloudflare_status = colorize("● Ready", Colors.GREEN) if net_status["cloudflared_authenticated"] else (
+            colorize("○ Not authenticated", Colors.YELLOW) if net_status["cloudflared_installed"] else colorize("○ Not installed", Colors.RED)
+        )
+        tailscale_status = colorize("● Connected", Colors.GREEN) if net_status["tailscale_connected"] else (
+            colorize("○ Not connected", Colors.YELLOW) if net_status["tailscale_installed"] else colorize("○ Not installed", Colors.RED)
+        )
+        
+        print(box_line(f" Traefik (HTTPS):     {traefik_status}"))
+        print(box_line(f" Cloudflare Tunnel:   {cloudflare_status}"))
+        print(box_line(f" Tailscale:           {tailscale_status}"))
+        print(draw_box_bottom(box_width))
+        print()
+        
         try:
             # Import installer modules
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.installer import common, files, traefik, cloudflared, tailscale
             
-            # Run the guided setup (removed preset selection)
-            common.prompt_core_values()
-            common.prompt_networking()  # New: ask how to access the instance
-            common.prompt_backup_plan()
+            # ─── Step 1: Instance Identity ────────────────────────────────────
+            print(colorize("Step 1 of 4: Instance Identity", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
             
-            # Check if Traefik is needed and available
-            if common.cfg.enable_traefik == "yes":
-                if not traefik.is_traefik_running():
-                    common.warn("HTTPS enabled but system Traefik is not running!")
-                    common.say("You can install Traefik from the main menu: Manage Traefik (HTTPS)")
-                    if not confirm("Continue without HTTPS? Instance will be inaccessible until Traefik is installed.", False):
-                        common.warn("Instance creation cancelled")
+            # Get instance name with validation
+            while True:
+                instance_name = get_input("Instance name", "paperless")
+                
+                if instance_name in existing_instances:
+                    warn(f"Instance '{instance_name}' already exists. Choose another name.")
+                    continue
+                
+                if not instance_name or not instance_name.replace("-", "").replace("_", "").isalnum():
+                    warn("Name must be alphanumeric (hyphens and underscores allowed)")
+                    continue
+                
+                break
+            
+            # Set up paths
+            common.cfg.instance_name = instance_name
+            common.cfg.data_root = f"/home/docker/{instance_name}"
+            common.cfg.stack_dir = f"/home/docker/{instance_name}-setup"
+            common.cfg.rclone_remote_path = f"backups/paperless/{instance_name}"
+            common.cfg.refresh_paths()
+            
+            # Show computed paths
+            print()
+            say(f"Instance '{colorize(instance_name, Colors.BOLD)}' will use:")
+            print(f"  Data:  {colorize(common.cfg.data_root, Colors.CYAN)}")
+            print(f"  Stack: {colorize(common.cfg.stack_dir, Colors.CYAN)}")
+            print()
+            
+            # Timezone
+            common.cfg.tz = get_input("Timezone", common.cfg.tz)
+            
+            # Admin credentials
+            print()
+            say("Set up admin credentials:")
+            common.cfg.paperless_admin_user = get_input("Admin username", common.cfg.paperless_admin_user)
+            common.cfg.paperless_admin_password = get_input("Admin password", common.cfg.paperless_admin_password)
+            print()
+            
+            # ─── Step 2: Network Access ───────────────────────────────────────
+            print(colorize("Step 2 of 4: Network Access", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
+            say("How should this instance be accessed?")
+            print()
+            
+            options = []
+            options.append(("1", "Direct HTTP", "Simple port binding (e.g., http://localhost:8000)", True))
+            options.append(("2", "HTTPS via Traefik", "Automatic SSL certificates" + (
+                "" if net_status["traefik_running"] else colorize(" (Traefik not running)", Colors.YELLOW)
+            ), True))
+            options.append(("3", "Cloudflare Tunnel", "Secure access via Cloudflare" + (
+                "" if net_status["cloudflared_authenticated"] else colorize(" (Not configured)", Colors.YELLOW)
+            ), True))
+            
+            for key, title, desc, _ in options:
+                print(f"  {colorize(key + ')', Colors.BOLD)} {colorize(title, Colors.CYAN)}")
+                print(f"     {desc}")
+            print()
+            
+            access_choice = get_input("Choose access method [1-3]", "1")
+            
+            if access_choice == "2":
+                common.cfg.enable_traefik = "yes"
+                common.cfg.enable_cloudflared = "no"
+                common.cfg.domain = get_input("Domain (DNS must point to this server)", f"{instance_name}.example.com")
+                common.cfg.letsencrypt_email = get_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
+                
+                if not net_status["traefik_running"]:
+                    warn("Traefik is not running!")
+                    say("Install from main menu: Manage Traefik (HTTPS)")
+                    if not confirm("Continue anyway? (Instance won't work until Traefik is set up)", False):
+                        say("Setup cancelled")
                         input("\nPress Enter to continue...")
                         return
+                        
+            elif access_choice == "3":
+                common.cfg.enable_traefik = "no"
+                common.cfg.enable_cloudflared = "yes"
+                common.cfg.domain = get_input("Domain (configured in Cloudflare)", f"{instance_name}.example.com")
+                
+                if not net_status["cloudflared_authenticated"]:
+                    warn("Cloudflare Tunnel not configured!")
+                    say("Set up from main menu: Manage Cloudflare Tunnel")
+                    if not confirm("Continue anyway? (Tunnel won't be created automatically)", False):
+                        say("Setup cancelled")
+                        input("\nPress Enter to continue...")
+                        return
+            else:
+                common.cfg.enable_traefik = "no"
+                common.cfg.enable_cloudflared = "no"
+            
+            # Port selection with conflict detection
+            print()
+            common.prompt_networking.__globals__['cfg'] = common.cfg  # Ensure cfg is accessible
+            from lib.installer.common import get_next_available_port
+            suggested_port = get_next_available_port(int(common.cfg.http_port))
+            if suggested_port != common.cfg.http_port:
+                warn(f"Port {common.cfg.http_port} is in use")
+                common.cfg.http_port = suggested_port
+            common.cfg.http_port = get_input("HTTP port", common.cfg.http_port)
+            
+            # Tailscale add-on
+            print()
+            if net_status["tailscale_connected"]:
+                say("Tailscale is available for private network access")
+                if confirm("Enable Tailscale access?", False):
+                    common.cfg.enable_tailscale = "yes"
+                    ok("Tailscale access enabled")
                 else:
-                    common.ok("Using existing system Traefik for HTTPS routing")
+                    common.cfg.enable_tailscale = "no"
+            elif net_status["tailscale_installed"]:
+                say("Tailscale is installed but not connected")
+                common.cfg.enable_tailscale = "no"
+            else:
+                common.cfg.enable_tailscale = "no"
+            print()
             
-            # Check if Cloudflared is needed and available
-            if common.cfg.enable_cloudflared == "yes":
-                if not cloudflared.is_cloudflared_installed():
-                    common.warn("Cloudflare Tunnel enabled but cloudflared not installed!")
-                    common.say("Install cloudflared from main menu: Manage Cloudflare Tunnel")
-                    if not confirm("Continue without tunnel? Instance will be on port 8000 only.", False):
-                        common.warn("Instance creation cancelled")
-                        input("\nPress Enter to continue...")
-                        return
-                elif not cloudflared.is_authenticated():
-                    common.warn("Cloudflared installed but not authenticated!")
-                    common.say("Authenticate from main menu: Manage Cloudflare Tunnel")
-                    if not confirm("Continue without tunnel? You'll need to set it up manually.", False):
-                        common.warn("Instance creation cancelled")
-                        input("\nPress Enter to continue...")
-                        return
+            # ─── Step 3: Backup Configuration ─────────────────────────────────
+            print(colorize("Step 3 of 4: Backup Schedule", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
             
-            # Check if Tailscale is needed
+            if self.rclone_configured:
+                say("Backup server is configured. Set your backup schedule:")
+                print()
+                
+                print(f"  {colorize('1)', Colors.BOLD)} Daily full + hourly incremental {colorize('(recommended)', Colors.GREEN)}")
+                print(f"  {colorize('2)', Colors.BOLD)} Weekly full + daily incremental")
+                print(f"  {colorize('3)', Colors.BOLD)} Custom schedule")
+                print()
+                
+                backup_choice = get_input("Choose backup plan [1-3]", "1")
+                
+                if backup_choice == "1":
+                    common.cfg.cron_full_time = "30 3 * * *"    # Daily 3:30 AM
+                    common.cfg.cron_incr_time = "0 * * * *"     # Hourly
+                elif backup_choice == "2":
+                    common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    common.cfg.cron_incr_time = "0 0 * * *"     # Daily midnight
+                else:
+                    common.prompt_backup_plan()
+                
+                ok("Backup schedule configured")
+            else:
+                warn("Backup server not configured - backups will be disabled")
+                say("Configure from main menu: Configure Backup Server")
+                common.cfg.cron_full_time = ""
+                common.cfg.cron_incr_time = ""
+            print()
+            
+            # ─── Step 4: Review & Create ──────────────────────────────────────
+            print(colorize("Step 4 of 4: Review & Create", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
+            # Summary box
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('Instance Summary', Colors.BOLD)}"))
+            print(box_line(""))
+            print(box_line(f" Name:     {colorize(common.cfg.instance_name, Colors.CYAN)}"))
+            print(box_line(f" Data:     {common.cfg.data_root}"))
+            print(box_line(f" Stack:    {common.cfg.stack_dir}"))
+            print(box_line(""))
+            
+            # Access method
+            if common.cfg.enable_traefik == "yes":
+                access_str = f"🔒 HTTPS via Traefik → https://{common.cfg.domain}"
+            elif common.cfg.enable_cloudflared == "yes":
+                access_str = f"☁️  Cloudflare Tunnel → https://{common.cfg.domain}"
+            else:
+                access_str = f"🌐 Direct HTTP → http://localhost:{common.cfg.http_port}"
+            print(box_line(f" Access:   {access_str}"))
+            
             if common.cfg.enable_tailscale == "yes":
-                if not tailscale.is_tailscale_installed():
-                    common.warn("Tailscale enabled but not installed!")
-                    common.say("Install Tailscale from main menu: Manage Tailscale")
-                elif not tailscale.is_connected():
-                    common.warn("Tailscale installed but not connected!")
-                    common.say("Connect from main menu: Manage Tailscale")
+                print(box_line(f"           🔐 + Tailscale private access"))
             
+            print(box_line(""))
+            print(box_line(f" Admin:    {common.cfg.paperless_admin_user}"))
+            print(box_line(f" Timezone: {common.cfg.tz}"))
+            print(draw_box_bottom(box_width))
+            print()
+            
+            if not confirm("Create this instance?", True):
+                say("Setup cancelled")
+                input("\nPress Enter to continue...")
+                return
+            
+            # ─── Create Instance ──────────────────────────────────────────────
+            print()
+            say("Creating instance...")
+            
+            # Create directories
             common.ensure_dir_tree(common.cfg)
+            ok("Directories created")
             
+            # Write config files
             files.write_env_file()
             files.write_compose_file()
             files.copy_helper_scripts()
+            ok("Configuration files written")
+            
+            # Start containers
+            say("Starting containers (this may take a moment)...")
             files.bring_up_stack()
             
             # Run self-test
-            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.utils.selftest import run_stack_tests
             if run_stack_tests(Path(common.cfg.compose_file), Path(common.cfg.env_file)):
-                common.ok("Self-test passed")
+                ok("Health check passed")
             else:
-                common.warn("Self-test failed; check container logs")
+                warn("Health check had warnings - check container logs if issues persist")
             
-            files.install_cron_backup()
+            # Set up backup cron if configured
+            if common.cfg.cron_full_time or common.cfg.cron_incr_time:
+                files.install_cron_backup()
+                ok("Backup schedule installed")
             
             # Set up Cloudflare tunnel if enabled
-            if common.cfg.enable_cloudflared == "yes" and cloudflared.is_authenticated():
-                print()
-                common.say("Setting up Cloudflare Tunnel...")
-                if cloudflared.create_tunnel(common.cfg.instance_name, common.cfg.domain):
-                    common.ok(f"Cloudflare tunnel created for {common.cfg.domain}")
-                    common.say("To start the tunnel, run:")
-                    print(f"  cloudflared tunnel --config /etc/cloudflared/{common.cfg.instance_name}.yml run")
-                    print()
-                    if confirm("Start tunnel now as a background service?", True):
-                        try:
-                            # Create systemd service
-                            service_content = f"""[Unit]
-Description=Cloudflare Tunnel for {common.cfg.instance_name}
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{common.cfg.instance_name}.yml run
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-"""
-                            service_file = Path(f"/etc/systemd/system/cloudflared-{common.cfg.instance_name}.service")
-                            service_file.write_text(service_content)
-                            
-                            subprocess.run(["systemctl", "daemon-reload"], check=True)
-                            subprocess.run(["systemctl", "enable", f"cloudflared-{common.cfg.instance_name}"], check=True)
-                            subprocess.run(["systemctl", "start", f"cloudflared-{common.cfg.instance_name}"], check=True)
-                            
-                            common.ok(f"Tunnel service started and enabled")
-                            common.say(f"Access at: https://{common.cfg.domain}")
-                        except Exception as e:
-                            common.warn(f"Failed to create service: {e}")
-                            common.say("You can start the tunnel manually with the command above")
-                else:
-                    common.warn("Failed to create Cloudflare tunnel")
-                    common.say("You can create it manually from the Cloudflare Tunnel menu")
+            if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
+                setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain)
             
             # Register instance
             self.instance_manager.add_instance(
@@ -1463,8 +1862,25 @@ WantedBy=multi-user.target
                 Path(common.cfg.data_root)
             )
             
-            ok(f"Instance '{common.cfg.instance_name}' created successfully!")
+            # Success message
+            print()
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('✓ Instance Created Successfully!', Colors.GREEN)}"))
+            print(box_line(""))
+            if common.cfg.enable_traefik == "yes":
+                print(box_line(f" Access at: {colorize(f'https://{common.cfg.domain}', Colors.CYAN)}"))
+            elif common.cfg.enable_cloudflared == "yes":
+                print(box_line(f" Access at: {colorize(f'https://{common.cfg.domain}', Colors.CYAN)}"))
+            else:
+                print(box_line(f" Access at: {colorize(f'http://localhost:{common.cfg.http_port}', Colors.CYAN)}"))
+            print(box_line(""))
+            print(box_line(f" Username: {colorize(common.cfg.paperless_admin_user, Colors.BOLD)}"))
+            print(box_line(f" Password: {colorize(common.cfg.paperless_admin_password, Colors.BOLD)}"))
+            print(draw_box_bottom(box_width))
             
+        except KeyboardInterrupt:
+            print()
+            say("Setup cancelled")
         except Exception as e:
             error(f"Failed to create instance: {e}")
             import traceback
