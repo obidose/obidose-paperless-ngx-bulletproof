@@ -1,4 +1,4 @@
-# Paperless-NGX Bulletproof
+# Paperless-NGX Bulletproof (now ACTUALLY working!)
 
 A deployment and instance management system for Paperless-NGX with, automated backups, and simple disaster recovery.
 
