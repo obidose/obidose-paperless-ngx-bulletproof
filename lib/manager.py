@@ -359,6 +359,83 @@ def confirm(prompt: str, default: bool = False) -> bool:
     return response.startswith('y')
 
 
+# ─── Restore Helper ───────────────────────────────────────────────────────────
+
+def run_restore_with_env(
+    snapshot: str,
+    instance_name: str,
+    env_file: Path,
+    compose_file: Path,
+    stack_dir: Path,
+    data_root: Path,
+    rclone_remote_name: str,
+    rclone_remote_path: str
+) -> bool:
+    """
+    Execute a restore operation with proper environment setup.
+    
+    This is the central restore function that all restore operations should use
+    to ensure consistency and proper environment handling.
+    
+    Args:
+        snapshot: Name of the snapshot to restore
+        instance_name: Name of the instance being restored
+        env_file: Path to the instance's .env file
+        compose_file: Path to the instance's docker-compose.yml
+        stack_dir: Path to the instance's stack directory
+        data_root: Path to the instance's data root
+        rclone_remote_name: Name of the rclone remote (e.g., "pcloud")
+        rclone_remote_path: Path within the remote (e.g., "backups/paperless/myinstance")
+    
+    Returns:
+        True if restore succeeded, False otherwise
+    """
+    # Set up environment variables for the restore
+    env_vars = {
+        "INSTANCE_NAME": instance_name,
+        "ENV_FILE": str(env_file),
+        "COMPOSE_FILE": str(compose_file),
+        "STACK_DIR": str(stack_dir),
+        "DATA_ROOT": str(data_root),
+        "RCLONE_REMOTE_NAME": rclone_remote_name,
+        "RCLONE_REMOTE_PATH": rclone_remote_path,
+    }
+    
+    # Temporarily set environment variables
+    original_env = {}
+    for key, value in env_vars.items():
+        original_env[key] = os.environ.get(key)
+        os.environ[key] = value
+    
+    try:
+        # Determine correct lib path (installed or development)
+        lib_path_installed = Path("/usr/local/lib/paperless-bulletproof/lib")
+        lib_path_dev = Path(__file__).parent
+        lib_path = str(lib_path_installed if lib_path_installed.exists() else lib_path_dev)
+        
+        if lib_path not in sys.path:
+            sys.path.insert(0, lib_path)
+        
+        # Import and run the restore function
+        from modules.restore import restore_snapshot as do_restore
+        do_restore(snapshot)
+        return True
+        
+    except Exception as e:
+        error(f"Restore failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+        
+    finally:
+        # Restore original environment
+        for key, original_value in original_env.items():
+            if original_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original_value
+
+
 # ─── Backup Operations ────────────────────────────────────────────────────────
 
 class BackupManager:
@@ -440,31 +517,28 @@ class BackupManager:
             return False
     
     def run_restore(self, snapshot: Optional[str] = None) -> bool:
-        """Run a restore operation."""
-        script = self.instance.stack_dir / "restore.py"
-        if not script.exists():
-            error(f"Restore script not found at {script}")
-            return False
+        """Run a restore operation for an existing instance.
         
-        cmd = [str(script)]
-        if snapshot:
-            cmd.append(snapshot)
+        Uses the centralized run_restore_with_env helper for consistency.
+        """
+        if not snapshot:
+            # If no snapshot specified, we need to get the latest
+            snapshots = self.fetch_snapshots()
+            if not snapshots:
+                error("No snapshots available to restore")
+                return False
+            snapshot = snapshots[-1][0]  # Use latest
         
-        try:
-            # Ensure restore script uses the correct instance context
-            env = os.environ.copy()
-            env.update({
-                "ENV_FILE": str(self.instance.env_file),
-                "COMPOSE_FILE": str(self.instance.compose_file),
-                "STACK_DIR": str(self.instance.stack_dir),
-                "DATA_ROOT": str(self.instance.data_root),
-                "RCLONE_REMOTE_NAME": self.remote_name,
-                "RCLONE_REMOTE_PATH": self.remote_path,
-            })
-            subprocess.run(cmd, check=True, env=env)
-            return True
-        except subprocess.CalledProcessError:
-            return False
+        return run_restore_with_env(
+            snapshot=snapshot,
+            instance_name=self.instance.name,
+            env_file=self.instance.env_file,
+            compose_file=self.instance.compose_file,
+            stack_dir=self.instance.stack_dir,
+            data_root=self.instance.data_root,
+            rclone_remote_name=self.remote_name,
+            rclone_remote_path=self.remote_path
+        )
 
 
 # ─── Health Checks ────────────────────────────────────────────────────────────
@@ -573,9 +647,15 @@ class HealthChecker:
 class PaperlessManager:
     """Main application controller."""
     
+    # Standard library paths for restore operations
+    LIB_PATH_INSTALLED = Path("/usr/local/lib/paperless-bulletproof/lib")
+    LIB_PATH_DEV = Path(__file__).parent  # For development
+    
     def __init__(self):
         self.instance_manager = InstanceManager()
         self.rclone_configured = self._check_rclone_connection()
+        # Determine correct lib path (installed or development)
+        self.lib_path = self.LIB_PATH_INSTALLED if self.LIB_PATH_INSTALLED.exists() else self.LIB_PATH_DEV
     
     def _check_rclone_connection(self) -> bool:
         """Check if pCloud/rclone is configured."""
@@ -1147,24 +1227,24 @@ class PaperlessManager:
             files.write_compose_file()
             files.copy_helper_scripts()
             
-            # NOW restore the data
+            # NOW restore the data using the centralized helper
             say(f"Restoring data from {backup_instance}/{snapshot}...")
             
-            restore_env = os.environ.copy()
-            restore_env.update({
-                "INSTANCE_NAME": new_name,
-                "ENV_FILE": str(common.cfg.env_file),
-                "COMPOSE_FILE": str(common.cfg.compose_file),
-                "STACK_DIR": str(common.cfg.stack_dir),
-                "DATA_ROOT": str(common.cfg.data_root),
-                "RCLONE_REMOTE_NAME": remote_name,
-                "RCLONE_REMOTE_PATH": f"backups/paperless/{backup_instance}"  # Read from original
-            })
+            success = run_restore_with_env(
+                snapshot=snapshot,
+                instance_name=new_name,
+                env_file=Path(common.cfg.env_file),
+                compose_file=Path(common.cfg.compose_file),
+                stack_dir=Path(common.cfg.stack_dir),
+                data_root=Path(common.cfg.data_root),
+                rclone_remote_name=remote_name,
+                rclone_remote_path=f"backups/paperless/{backup_instance}"  # Read from original
+            )
             
-            restore_script = Path(f"/tmp/restore_{new_name}.py")
-            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "lib" / "modules" / "restore.py").read_text())
+            if not success:
+                raise Exception("Restore operation failed")
             
-            subprocess.run([sys.executable, str(restore_script), snapshot], env=restore_env, check=True)
+            ok(f"Data restored from {backup_instance}/{snapshot}")
             
             # Install backup cron
             files.install_cron_backup()
@@ -1344,148 +1424,6 @@ WantedBy=multi-user.target
             error(f"Failed to create instance: {e}")
             import traceback
             traceback.print_exc()
-        
-        input("\nPress Enter to continue...")
-    
-    def restore_instance_from_backup(self) -> None:
-        """Restore instance from backup."""
-        if not self.rclone_configured:
-            error("Backup server not configured!")
-            input("\nPress Enter to continue...")
-            return
-        
-        print_header("Restore Instance from Backup")
-        
-        say("Scanning for available backups...")
-        
-        # Get rclone remote settings
-        remote_name = "pcloud"  # TODO: make configurable
-        remote_base = f"{remote_name}:backups/paperless"
-        
-        try:
-            # List all instance folders in backup
-            result = subprocess.run(
-                ["rclone", "lsd", remote_base],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
-            if result.returncode != 0 or not result.stdout.strip():
-                warn("No backups found")
-                input("\nPress Enter to continue...")
-                return
-            
-            # Parse instance names
-            backup_instances = []
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if parts:
-                    backup_instances.append(parts[-1])
-            
-            if not backup_instances:
-                warn("No backup instances found")
-                input("\nPress Enter to continue...")
-                return
-            
-            # Show available instances
-            print("Available backup instances:")
-            for idx, inst_name in enumerate(backup_instances, 1):
-                print(f"  {idx}) {inst_name}")
-            print()
-            
-            choice = get_input(f"Select instance [1-{len(backup_instances)}] or 'cancel'", "cancel")
-            
-            if not choice.isdigit() or not (1 <= int(choice) <= len(backup_instances)):
-                return
-            
-            selected_instance = backup_instances[int(choice) - 1]
-            
-            # Now show snapshots for this instance
-            remote_path = f"{remote_base}/{selected_instance}"
-            result = subprocess.run(
-                ["rclone", "lsd", remote_path],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
-            if result.returncode != 0 or not result.stdout.strip():
-                warn(f"No snapshots found for {selected_instance}")
-                input("\nPress Enter to continue...")
-                return
-            
-            # Parse snapshots
-            snapshots = []
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if parts:
-                    snapshots.append(parts[-1])
-            
-            snapshots = sorted(snapshots)
-            
-            print(f"\nSnapshots for '{selected_instance}':")
-            for idx, snap in enumerate(snapshots, 1):
-                print(f"  {idx}) {snap}")
-            print()
-            
-            snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
-            
-            if snap_choice == "latest":
-                snapshot = snapshots[-1]
-            elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
-                snapshot = snapshots[int(snap_choice) - 1]
-            else:
-                return
-            
-            # Prompt for new instance name
-            new_name = get_input("New instance name", selected_instance)
-            
-            say(f"Restoring {selected_instance}/{snapshot} as '{new_name}'...")
-            
-            # Set up config for restore
-            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from lib.installer import common
-            
-            # Use defaults but allow customization
-            common.cfg.instance_name = new_name
-            common.cfg.rclone_remote_name = remote_name
-            common.cfg.rclone_remote_path = f"backups/paperless/{selected_instance}"
-            
-            # Set paths for new instance
-            stack_dir = Path(f"/home/docker/{new_name}-setup")
-            data_root = Path(f"/home/docker/{new_name}")
-            env_file = stack_dir / ".env"
-            compose_file = stack_dir / "docker-compose.yml"
-            
-            # Run restore with proper environment
-            restore_script = Path(f"/tmp/restore_{new_name}.py")
-            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "lib" / "modules" / "restore.py").read_text())
-            
-            restore_env = os.environ.copy()
-            restore_env.update({
-                "INSTANCE_NAME": new_name,
-                "ENV_FILE": str(env_file),
-                "COMPOSE_FILE": str(compose_file),
-                "STACK_DIR": str(stack_dir),
-                "DATA_ROOT": str(data_root),
-                "RCLONE_REMOTE_NAME": remote_name,
-                "RCLONE_REMOTE_PATH": f"backups/paperless/{selected_instance}"
-            })
-            
-            subprocess.run([sys.executable, str(restore_script), snapshot], env=restore_env, check=True)
-            
-            # Register the restored instance
-            self.instance_manager.add_instance(
-                new_name,
-                Path(common.cfg.stack_dir),
-                Path(common.cfg.data_root)
-            )
-            
-            ok(f"Instance '{new_name}' restored successfully!")
-            
-        except Exception as e:
-            error(f"Restore failed: {e}")
         
         input("\nPress Enter to continue...")
     

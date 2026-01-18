@@ -85,9 +85,12 @@ def die(msg: str) -> None:
 
 
 ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
-load_env(ENV_FILE)
-if not ENV_FILE.exists():
-    warn(f"No .env at {ENV_FILE}")
+
+# Only try to load env if it exists, warn but continue if it doesn't
+if ENV_FILE.exists():
+    load_env(ENV_FILE)
+else:
+    warn(f"No .env at {ENV_FILE} — continuing with environment defaults")
 
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
 STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
@@ -226,7 +229,13 @@ def main() -> None:
         cur = parent
     chain.reverse()
     say("Restoring chain: " + " -> ".join(chain))
-    subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "down"], check=False)
+    
+    # Ensure stack directory exists and docker-compose file exists before trying to use it
+    if not COMPOSE_FILE.exists():
+        warn(f"Docker compose file not found at {COMPOSE_FILE}")
+        # Try to continue without stopping services
+    else:
+        subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "down"], check=False)
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     first = True
@@ -235,18 +244,26 @@ def main() -> None:
         subprocess.run(["rclone", "sync", f"{REMOTE}/{snap}", str(tmp)], check=True)
         if first:
             if (tmp / ".env").exists():
+                # Ensure the target directory exists
+                STACK_DIR.mkdir(parents=True, exist_ok=True)
                 (STACK_DIR / ".env").write_text((tmp / ".env").read_text())
                 ok("Restored .env")
             for name in ["data", "media", "export"]:
                 dest = DATA_ROOT / name
-                if dest.exists():
+                dest.mkdir(parents=True, exist_ok=True)  # Ensure destination exists
+                if dest.exists() and any(dest.iterdir()):  # Only remove if not empty
                     subprocess.run(["rm", "-rf", str(dest)], check=False)
+                dest.mkdir(parents=True, exist_ok=True)  # Recreate after removal
                 tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
                 if tarfile_path:
                     extract_tar(tarfile_path, DATA_ROOT)
+                    ok(f"Restored {name} data")
             compose_snap = tmp / "compose.snapshot.yml"
             if compose_snap.exists():
+                # Ensure the target directory exists
+                COMPOSE_FILE.parent.mkdir(parents=True, exist_ok=True)
                 compose_snap.replace(COMPOSE_FILE)
+                ok("Restored docker-compose.yml")
             first = False
         else:
             for name in ["data", "media", "export"]:
@@ -261,11 +278,22 @@ def main() -> None:
     if final_dump:
         restore_db(final_dump)
     shutil.rmtree(dump_dir, ignore_errors=True)
-    subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"], check=False)
-    if run_stack_tests(COMPOSE_FILE, ENV_FILE):
-        ok("Restore complete")
+    
+    # Only try to start services if docker-compose file exists
+    if COMPOSE_FILE.exists():
+        subprocess.run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"], check=False)
+        if run_stack_tests(COMPOSE_FILE, ENV_FILE):
+            ok("Restore complete")
+        else:
+            warn("Restore complete, but self-test failed")
     else:
-        warn("Restore complete, but self-test failed")
+        warn("Docker compose file not found - services not started. Please check your configuration.")
+
+
+def restore_snapshot(snapshot_name: str) -> None:
+    """Entry point for restoring a specific snapshot."""
+    sys.argv = ["restore.py", snapshot_name]
+    main()
 
 
 if __name__ == "__main__":
