@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Simple stack health checks used after install and restore."""
+"""
+Stack health checks for Paperless-ngx instances.
+
+Provides comprehensive validation of running stacks including:
+- Container status and name verification
+- Database and Redis connectivity
+- Django application health
+- HTTP endpoint accessibility
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,20 +15,9 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
+from typing import Optional
 
-
-def load_env(path: Path) -> dict[str, str]:
-    """Load environment variables from a .env file, returning as dict."""
-    env = {}
-    if not path.exists():
-        return env
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        env[k.strip()] = v.strip()
-    return env
+from lib.utils.common import load_env, Colors
 
 
 def _docker_compose_cmd(project_name: str, env_file: Path, compose_file: Path) -> list[str]:
@@ -61,9 +58,8 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: str = None
     def log(msg: str, success: bool = True) -> None:
         if verbose:
             symbol = "✓" if success else "✗"
-            color = "\033[32m" if success else "\033[31m"
-            reset = "\033[0m"
-            print(f"  {color}{symbol}{reset} {msg}")
+            color = Colors.GREEN if success else Colors.RED
+            print(f"  {color}{symbol}{Colors.OFF} {msg}")
     
     if verbose:
         print(f"\n  Running health checks for {project_name}...")
@@ -225,7 +221,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: str = None
     if verbose and warnings:
         print()
         for w in warnings:
-            print(f"  \033[33m[!]\033[0m {w}")
+            print(f"  {Colors.YELLOW}[!]{Colors.OFF} {w}")
     
     return all_passed
 

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Restore Paperless-ngx data from an rclone snapshot."""
+"""
+Restore Paperless-ngx data from an rclone snapshot.
+
+Handles fetching snapshots, building incremental restore chains,
+restoring database and data directories, and running health checks.
+"""
 import os
 import sys
 import shutil
@@ -8,39 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
-# Import shared utilities
-from lib.utils.selftest import load_env, run_stack_tests
-
-
-def load_env_to_environ(path: Path) -> None:
-    """Load environment variables from a .env file into os.environ."""
-    env = load_env(path)
-    for k, v in env.items():
-        os.environ.setdefault(k, v)
-
-
-COLOR_BLUE = "\033[1;34m"
-COLOR_GREEN = "\033[1;32m"
-COLOR_YELLOW = "\033[1;33m"
-COLOR_RED = "\033[1;31m"
-COLOR_OFF = "\033[0m"
-
-
-def say(msg: str) -> None:
-    print(f"{COLOR_BLUE}[*]{COLOR_OFF} {msg}")
-
-
-def ok(msg: str) -> None:
-    print(f"{COLOR_GREEN}[ok]{COLOR_OFF} {msg}")
-
-
-def warn(msg: str) -> None:
-    print(f"{COLOR_YELLOW}[!]{COLOR_OFF} {msg}")
-
-
-def die(msg: str) -> None:
-    print(f"{COLOR_RED}[x]{COLOR_OFF} {msg}")
-    sys.exit(1)
+from lib.utils.common import load_env, load_env_to_environ, say, ok, warn, die
+from lib.utils.selftest import run_stack_tests
 
 
 ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
@@ -64,8 +38,8 @@ POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 
 
-def docker_compose_cmd(*args: str) -> list[str]:
-    """Build a docker compose command with project name."""
+def _compose_cmd(*args: str) -> list[str]:
+    """Build docker compose command for this instance."""
     return ["docker", "compose", "--project-name", PROJECT_NAME, "-f", str(COMPOSE_FILE), *args]
 
 
@@ -106,32 +80,31 @@ def extract_tar(tar_path: Path, dest: Path) -> None:
 
 
 def restore_db(dump: Path) -> None:
-    say("Restoring database…")
-    subprocess.run(
-        docker_compose_cmd("up", "-d", "db"),
-        check=True,
-    )
+    say("Restoring database...")
+    subprocess.run(_compose_cmd("up", "-d", "db"), check=True)
     time.sleep(5)
-    # Clear existing schema to avoid duplicate key errors when restoring over an
-    # existing database volume.
+    
+    # Clear existing schema to avoid duplicate key errors
     subprocess.run(
-        docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB, 
-                          "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
-        check=False,
+        _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB,
+                     "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
+        check=False
     )
+    
+    # Restore from dump (handle gzipped or plain SQL)
     if dump.suffix == ".gz":
         proc = subprocess.Popen(["gunzip", "-c", str(dump)], stdout=subprocess.PIPE)
         subprocess.run(
-            docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
+            _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
             stdin=proc.stdout,
-            check=False,
+            check=False
         )
     else:
         with open(dump, "rb") as fh:
             subprocess.run(
-                docker_compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
+                _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB),
                 stdin=fh,
-                check=False,
+                check=False
             )
 
 
@@ -163,12 +136,11 @@ def main() -> None:
     if skip_config:
         say("Keeping instance configuration (already configured by manager)")
     
-    # Ensure stack directory exists and docker-compose file exists before trying to use it
+    # Stop existing containers if compose file exists
     if not COMPOSE_FILE.exists():
         warn(f"Docker compose file not found at {COMPOSE_FILE}")
-        # Try to continue without stopping services
     else:
-        subprocess.run(docker_compose_cmd("down"), check=False)
+        subprocess.run(_compose_cmd("down"), check=False)
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
     first = True
@@ -226,15 +198,15 @@ def main() -> None:
         restore_db(final_dump)
     shutil.rmtree(dump_dir, ignore_errors=True)
     
-    # Only try to start services if docker-compose file exists
+    # Start services and run health check
     if COMPOSE_FILE.exists():
-        subprocess.run(docker_compose_cmd("up", "-d"), check=False)
+        subprocess.run(_compose_cmd("up", "-d"), check=False)
         if run_stack_tests(COMPOSE_FILE, ENV_FILE):
             ok("Restore complete")
         else:
             warn("Restore complete, but self-test failed")
     else:
-        warn("Docker compose file not found - services not started. Please check your configuration.")
+        warn("Docker compose file not found - services not started")
 
 
 def restore_snapshot(snapshot_name: str) -> None:

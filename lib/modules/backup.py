@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Snapshot Paperless-ngx data and upload to an rclone remote."""
+"""
+Snapshot Paperless-ngx data and upload to an rclone remote.
+
+Creates full, incremental, or archive backups including:
+- PostgreSQL database dump
+- Incremental tarballs of data directories
+- Configuration files and Docker image versions
+- Manifest with metadata and integrity verification
+"""
 import os
 import sys
 import tempfile
@@ -8,58 +16,15 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-
-def list_snapshots() -> list[str]:
-    res = subprocess.run(
-        ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
-    )
-    snaps = []
-    for line in res.stdout.splitlines():
-        parts = line.strip().split()
-        if parts:
-            snaps.append(parts[-1].rstrip("/"))
-    return sorted(snaps)
+from lib.utils.common import load_env_to_environ, say, ok, warn, die
 
 
-def load_env(path: Path) -> None:
-    """Load environment variables from a .env file if present."""
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k, v)
-
-COLOR_BLUE = "\033[1;34m"
-COLOR_GREEN = "\033[1;32m"
-COLOR_YELLOW = "\033[1;33m"
-COLOR_RED = "\033[1;31m"
-COLOR_OFF = "\033[0m"
-
-
-def say(msg: str) -> None:
-    print(f"{COLOR_BLUE}[*]{COLOR_OFF} {msg}")
-
-
-def ok(msg: str) -> None:
-    print(f"{COLOR_GREEN}[ok]{COLOR_OFF} {msg}")
-
-
-def warn(msg: str) -> None:
-    print(f"{COLOR_YELLOW}[!]{COLOR_OFF} {msg}")
-
-
-def die(msg: str) -> None:
-    print(f"{COLOR_RED}[x]{COLOR_OFF} {msg}")
-    sys.exit(1)
-
+# ─── Configuration ────────────────────────────────────────────────────────────
 
 ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
-load_env(ENV_FILE)
+load_env_to_environ(ENV_FILE)
 if not ENV_FILE.exists():
-    warn(f"No .env at {ENV_FILE} — falling back to defaults.")
+    warn(f"No .env at {ENV_FILE} — using defaults")
 
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
 STACK_DIR = Path(os.environ.get("STACK_DIR", "/home/docker/paperless-setup"))
@@ -79,6 +44,22 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
+
+
+# ─── Helper Functions ─────────────────────────────────────────────────────────
+
+def list_snapshots() -> list[str]:
+    """List available snapshots on remote."""
+    result = subprocess.run(
+        ["rclone", "lsd", REMOTE],
+        capture_output=True, text=True, check=False
+    )
+    snapshots = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split()
+        if parts:
+            snapshots.append(parts[-1].rstrip("/"))
+    return sorted(snapshots)
 
 
 def ensure_remote_path(remote: str) -> None:
