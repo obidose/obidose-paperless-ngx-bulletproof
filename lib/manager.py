@@ -758,11 +758,9 @@ class PaperlessManager:
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.installer import common, files, traefik
             
-            # Run the guided setup
-            common.pick_and_merge_preset(
-                f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
-            )
+            # Run the guided setup (removed preset selection)
             common.prompt_core_values()
+            common.prompt_networking()  # New: ask how to access the instance
             common.prompt_backup_plan()
             
             # Check if Traefik is needed and available
@@ -776,6 +774,8 @@ class PaperlessManager:
                         return
                 else:
                     common.ok("Using existing system Traefik for HTTPS routing")
+            
+            # TODO: Check cloudflared and tailscale status similarly
             
             common.ensure_dir_tree(common.cfg)
             
@@ -805,6 +805,8 @@ class PaperlessManager:
             
         except Exception as e:
             error(f"Failed to create instance: {e}")
+            import traceback
+            traceback.print_exc()
         
         input("\nPress Enter to continue...")
     

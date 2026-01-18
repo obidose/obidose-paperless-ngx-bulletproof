@@ -101,7 +101,9 @@ class Config:
     puid: str = os.environ.get("PUID", "1001")
     pgid: str = os.environ.get("PGID", "1001")
 
-    enable_traefik: str = os.environ.get("ENABLE_TRAEFIK", "yes")
+    enable_traefik: str = os.environ.get("ENABLE_TRAEFIK", "no")
+    enable_cloudflared: str = os.environ.get("ENABLE_CLOUDFLARED", "no")
+    enable_tailscale: str = os.environ.get("ENABLE_TAILSCALE", "no")
     http_port: str = os.environ.get("HTTP_PORT", "8000")
     domain: str = os.environ.get("DOMAIN", "paperless.example.com")
     letsencrypt_email: str = os.environ.get("LETSENCRYPT_EMAIL", "admin@example.com")
@@ -189,15 +191,36 @@ def prompt_core_values() -> None:
     cfg.paperless_admin_password = prompt("Paperless admin password (Enter=default)", cfg.paperless_admin_password)
     cfg.postgres_password = prompt("Postgres password (Enter=default)", cfg.postgres_password)
 
-    if prompt("Enable Traefik with HTTPS? (yes/no; Enter=default)", cfg.enable_traefik).lower() in ["y", "yes", "true", "1"]:
+    cfg.refresh_paths()
+
+
+def prompt_networking() -> None:
+    """Ask how the instance should be accessed."""
+    print()
+    say("How do you want to access this instance?")
+    print("  1) Direct HTTP - bind to a port (e.g., localhost:8000)")
+    print("  2) HTTPS via Traefik - automatic SSL with Let's Encrypt")
+    print("  3) Cloudflare Tunnel - secure access via Cloudflare")
+    print("  4) Tailscale - private network access")
+    
+    choice = _read("Choose [1-4] [1]: ") or "1"
+    
+    if choice == "2":
         cfg.enable_traefik = "yes"
         cfg.domain = prompt("Domain for Paperless (DNS A/AAAA must point here; Enter=default)", cfg.domain)
-        # Let's Encrypt email is configured once during Traefik installation
+    elif choice == "3":
+        cfg.enable_traefik = "no"
+        cfg.enable_cloudflared = "yes"
+        cfg.domain = prompt("Domain for Paperless (configured in Cloudflare)", cfg.domain)
+        # Cloudflare tunnel name will be the instance name
+    elif choice == "4":
+        cfg.enable_traefik = "no"
+        cfg.enable_tailscale = "yes"
+        say("Instance will be accessible via Tailscale network")
+        cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
     else:
         cfg.enable_traefik = "no"
         cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
-
-    cfg.refresh_paths()
 
 
 def prompt_backup_plan() -> None:
