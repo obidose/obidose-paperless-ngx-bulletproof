@@ -1,8 +1,8 @@
-# Paperless-NGX Bulletproof (now ACTUALLY working!)
+# Paperless-NGX Bulletproof
 
-A deployment and instance management system for Paperless-NGX with, automated backups, and simple disaster recovery.
+A deployment and instance management system for Paperless-NGX with automated backups and disaster recovery.
 
-Designed for managing multiple Paperless-NGX instances (personal, family, whatever) from a single command.
+Manages multiple Paperless-NGX instances from a single command-line interface.
 
 ---
 
@@ -38,10 +38,28 @@ paperless
 - Independent backup and restore per instance
 
 ### Backup System
+
+Two backup types:
+
+**Instance backups** - Per-instance snapshots:
 - Full and incremental snapshots uploaded to pCloud
 - Docker image version tracking for reproducible restores
 - Point-in-time recovery from any snapshot
-- System-level backup for disaster recovery
+
+**Whole system backup** - Complete disaster recovery:
+- All instance data and configurations
+- System-level restoration on fresh hardware
+- Reinstall using the same installation command, then restore from pCloud
+- No manual configuration needed - all settings preserved in backup manifests
+
+Each snapshot includes:
+- PostgreSQL database dump
+- Incremental tarballs (media, data, export)
+- Environment and compose configuration
+- Docker image versions
+- Manifest with metadata and checksums
+
+This allows full recovery on new hardware: install Docker and rclone, run the installer with your pCloud credentials, and restore from backup.
 
 ### Safe Updates
 - Automatic backup before upgrade
@@ -57,11 +75,11 @@ paperless
 
 ## Requirements
 
-- Ubuntu 24.04 LTS (may well work on other distros but tested on 24.04)
+- Ubuntu 24.04 LTS (tested on 24.04, may work on other distros)
 - 4GB RAM minimum (8GB+ for multiple instances)
 - 20GB+ disk space
 - Root/sudo access
-- pCloud account for backups (will probably work with other Rclone providers, have also added some options for dropbox and google drive, but all untested)
+- pCloud account for backups (other rclone providers like Dropbox and Google Drive are untested)
 
 ---
 
@@ -141,13 +159,6 @@ Configured during installation:
 
 Backups go to: `pcloud:backups/paperless/{instance_name}/`
 
-Each snapshot includes:
-- PostgreSQL database dump
-- Incremental tarballs (media, data, export)
-- Environment and compose configuration
-- Docker image versions
-- Manifest with metadata and checksums
-
 ### Manual Backup
 
 ```bash
@@ -172,6 +183,25 @@ Restore process:
 4. Restores database
 5. Restarts containers
 6. Runs health check
+
+### Disaster Recovery
+
+To recover on fresh hardware after complete system failure:
+
+1. Install Ubuntu 24.04 LTS on new machine
+2. Run the installer with your pCloud credentials:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3
+   ```
+3. During installation, provide the same pCloud OAuth token
+4. After installation completes, launch the manager:
+   ```bash
+   paperless
+   ```
+5. Select "Restore from backup" and choose your snapshot
+6. The system will download and restore all instances with their configurations
+
+All settings (domains, environment variables, cron schedules, Docker images) are preserved in the backup manifests. No manual reconfiguration needed.
 
 ---
 
@@ -352,7 +382,7 @@ pCloud backups remain intact.
 
 ## License
 
-MIT License
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
