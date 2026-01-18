@@ -23,10 +23,8 @@ services:
     networks: [paperless]
 
   tika:
-    image: ghcr.io/paperless-ngx/tika:latest
+    image: apache/tika:latest
     restart: unless-stopped
-    volumes:
-      - ${DIR_TIKA_CACHE}:/cache
     networks: [paperless]
 
   paperless:
