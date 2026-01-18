@@ -90,6 +90,11 @@ def draw_box_bottom(width: int = 58) -> str:
     return colorize("╰" + "─" * width + "╯", Colors.CYAN)
 
 
+def draw_box_divider(width: int = 58) -> str:
+    """Draw box horizontal divider."""
+    return colorize("├" + "─" * width + "┤", Colors.CYAN)
+
+
 def draw_section_header(title: str, width: int = 58) -> str:
     """Draw a section header within content area."""
     padding = width - len(title) - 2
@@ -548,7 +553,8 @@ def run_restore_with_env(
     stack_dir: Path,
     data_root: Path,
     rclone_remote_name: str,
-    rclone_remote_path: str
+    rclone_remote_path: str,
+    merge_config: bool = True
 ) -> bool:
     """
     Execute a restore operation with proper environment setup.
@@ -565,6 +571,10 @@ def run_restore_with_env(
         data_root: Path to the instance's data root
         rclone_remote_name: Name of the rclone remote (e.g., "pcloud")
         rclone_remote_path: Path within the remote (e.g., "backups/paperless/myinstance")
+        merge_config: If True, merge backup .env with new instance .env, keeping
+                      network/path settings from new config while bringing in
+                      credentials and other settings from backup.
+                      If False, fully overwrite .env and docker-compose.yml from backup.
     
     Returns:
         True if restore succeeded, False otherwise
@@ -578,6 +588,7 @@ def run_restore_with_env(
         "DATA_ROOT": str(data_root),
         "RCLONE_REMOTE_NAME": rclone_remote_name,
         "RCLONE_REMOTE_PATH": rclone_remote_path,
+        "MERGE_CONFIG": "yes" if merge_config else "no",
     }
     
     # Temporarily set environment variables
@@ -699,6 +710,7 @@ class BackupManager:
         """Run a restore operation for an existing instance.
         
         Uses the centralized run_restore_with_env helper for consistency.
+        For existing instances, we restore config files from backup (preserve_config=False).
         """
         if not snapshot:
             # If no snapshot specified, we need to get the latest
@@ -716,7 +728,8 @@ class BackupManager:
             stack_dir=self.instance.stack_dir,
             data_root=self.instance.data_root,
             rclone_remote_name=self.remote_name,
-            rclone_remote_path=self.remote_path
+            rclone_remote_path=self.remote_path,
+            merge_config=False  # Full restore for existing instance
         )
 
 
@@ -1669,6 +1682,13 @@ class PaperlessManager:
     def restore_instance_from_backup(self, backup_instance: str = None, snapshot: str = None) -> None:
         """Restore an instance from cloud backup with guided setup.
         
+        Flow:
+        1. Select backup source and snapshot
+        2. Download and parse backup's .env to get original settings
+        3. Detect conflicts (ports, names, paths)
+        4. Walk through settings, allowing changes and forcing where conflicts exist
+        5. Restore data with merged config
+        
         Args:
             backup_instance: Name of the backup instance to restore from (prompts if None)
             snapshot: Snapshot name to restore (prompts if None)
@@ -1695,7 +1715,7 @@ class PaperlessManager:
         
         try:
             # ─── Step 1: Select Backup Source ─────────────────────────────────
-            print(colorize("Step 1 of 3: Select Backup", Colors.BOLD))
+            print(colorize("Step 1 of 4: Select Backup", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -1803,19 +1823,123 @@ class PaperlessManager:
             ok(f"Selected: {backup_instance}/{snapshot}")
             print()
             
-            # ─── Step 2: Configure New Instance ───────────────────────────────
-            print(colorize("Step 2 of 3: Configure Instance", Colors.BOLD))
+            # ─── Step 2: Load Backup Configuration ────────────────────────────
+            print(colorize("Step 2 of 4: Review Backup Settings", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
-            # Instance name with validation
-            suggested_name = backup_instance if backup_instance not in existing_instances else f"{backup_instance}-restored"
+            say("Downloading backup configuration...")
+            
+            # Download the .env from the backup to see original settings
+            result = subprocess.run(
+                ["rclone", "cat", f"{remote_base}/{backup_instance}/{snapshot}/.env"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            backup_env = {}
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        backup_env[k.strip()] = v.strip()
+                ok("Loaded backup configuration")
+            else:
+                warn("Could not load backup .env - will use defaults")
+            
+            # Import installer modules
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import common, files, traefik, cloudflared, tailscale
+            from lib.installer.common import get_next_available_port
+            
+            # ─── Detect Conflicts ─────────────────────────────────────────────
+            # Check what ports are in use
+            original_port = backup_env.get("HTTP_PORT", "8000")
+            port_conflict = False
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('127.0.0.1', int(original_port)))
+                sock.close()
+                port_conflict = (result == 0)
+            except:
+                pass
+            
+            # Check if instance name conflicts
+            original_name = backup_env.get("INSTANCE_NAME", backup_instance)
+            name_conflict = original_name in existing_instances
+            
+            # Check if paths exist
+            original_data_root = backup_env.get("DATA_ROOT", f"/home/docker/{original_name}")
+            original_stack_dir = backup_env.get("STACK_DIR", f"/home/docker/{original_name}-setup")
+            path_conflict = Path(original_data_root).exists() or Path(original_stack_dir).exists()
+            
+            # Show backup configuration with conflict warnings
+            print()
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('Backup Configuration', Colors.BOLD)}"))
+            print(draw_box_divider(box_width))
+            
+            # Instance name
+            name_status = colorize(" ⚠ CONFLICT", Colors.RED) if name_conflict else ""
+            print(box_line(f" Instance:  {original_name}{name_status}"))
+            
+            # Credentials (from backup)
+            admin_user = backup_env.get("PAPERLESS_ADMIN_USER", "admin")
+            print(box_line(f" Admin:     {admin_user}"))
+            print(box_line(f" Timezone:  {backup_env.get('TZ', 'UTC')}"))
+            
+            # Database
+            print(box_line(f" Database:  {backup_env.get('POSTGRES_DB', 'paperless')}"))
+            
+            print(draw_box_divider(box_width))
+            
+            # Network settings
+            print(box_line(f" {colorize('Network Settings:', Colors.BOLD)}"))
+            
+            port_status = colorize(" ⚠ IN USE", Colors.RED) if port_conflict else ""
+            print(box_line(f" Port:      {original_port}{port_status}"))
+            
+            original_traefik = backup_env.get("ENABLE_TRAEFIK", "no")
+            original_cloudflared = backup_env.get("ENABLE_CLOUDFLARED", "no")
+            original_domain = backup_env.get("DOMAIN", "")
+            
+            if original_traefik == "yes":
+                print(box_line(f" Access:    HTTPS via Traefik"))
+                print(box_line(f" Domain:    {original_domain}"))
+            elif original_cloudflared == "yes":
+                print(box_line(f" Access:    Cloudflare Tunnel"))
+                print(box_line(f" Domain:    {original_domain}"))
+            else:
+                print(box_line(f" Access:    Direct HTTP"))
+            
+            if path_conflict:
+                print(draw_box_divider(box_width))
+                print(box_line(f" {colorize('⚠ Paths already exist - will use new paths', Colors.YELLOW)}"))
+            
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # ─── Step 3: Configure Instance ───────────────────────────────────
+            print(colorize("Step 3 of 4: Configure Instance", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
+            # Instance name - force change if conflict
+            if name_conflict or path_conflict:
+                warn(f"Instance name '{original_name}' conflicts with existing instance")
+                suggested_name = f"{original_name}-restored"
+            else:
+                suggested_name = original_name
             
             while True:
-                new_name = get_input("New instance name", suggested_name)
+                new_name = get_input("Instance name", suggested_name)
                 
                 if new_name in existing_instances:
-                    warn(f"Instance '{new_name}' already exists")
+                    warn(f"Instance '{new_name}' already exists - choose another name")
                     suggested_name = f"{new_name}-2"
                     continue
                 
@@ -1823,13 +1947,16 @@ class PaperlessManager:
                     warn("Name must be alphanumeric (hyphens and underscores allowed)")
                     continue
                 
+                # Check if new paths would conflict
+                new_data_root = f"/home/docker/{new_name}"
+                new_stack_dir = f"/home/docker/{new_name}-setup"
+                if Path(new_data_root).exists() or Path(new_stack_dir).exists():
+                    warn(f"Paths for '{new_name}' already exist - choose another name")
+                    continue
+                
                 break
             
-            # Set up paths using shared helper
-            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from lib.installer import common, files, traefik, cloudflared, tailscale
-            from lib.installer.common import get_next_available_port
-            
+            # Set up paths
             common.cfg.instance_name = new_name
             common.cfg.data_root = f"/home/docker/{new_name}"
             common.cfg.stack_dir = f"/home/docker/{new_name}-setup"
@@ -1837,61 +1964,120 @@ class PaperlessManager:
             common.cfg.rclone_remote_path = f"backups/paperless/{new_name}"
             common.cfg.refresh_paths()
             
+            # Load settings from backup
+            common.cfg.tz = backup_env.get("TZ", common.cfg.tz)
+            common.cfg.puid = backup_env.get("PUID", common.cfg.puid)
+            common.cfg.pgid = backup_env.get("PGID", common.cfg.pgid)
+            common.cfg.paperless_admin_user = backup_env.get("PAPERLESS_ADMIN_USER", common.cfg.paperless_admin_user)
+            common.cfg.paperless_admin_password = backup_env.get("PAPERLESS_ADMIN_PASSWORD", common.cfg.paperless_admin_password)
+            common.cfg.postgres_db = backup_env.get("POSTGRES_DB", common.cfg.postgres_db)
+            common.cfg.postgres_user = backup_env.get("POSTGRES_USER", common.cfg.postgres_user)
+            common.cfg.postgres_password = backup_env.get("POSTGRES_PASSWORD", common.cfg.postgres_password)
+            common.cfg.retention_days = backup_env.get("RETENTION_DAYS", common.cfg.retention_days)
+            
             print()
-            say(f"Instance '{colorize(new_name, Colors.BOLD)}' will use:")
+            say(f"Instance '{colorize(new_name, Colors.BOLD)}' paths:")
             print(f"  Data:  {colorize(common.cfg.data_root, Colors.CYAN)}")
             print(f"  Stack: {colorize(common.cfg.stack_dir, Colors.CYAN)}")
             print()
             
-            # Network access (simplified options)
-            say("How should this instance be accessed?")
-            print()
-            print(f"  {colorize('1)', Colors.BOLD)} {colorize('Direct HTTP', Colors.CYAN)} - Simple port binding")
-            print(f"  {colorize('2)', Colors.BOLD)} {colorize('HTTPS via Traefik', Colors.CYAN)}" + (
-                "" if net_status["traefik_running"] else colorize(" (not running)", Colors.YELLOW)))
-            print(f"  {colorize('3)', Colors.BOLD)} {colorize('Cloudflare Tunnel', Colors.CYAN)}" + (
-                "" if net_status["cloudflared_authenticated"] else colorize(" (not configured)", Colors.YELLOW)))
+            # Network access - show original and allow change
+            say("Access method:")
             print()
             
-            access_choice = get_input("Choose [1-3]", "1")
+            # Determine what was originally used
+            original_access = "1"  # Direct HTTP
+            if original_traefik == "yes":
+                original_access = "2"
+            elif original_cloudflared == "yes":
+                original_access = "3"
             
-            # Update domain suggestion based on old backup name
-            default_domain = common.cfg.domain
-            if backup_instance in default_domain:
-                default_domain = default_domain.replace(backup_instance, new_name)
+            print(f"  {colorize('1)', Colors.BOLD)} {colorize('Direct HTTP', Colors.CYAN)} - Simple port binding" + 
+                  (colorize(" (original)", Colors.GREEN) if original_access == "1" else ""))
+            print(f"  {colorize('2)', Colors.BOLD)} {colorize('HTTPS via Traefik', Colors.CYAN)}" + 
+                  ("" if net_status["traefik_running"] else colorize(" (not running)", Colors.YELLOW)) +
+                  (colorize(" (original)", Colors.GREEN) if original_access == "2" else ""))
+            print(f"  {colorize('3)', Colors.BOLD)} {colorize('Cloudflare Tunnel', Colors.CYAN)}" + 
+                  ("" if net_status["cloudflared_authenticated"] else colorize(" (not configured)", Colors.YELLOW)) +
+                  (colorize(" (original)", Colors.GREEN) if original_access == "3" else ""))
+            print()
+            
+            access_choice = get_input("Choose access method [1-3]", original_access)
+            
+            # Domain - use original if available, suggest new based on new name
+            default_domain = original_domain if original_domain else f"{new_name}.example.com"
+            if original_name in default_domain and new_name != original_name:
+                default_domain = default_domain.replace(original_name, new_name)
             
             if access_choice == "2":
                 common.cfg.enable_traefik = "yes"
                 common.cfg.enable_cloudflared = "no"
                 common.cfg.domain = get_input("Domain", default_domain)
+                
+                if not net_status["traefik_running"]:
+                    warn("Traefik is not running - HTTPS won't work until configured")
+                    if not confirm("Continue anyway?", False):
+                        return
+                        
             elif access_choice == "3":
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "yes"
                 common.cfg.domain = get_input("Domain", default_domain)
+                
+                if not net_status["cloudflared_authenticated"]:
+                    warn("Cloudflare Tunnel not configured")
+                    if not confirm("Continue anyway? (tunnel won't be created)", False):
+                        return
             else:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
             
-            # Port - find available port starting from 8000
-            available_port = get_next_available_port(8000)
-            common.cfg.http_port = get_input("HTTP port", available_port)
+            # Port - force change if conflict
+            print()
+            if port_conflict:
+                warn(f"Port {original_port} is already in use!")
+                available_port = get_next_available_port(int(original_port) + 1)
+                common.cfg.http_port = get_input("HTTP port (must change)", str(available_port))
+                
+                # Verify new port isn't also in use
+                while True:
+                    try:
+                        import socket
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(('127.0.0.1', int(common.cfg.http_port)))
+                        sock.close()
+                        if result == 0:
+                            warn(f"Port {common.cfg.http_port} is also in use!")
+                            available_port = get_next_available_port(int(common.cfg.http_port) + 1)
+                            common.cfg.http_port = get_input("HTTP port", str(available_port))
+                        else:
+                            break
+                    except:
+                        break
+            else:
+                common.cfg.http_port = get_input("HTTP port", original_port)
             
             # Tailscale option
+            original_tailscale = backup_env.get("ENABLE_TAILSCALE", "no")
             if net_status["tailscale_connected"]:
                 print()
-                if confirm("Also enable Tailscale access?", False):
+                default_ts = original_tailscale == "yes"
+                if confirm("Enable Tailscale access?", default_ts):
                     common.cfg.enable_tailscale = "yes"
+                else:
+                    common.cfg.enable_tailscale = "no"
             else:
                 common.cfg.enable_tailscale = "no"
             
-            # Default backup schedule (weekly full + 6-hourly incremental)
-            common.cfg.cron_full_time = "30 3 * * 0"
-            common.cfg.cron_incr_time = "0 */6 * * *"
+            # Backup schedule - use original or defaults
+            common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
+            common.cfg.cron_incr_time = backup_env.get("CRON_INCR_TIME", "0 */6 * * *")
             common.cfg.refresh_paths()
             print()
             
-            # ─── Step 3: Restore ──────────────────────────────────────────────
-            print(colorize("Step 3 of 3: Restore Data", Colors.BOLD))
+            # ─── Step 4: Restore ──────────────────────────────────────────────
+            print(colorize("Step 4 of 4: Restore Data", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -1948,7 +2134,8 @@ class PaperlessManager:
                 stack_dir=Path(common.cfg.stack_dir),
                 data_root=Path(common.cfg.data_root),
                 rclone_remote_name=remote_name,
-                rclone_remote_path=f"backups/paperless/{backup_instance}"
+                rclone_remote_path=f"backups/paperless/{backup_instance}",
+                merge_config=True  # Merge backup settings, keep new instance network/paths
             )
             
             if not success:
@@ -3148,6 +3335,22 @@ WantedBy=multi-user.target
             print(f"  • {inst.name} ({status})")
         print()
         
+        # Check what network configs exist
+        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+        from lib.installer import traefik, cloudflared, tailscale
+        
+        traefik_running = traefik.is_traefik_running()
+        cloudflare_tunnels = cloudflared.list_tunnels() if cloudflared.is_authenticated() else []
+        tailscale_connected = tailscale.is_connected()
+        rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
+        
+        print("Network configuration to backup:")
+        print(f"  • Traefik: {'✓ Running' if traefik_running else '○ Not active'}")
+        print(f"  • Cloudflare Tunnels: {len(cloudflare_tunnels)} tunnel(s)")
+        print(f"  • Tailscale: {'✓ Connected' if tailscale_connected else '○ Not active'}")
+        print(f"  • rclone config: {'✓ Found' if rclone_conf.exists() else '○ Not found'}")
+        print()
+        
         if not confirm("Create system backup?", True):
             return
         
@@ -3155,6 +3358,8 @@ WantedBy=multi-user.target
             from datetime import datetime
             import json
             import tempfile
+            import shutil
+            import base64
             
             # Create temp directory for system backup
             backup_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -3162,17 +3367,120 @@ WantedBy=multi-user.target
             
             say(f"Creating system backup: {backup_name}")
             
-            # Check if Traefik is running
-            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from lib.installer import traefik
-            traefik_running = traefik.is_traefik_running()
+            # ─── Backup Network Configurations ────────────────────────────────
+            network_dir = work / "network"
+            network_dir.mkdir(parents=True, exist_ok=True)
             
-            # Backup instances.json
+            network_info = {
+                "traefik": {"enabled": False},
+                "cloudflare": {"enabled": False, "tunnels": []},
+                "tailscale": {"enabled": False},
+                "rclone": {"enabled": False}
+            }
+            
+            # Backup Traefik config
+            traefik_dir = Path("/opt/traefik")
+            if traefik_dir.exists():
+                say("Backing up Traefik configuration...")
+                traefik_backup_dir = network_dir / "traefik"
+                traefik_backup_dir.mkdir(exist_ok=True)
+                
+                # traefik.yml (config)
+                traefik_yml = traefik_dir / "traefik.yml"
+                if traefik_yml.exists():
+                    shutil.copy2(traefik_yml, traefik_backup_dir / "traefik.yml")
+                
+                # acme.json (SSL certificates) - this is sensitive!
+                acme_json = traefik_dir / "acme.json"
+                if acme_json.exists():
+                    shutil.copy2(acme_json, traefik_backup_dir / "acme.json")
+                
+                network_info["traefik"] = {
+                    "enabled": True,
+                    "running": traefik_running,
+                    "email": traefik.get_traefik_email()
+                }
+                ok("Traefik config backed up (including SSL certificates)")
+            
+            # Backup Cloudflare Tunnel configs
+            cloudflared_etc = Path("/etc/cloudflared")
+            cloudflared_home = Path.home() / ".cloudflared"
+            
+            if cloudflared_etc.exists() or cloudflared_home.exists():
+                say("Backing up Cloudflare Tunnel configuration...")
+                cf_backup_dir = network_dir / "cloudflared"
+                cf_backup_dir.mkdir(exist_ok=True)
+                
+                tunnel_configs = []
+                
+                # Backup /etc/cloudflared/*.yml (tunnel configs)
+                if cloudflared_etc.exists():
+                    etc_backup = cf_backup_dir / "etc"
+                    etc_backup.mkdir(exist_ok=True)
+                    for yml_file in cloudflared_etc.glob("*.yml"):
+                        shutil.copy2(yml_file, etc_backup / yml_file.name)
+                        tunnel_configs.append(yml_file.name.replace(".yml", ""))
+                
+                # Backup ~/.cloudflared/ (credentials and cert)
+                if cloudflared_home.exists():
+                    home_backup = cf_backup_dir / "home"
+                    home_backup.mkdir(exist_ok=True)
+                    
+                    # cert.pem (authentication cert)
+                    cert_pem = cloudflared_home / "cert.pem"
+                    if cert_pem.exists():
+                        shutil.copy2(cert_pem, home_backup / "cert.pem")
+                    
+                    # *.json (tunnel credentials)
+                    for json_file in cloudflared_home.glob("*.json"):
+                        shutil.copy2(json_file, home_backup / json_file.name)
+                
+                # Backup systemd services
+                services_backup = cf_backup_dir / "services"
+                services_backup.mkdir(exist_ok=True)
+                for service_file in Path("/etc/systemd/system").glob("cloudflared-*.service"):
+                    shutil.copy2(service_file, services_backup / service_file.name)
+                
+                network_info["cloudflare"] = {
+                    "enabled": True,
+                    "authenticated": cloudflared.is_authenticated(),
+                    "tunnels": tunnel_configs,
+                    "tunnel_count": len(cloudflare_tunnels)
+                }
+                ok(f"Cloudflare config backed up ({len(tunnel_configs)} tunnel configs)")
+            
+            # Backup rclone config
+            if rclone_conf.exists():
+                say("Backing up rclone configuration...")
+                rclone_backup_dir = network_dir / "rclone"
+                rclone_backup_dir.mkdir(exist_ok=True)
+                shutil.copy2(rclone_conf, rclone_backup_dir / "rclone.conf")
+                network_info["rclone"] = {"enabled": True}
+                ok("rclone config backed up")
+            
+            # Note Tailscale status (can't really backup Tailscale auth)
+            if tailscale_connected:
+                ts_hostname = None
+                ts_ip = None
+                try:
+                    ts_hostname = tailscale.get_hostname()
+                    ts_ip = tailscale.get_ip()
+                except:
+                    pass
+                network_info["tailscale"] = {
+                    "enabled": True,
+                    "hostname": ts_hostname,
+                    "ip": ts_ip,
+                    "note": "Tailscale requires re-authentication on new server"
+                }
+            
+            # ─── Backup Instance Information ──────────────────────────────────
             system_info = {
                 "backup_date": datetime.utcnow().isoformat(),
                 "backup_name": backup_name,
+                "backup_version": "2.0",  # New version with network config
                 "instance_count": len(instances),
-                "traefik_enabled": traefik_running,
+                "network": network_info,
                 "instances": {},
                 "instances_registry": json.loads(self.instance_manager.config_file.read_text()) if self.instance_manager.config_file.exists() else {}
             }
@@ -3190,7 +3498,8 @@ WantedBy=multi-user.target
                 # Capture key env variables
                 if inst.env_file.exists():
                     for key in ["DOMAIN", "PAPERLESS_URL", "POSTGRES_DB", "ENABLE_TRAEFIK", 
-                               "RCLONE_REMOTE_PATH", "INSTANCE_NAME"]:
+                               "ENABLE_CLOUDFLARED", "ENABLE_TAILSCALE", "HTTP_PORT",
+                               "RCLONE_REMOTE_PATH", "INSTANCE_NAME", "COMPOSE_PROJECT_NAME"]:
                         inst_info["env_vars"][key] = inst.get_env_value(key, "")
                 
                 # Find latest backup for this instance
@@ -3208,14 +3517,19 @@ WantedBy=multi-user.target
             
             # Create manifest
             manifest = f"""system_backup: true
+backup_version: "2.0"
 backup_date: {datetime.utcnow().isoformat()}
 instance_count: {len(instances)}
+network_config: true
+traefik_enabled: {network_info['traefik']['enabled']}
+cloudflare_tunnels: {len(network_info['cloudflare'].get('tunnels', []))}
+rclone_config: {network_info['rclone']['enabled']}
 """
             (work / "manifest.yaml").write_text(manifest)
             
             # Upload to pCloud
             remote = f"pcloud:backups/paperless-system/{backup_name}"
-            say("Uploading to pCloud...")
+            say("Uploading to backup server...")
             subprocess.run(
                 ["rclone", "copy", str(work), remote],
                 check=True,
@@ -3224,19 +3538,35 @@ instance_count: {len(instances)}
             
             ok(f"System backup created: {backup_name}")
             print()
-            print("This backup contains:")
-            print("  ✓ Instance registry (instances.json)")
-            print("  ✓ Metadata for all instances")
-            print("  ✓ References to latest data backups")
+            
+            box_line, box_width = create_box_helper(60)
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('Backup Contents:', Colors.BOLD)}"))
+            print(box_line(""))
+            print(box_line(" ✓ Instance registry and metadata"))
+            print(box_line(" ✓ References to latest data backups"))
+            if network_info["traefik"]["enabled"]:
+                print(box_line(" ✓ Traefik config + SSL certificates"))
+            if network_info["cloudflare"]["enabled"]:
+                print(box_line(f" ✓ Cloudflare tunnel configs ({len(network_info['cloudflare']['tunnels'])})"))
+            if network_info["rclone"]["enabled"]:
+                print(box_line(" ✓ rclone backup server config"))
+            if network_info["tailscale"]["enabled"]:
+                print(box_line(" ✓ Tailscale info (requires re-auth)"))
+            print(draw_box_bottom(box_width))
             print()
-            print("To restore: Use 'Restore system from backup' option")
+            print("To restore on a new server:")
+            print("  1. Install paperless-bulletproof")
+            print("  2. Configure backup server connection")
+            print("  3. Use 'Restore system from backup'")
             
             # Cleanup
-            import shutil
             shutil.rmtree(work)
             
         except Exception as e:
             error(f"System backup failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         input("\nPress Enter to continue...")
     
@@ -3287,13 +3617,21 @@ instance_count: {len(instances)}
         input("\nPress Enter to continue...")
     
     def _restore_system(self) -> None:
-        """Restore system from backup."""
+        """Restore system from backup including network configuration."""
         print_header("Restore System from Backup")
         
-        warn("⚠  IMPORTANT: System restore will:")
-        print("  • Register all instances from the backup")
-        print("  • Restore data from individual instance backups")
-        print("  • May overwrite existing instance registry")
+        box_line, box_width = create_box_helper(65)
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('System Restore - Disaster Recovery', Colors.BOLD)}"))
+        print(draw_box_divider(box_width))
+        print(box_line(" This will restore:"))
+        print(box_line("   • Instance registry and metadata"))
+        print(box_line("   • Traefik configuration + SSL certificates"))
+        print(box_line("   • Cloudflare tunnel configs and credentials"))
+        print(box_line("   • Backup server (rclone) configuration"))
+        print(draw_box_divider(box_width))
+        print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale requires re-authentication"))
+        print(draw_box_bottom(box_width))
         print()
         
         try:
@@ -3311,9 +3649,29 @@ instance_count: {len(instances)}
             
             backups = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()], reverse=True)
             
-            print("Available system backups:")
+            print(colorize("Available system backups:", Colors.BOLD))
+            print()
+            
             for idx, backup in enumerate(backups, 1):
-                print(f"  {idx}) {backup}")
+                # Get backup info
+                try:
+                    info = subprocess.run(
+                        ["rclone", "cat", f"pcloud:backups/paperless-system/{backup}/system-info.json"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if info.returncode == 0:
+                        import json
+                        data = json.loads(info.stdout)
+                        inst_count = data.get("instance_count", "?")
+                        version = data.get("backup_version", "1.0")
+                        network = "+" if data.get("network") else ""
+                        print(f"  {idx}) {backup} - {inst_count} instance(s) {f'[v{version} network]' if network else ''}")
+                    else:
+                        print(f"  {idx}) {backup}")
+                except:
+                    print(f"  {idx}) {backup}")
             print()
             
             choice = get_input(f"Select backup [1-{len(backups)}] or 'cancel'", "cancel")
@@ -3327,6 +3685,7 @@ instance_count: {len(instances)}
             say("Downloading system backup...")
             import json
             import tempfile
+            import shutil
             
             work = Path(tempfile.mkdtemp(prefix="paperless-system-restore-"))
             subprocess.run(
@@ -3336,29 +3695,125 @@ instance_count: {len(instances)}
             )
             
             system_info = json.loads((work / "system-info.json").read_text())
+            network_info = system_info.get("network", {})
+            backup_version = system_info.get("backup_version", "1.0")
             
             print()
-            print(f"System backup: {backup_name}")
-            print(f"Created: {system_info['backup_date']}")
-            print(f"Instances: {system_info['instance_count']}")
-            traefik_was_enabled = system_info.get('traefik_enabled', False)
-            print(f"Traefik: {'Enabled' if traefik_was_enabled else 'Disabled'}")
-            print()
-            print("Instances in backup:")
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('Backup Details', Colors.BOLD)}"))
+            print(draw_box_divider(box_width))
+            print(box_line(f" Name: {backup_name}"))
+            print(box_line(f" Date: {system_info['backup_date'][:19]}"))
+            print(box_line(f" Instances: {system_info['instance_count']}"))
+            print(box_line(f" Version: {backup_version}"))
+            print(draw_box_divider(box_width))
+            
+            if backup_version >= "2.0" and network_info:
+                print(box_line(f" {colorize('Network Configuration:', Colors.BOLD)}"))
+                traefik_info = network_info.get("traefik", {})
+                cf_info = network_info.get("cloudflare", {})
+                rclone_info = network_info.get("rclone", {})
+                ts_info = network_info.get("tailscale", {})
+                
+                if traefik_info.get("enabled"):
+                    print(box_line(f"   ✓ Traefik + SSL certificates"))
+                else:
+                    print(box_line(f"   ○ Traefik: not configured"))
+                
+                if cf_info.get("enabled"):
+                    tunnels = cf_info.get("tunnels", [])
+                    print(box_line(f"   ✓ Cloudflare: {len(tunnels)} tunnel(s)"))
+                else:
+                    print(box_line(f"   ○ Cloudflare: not configured"))
+                
+                if rclone_info.get("enabled"):
+                    print(box_line(f"   ✓ rclone backup config"))
+                else:
+                    print(box_line(f"   ○ rclone: not configured"))
+                
+                if ts_info.get("enabled"):
+                    print(box_line(f"   ⚠ Tailscale: requires re-auth"))
+                else:
+                    print(box_line(f"   ○ Tailscale: not configured"))
+            else:
+                print(box_line(f" {colorize('Note:', Colors.YELLOW)} Legacy backup (no network config)"))
+                traefik_info = {"enabled": system_info.get("traefik_enabled", False)}
+                cf_info = {}
+                rclone_info = {}
+                ts_info = {}
+            
+            print(draw_box_divider(box_width))
+            print(box_line(" Instances:"))
             for inst_name, inst_data in system_info["instances"].items():
                 latest = inst_data.get("latest_backup", "no backup")
-                print(f"  • {inst_name} - latest backup: {latest}")
+                print(box_line(f"   • {inst_name}: {latest[:19] if latest != 'no backup' else latest}"))
+            print(draw_box_bottom(box_width))
             print()
             
             if not confirm("Restore this system configuration?", False):
-                import shutil
                 shutil.rmtree(work)
                 return
             
-            # Check if Traefik should be restored
-            if traefik_was_enabled:
-                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-                from lib.installer import traefik
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import traefik, cloudflared
+            
+            # ─── Restore Network Configurations ───────────────────────────────
+            print()
+            say("Restoring Network Configuration...")
+            
+            # Restore rclone config first (needed for other restores)
+            rclone_backup = work / "network" / "rclone"
+            if rclone_backup.exists() and (rclone_backup / "rclone.conf").exists():
+                say("Restoring rclone configuration...")
+                rclone_dest = Path.home() / ".config" / "rclone"
+                rclone_dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(rclone_backup / "rclone.conf", rclone_dest / "rclone.conf")
+                ok("rclone config restored")
+            
+            # Restore Traefik
+            traefik_backup = work / "network" / "traefik"
+            if traefik_backup.exists() and traefik_info.get("enabled"):
+                say("Restoring Traefik configuration...")
+                traefik_dest = Path("/opt/traefik")
+                traefik_dest.mkdir(parents=True, exist_ok=True)
+                
+                # Copy traefik.yml
+                if (traefik_backup / "traefik.yml").exists():
+                    shutil.copy2(traefik_backup / "traefik.yml", traefik_dest / "traefik.yml")
+                
+                # Copy acme.json (SSL certs) with correct permissions
+                if (traefik_backup / "acme.json").exists():
+                    shutil.copy2(traefik_backup / "acme.json", traefik_dest / "acme.json")
+                    (traefik_dest / "acme.json").chmod(0o600)
+                
+                # Start Traefik if not running
+                if not traefik.is_traefik_running():
+                    say("Starting Traefik with restored certificates...")
+                    # Check if docker network exists
+                    subprocess.run(
+                        ["docker", "network", "create", "web"],
+                        capture_output=True,
+                        check=False
+                    )
+                    # Start Traefik
+                    result = subprocess.run(
+                        ["docker", "compose", "-f", "/opt/traefik/docker-compose.yml", "up", "-d"],
+                        capture_output=True,
+                        check=False
+                    )
+                    if result.returncode == 0:
+                        ok("Traefik started with restored SSL certificates")
+                    else:
+                        # May need to set up fresh
+                        email = traefik_info.get("email", "admin@example.com")
+                        if traefik.setup_system_traefik(email):
+                            ok("Traefik reinstalled (will regenerate SSL certs)")
+                        else:
+                            warn("Failed to start Traefik")
+                else:
+                    ok("Traefik already running")
+            elif traefik_info.get("enabled") and not traefik_backup.exists():
+                # Legacy backup - just install Traefik
                 if not traefik.is_traefik_running():
                     say("System backup had Traefik enabled. Installing Traefik...")
                     email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
@@ -3366,30 +3821,126 @@ instance_count: {len(instances)}
                         ok("Traefik installed and running")
                     else:
                         warn("Failed to install Traefik - HTTPS instances may not work")
-                else:
-                    ok("Traefik already running")
             
-            # Restore instances registry from system info
+            # Restore Cloudflare tunnel configs
+            cf_backup = work / "network" / "cloudflared"
+            if cf_backup.exists() and cf_info.get("enabled"):
+                say("Restoring Cloudflare Tunnel configuration...")
+                
+                # Restore ~/.cloudflared/ (credentials and cert)
+                home_backup = cf_backup / "home"
+                if home_backup.exists():
+                    cloudflared_home = Path.home() / ".cloudflared"
+                    cloudflared_home.mkdir(parents=True, exist_ok=True)
+                    
+                    for file in home_backup.iterdir():
+                        shutil.copy2(file, cloudflared_home / file.name)
+                    ok("Cloudflare credentials restored")
+                
+                # Restore /etc/cloudflared/ configs
+                etc_backup = cf_backup / "etc"
+                if etc_backup.exists():
+                    cloudflared_etc = Path("/etc/cloudflared")
+                    cloudflared_etc.mkdir(parents=True, exist_ok=True)
+                    
+                    for file in etc_backup.iterdir():
+                        shutil.copy2(file, cloudflared_etc / file.name)
+                    ok(f"Cloudflare tunnel configs restored")
+                
+                # Restore systemd services
+                services_backup = cf_backup / "services"
+                if services_backup.exists():
+                    for service_file in services_backup.iterdir():
+                        shutil.copy2(service_file, Path("/etc/systemd/system") / service_file.name)
+                    
+                    # Reload and start services
+                    subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+                    
+                    # Start each tunnel service
+                    for service_file in services_backup.iterdir():
+                        service_name = service_file.name
+                        subprocess.run(
+                            ["systemctl", "enable", "--now", service_name],
+                            capture_output=True,
+                            check=False
+                        )
+                    ok("Cloudflare tunnel services started")
+            
+            # ─── Restore Instance Registry ────────────────────────────────────
+            print()
+            say("Restoring Instance Registry...")
+            
             if "instances_registry" in system_info:
-                say("Restoring instance registry...")
                 self.instance_manager.config_file.parent.mkdir(parents=True, exist_ok=True)
                 self.instance_manager.config_file.write_text(
                     json.dumps(system_info["instances_registry"], indent=2)
                 )
                 self.instance_manager.load_instances()
+                ok(f"Restored {len(system_info['instances'])} instance(s) to registry")
             
-            ok("System configuration restored!")
+            # ─── Summary & IP Change Guidance ─────────────────────────────────
             print()
-            print("Next steps:")
-            print("  1. Check 'Manage Instances' to see restored instances")
-            print("  2. Use each instance's 'Restore from backup' to restore data")
-            print(f"     (Latest backups are shown in the system info above)")
+            print(draw_box_top(box_width))
+            print(box_line(f" {colorize('✓ System Restore Complete', Colors.GREEN)}"))
+            print(draw_box_divider(box_width))
             
-            import shutil
+            # Basic next steps
+            print(box_line(f" {colorize('Essential Next Steps:', Colors.BOLD)}"))
+            print(box_line(""))
+            print(box_line("   1. Restore each instance's data:"))
+            print(box_line("      → Manage Instances → [instance] → Restore from backup"))
+            print(box_line(""))
+            print(box_line("   2. Start instances after data is restored"))
+            print(draw_box_divider(box_width))
+            
+            # IP/Server change guidance
+            print(box_line(f" {colorize('If Server IP Changed:', Colors.YELLOW)}"))
+            print(box_line(""))
+            
+            # Traefik guidance
+            if traefik_info.get("enabled"):
+                print(box_line(f"   {colorize('Traefik (HTTPS):', Colors.CYAN)}"))
+                print(box_line("   → Update DNS A records to point to new IP"))
+                print(box_line("   → SSL certs restored (will auto-renew)"))
+                print(box_line(""))
+            
+            # Cloudflare guidance
+            if cf_info.get("enabled"):
+                print(box_line(f"   {colorize('Cloudflare Tunnels:', Colors.CYAN)}"))
+                print(box_line("   → Tunnels auto-reconnect (IP doesn't matter)"))
+                print(box_line("   → Check: systemctl status cloudflared-*"))
+                print(box_line("   → If issues: cloudflared service install"))
+                print(box_line(""))
+            
+            # Tailscale guidance  
+            if ts_info.get("enabled"):
+                print(box_line(f"   {colorize('Tailscale:', Colors.CYAN)}"))
+                print(box_line(f"   → Previous: {ts_info.get('hostname', '?')} ({ts_info.get('ip', '?')})"))
+                print(box_line("   → Re-authenticate: sudo tailscale up"))
+                print(box_line("   → Re-enable serve paths for each instance"))
+                print(box_line(""))
+            
+            # If no network config needed special handling
+            if not (traefik_info.get("enabled") or cf_info.get("enabled") or ts_info.get("enabled")):
+                print(box_line("   → No network services need reconfiguration"))
+                print(box_line(""))
+            
+            print(draw_box_bottom(box_width))
+            
+            # Print command reference
+            print()
+            print(colorize("Useful Commands:", Colors.BOLD))
+            print("  paperless                     - Open management TUI")
+            print("  systemctl status cloudflared-*  - Check Cloudflare tunnels")
+            print("  tailscale status              - Check Tailscale connection")
+            print("  docker ps                     - Check running containers")
+            
             shutil.rmtree(work)
             
         except Exception as e:
             error(f"System restore failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         input("\nPress Enter to continue...")
     

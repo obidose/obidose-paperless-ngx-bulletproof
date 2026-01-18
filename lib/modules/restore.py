@@ -9,15 +9,24 @@ import time
 from pathlib import Path
 
 
-def load_env(path: Path) -> None:
-    """Load environment variables from a .env file if present."""
+def load_env(path: Path) -> dict[str, str]:
+    """Load environment variables from a .env file, returning as dict."""
+    env = {}
     if not path.exists():
-        return
+        return env
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
+        env[k.strip()] = v.strip()
+    return env
+
+
+def load_env_to_environ(path: Path) -> None:
+    """Load environment variables from a .env file into os.environ."""
+    env = load_env(path)
+    for k, v in env.items():
         os.environ.setdefault(k, v)
 
 
@@ -88,7 +97,7 @@ ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 
 # Only try to load env if it exists, warn but continue if it doesn't
 if ENV_FILE.exists():
-    load_env(ENV_FILE)
+    load_env_to_environ(ENV_FILE)
 else:
     warn(f"No .env at {ENV_FILE} — continuing with environment defaults")
 
@@ -230,6 +239,14 @@ def main() -> None:
     chain.reverse()
     say("Restoring chain: " + " -> ".join(chain))
     
+    # Check restore mode:
+    # - MERGE_CONFIG=yes: Skip .env and docker-compose.yml restoration (new instance restore)
+    #   The manager already created these with user's chosen settings + credentials from backup
+    # - MERGE_CONFIG=no: Fully overwrite .env and docker-compose.yml from backup (same instance restore)
+    skip_config = os.environ.get("MERGE_CONFIG", "no") == "yes"
+    if skip_config:
+        say("Keeping instance configuration (already configured by manager)")
+    
     # Ensure stack directory exists and docker-compose file exists before trying to use it
     if not COMPOSE_FILE.exists():
         warn(f"Docker compose file not found at {COMPOSE_FILE}")
@@ -243,11 +260,19 @@ def main() -> None:
         tmp = Path(tempfile.mkdtemp(prefix="paperless-restore."))
         subprocess.run(["rclone", "sync", f"{REMOTE}/{snap}", str(tmp)], check=True)
         if first:
-            if (tmp / ".env").exists():
-                # Ensure the target directory exists
+            # Handle .env restoration
+            backup_env = tmp / ".env"
+            if backup_env.exists():
                 STACK_DIR.mkdir(parents=True, exist_ok=True)
-                (STACK_DIR / ".env").write_text((tmp / ".env").read_text())
-                ok("Restored .env")
+                if skip_config:
+                    # New instance restore: manager already created .env with correct settings
+                    say("Keeping instance .env (configured by manager)")
+                else:
+                    # Same instance restore: replace .env from backup
+                    (STACK_DIR / ".env").write_text(backup_env.read_text())
+                    ok("Restored .env from backup")
+            
+            # Restore data directories
             for name in ["data", "media", "export"]:
                 dest = DATA_ROOT / name
                 dest.mkdir(parents=True, exist_ok=True)  # Ensure destination exists
@@ -258,12 +283,18 @@ def main() -> None:
                 if tarfile_path:
                     extract_tar(tarfile_path, DATA_ROOT)
                     ok(f"Restored {name} data")
+            
+            # Handle docker-compose.yml restoration
             compose_snap = tmp / "compose.snapshot.yml"
             if compose_snap.exists():
-                # Ensure the target directory exists
-                COMPOSE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                compose_snap.replace(COMPOSE_FILE)
-                ok("Restored docker-compose.yml")
+                if skip_config:
+                    # New instance restore: manager created docker-compose.yml with correct network/port config
+                    say("Keeping instance docker-compose.yml (configured by manager)")
+                else:
+                    # Same instance restore: replace docker-compose.yml from backup
+                    COMPOSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    compose_snap.replace(COMPOSE_FILE)
+                    ok("Restored docker-compose.yml from backup")
             first = False
         else:
             for name in ["data", "media", "export"]:
