@@ -30,7 +30,7 @@ def _docker_compose_cmd(project_name: str, env_file: Path, compose_file: Path) -
     ]
 
 
-def run_stack_tests(compose_file: Path, env_file: Path, project_name: str = None, verbose: bool = True) -> bool:
+def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[str] = None, verbose: bool = True) -> bool:
     """Run comprehensive health checks against the Paperless stack.
 
     If project_name is not provided, tries to read INSTANCE_NAME from env_file.
@@ -226,7 +226,7 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: str = None
     return all_passed
 
 
-def quick_container_check(compose_file: Path, env_file: Path, project_name: str = None) -> bool:
+def quick_container_check(compose_file: Path, env_file: Path, project_name: Optional[str] = None) -> bool:
     """Quick check that containers are running (no app-level checks).
     
     Useful for fast validation without waiting for HTTP endpoints.

@@ -1,92 +1,86 @@
-# 📄 Paperless-NGX Bulletproof
+# Paperless-NGX Bulletproof
 
-**A production-ready, multi-instance Paperless-NGX deployment system with automated backups, disaster recovery, and zero-downtime updates.**
+A production-ready deployment system for Paperless-NGX with multi-instance support, automated backups, and disaster recovery.
 
-Perfect for managing multiple Paperless-NGX instances (personal, family, clients) from a single command with enterprise-grade reliability.
+Designed for managing multiple Paperless-NGX instances (personal, family, clients) from a single command.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### One-Command Installation
+### Installation
 
-#### Stable Release (main branch)
+**Stable release:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless.py && sudo python3 /tmp/paperless.py
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3
 ```
 
-#### Development Version (dev branch)
+**Development version:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless.py && sudo python3 /tmp/paperless.py --branch dev
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py | sudo python3 - --branch dev
 ```
 
-That's it! The installer will:
-- ✅ Install Docker & Docker Compose
-- ✅ Configure rclone with pCloud backup
-- ✅ Set up the management system
-- ✅ Launch the interactive manager
+The installer handles Docker, rclone, and pCloud configuration automatically.
 
 ### After Installation
 
-Simply run:
 ```bash
 paperless
 ```
 
 ---
 
-## ✨ Features
+## Features
 
-### 🏢 Multi-Instance Management
-- **Isolated Instances**: Each with own database, media, and configuration
-- **Family & Client Support**: Run separate instances for different users/organizations
-- **Easy Switching**: Manage all instances from one unified interface
+### Multi-Instance Management
+- Run isolated instances with separate databases, media, and configuration
+- Switch between instances from a unified interface
+- Independent backup and restore per instance
 
-### 💾 Enterprise-Grade Backups
-- **Automated Snapshots**: One-command backup of entire instance
-- **Docker Version Tracking**: Capture exact image versions for reproducible restores
-- **Point-in-Time Recovery**: Browse and restore from any previous snapshot
-- **System-Level Backup**: Disaster recovery for multi-instance configurations
+### Backup System
+- Full and incremental snapshots uploaded to pCloud
+- Docker image version tracking for reproducible restores
+- Point-in-time recovery from any snapshot
+- System-level backup for disaster recovery
 
-### 🔄 Zero-Downtime Updates
-- **Safe Update Workflow**: Automatic backup before upgrade
-- **Health Checks**: Verify services after update
-- **Rollback Ready**: Restore previous snapshot if needed
+### Safe Updates
+- Automatic backup before upgrade
+- Health checks after update
+- Easy rollback to previous snapshot
 
-### 🎨 Professional Interface
-- **Clean TUI**: Box-bordered menus with color coding
-- **Visual Hierarchy**: Important information prominently displayed
-- **Intuitive Navigation**: Numeric menu system (0=back, 1-9=options)
+### Health Monitoring
+- 13-point health check covering system and stack
+- Container, database, Redis, Django, and HTTP validation
+- Container name verification to catch misconfigurations
 
 ---
 
-## 📋 Requirements
+## Requirements
 
-- **OS**: Ubuntu 22.04 or 24.04 LTS
-- **RAM**: 4GB minimum (8GB+ recommended for multiple instances)
-- **Disk**: 20GB+ available space
-- **Access**: Root/sudo privileges for installation
-- **Backup**: pCloud account (free 10GB available)
+- Ubuntu 22.04 or 24.04 LTS
+- 4GB RAM minimum (8GB+ for multiple instances)
+- 20GB+ disk space
+- Root/sudo access
+- pCloud account for backups (free 10GB available)
 
 ---
 
 ## First Run
 
-The installation is smart and guides you through:
-
 ### Fresh Machine
-1. **Installs base system** (Docker, rclone - fully automated)
-2. **Connects to pCloud** (paste OAuth token - takes 30 seconds)
-3. **Launches manager** with overview of system status
 
-From the manager menu:
-- **Add Instance** → Create fresh or restore from backup
-- Each instance can have its own domain, settings, users
-- All instances share the same base system but are isolated
+1. Installs Docker, rclone, and dependencies
+2. Connects to pCloud (paste OAuth token when prompted)
+3. Launches the manager
+
+From the manager:
+- **Add Instance** to create new or restore from backup
+- Each instance gets its own domain, settings, and users
 
 ### Example: Family Setup
+
 ```
-paperless               # Launch manager
+paperless
 → Instances
   → Add new instance
     → Name: paperless-personal
@@ -96,17 +90,11 @@ paperless               # Launch manager
     → Domain: docs-dad.mydomain.com
 ```
 
-Each instance:
-- Runs independently
-- Has its own database, media, documents
-- Backed up separately to pCloud
-- Can be restored independently
+Each instance runs independently with its own database and backups.
 
 ---
 
 ## Management Interface
-
-After installation, run: `paperless`
 
 ```
 ╔══════════════════════════════════════════════════════════╗
@@ -125,57 +113,20 @@ Current Instance: paperless [Running]
   q) Quit
 ```
 
-### Features
-
-**Backup Management**
-- Manual backups (full, incremental, archive)
-- View all snapshots with metadata
-- Configure automated schedules
-- Retention policies
-
-**Restore Operations**
-- Interactive snapshot selection
-- Automatic incremental chain resolution
-- Safety confirmations
-- Clone to new instances
-
-**Multi-Instance**
-- Track unlimited instances
-- Switch between instances
-- Add/remove instances
-- Independent management
-
-**Health Monitoring**
-- 13-point comprehensive health check
-- System checks: Docker, files, directories, rclone
-- Stack checks: containers, database, Redis, Django, HTTP
-- Container name verification (catches project mismatches)
-- Remote connectivity tests
-
-**Container Operations**
-- Start/stop/restart
-- View logs in real-time
-- Safe upgrades with auto-backup
-- Pull latest images
-
 ---
 
 ## pCloud Setup
 
-During installation, configure pCloud using **OAuth** (recommended):
+During installation, configure pCloud using OAuth:
 
-1. On any machine with a browser, run:
+1. On any machine with a browser:
    ```bash
    rclone authorize "pcloud"
    ```
+2. Copy the JSON token
+3. Paste into the installer
 
-2. Copy the JSON token that's printed
-
-3. Paste it into the installer when prompted
-
-The installer auto-detects EU vs Global regions and configures accordingly.
-
-**Alternative**: Legacy WebDAV (OAuth is much more reliable)
+The installer auto-detects EU vs Global regions.
 
 ---
 
@@ -184,38 +135,37 @@ The installer auto-detects EU vs Global regions and configures accordingly.
 ### Automated Backups
 
 Configured during installation:
-- **Full backups**: Weekly (configurable)
-- **Incremental**: Daily (configurable)
-- **Archive**: Monthly (optional)
+- Full backups: Weekly (default Sunday 3:30 AM)
+- Incremental: Daily (default midnight)
+- Archive: Optional monthly
 
-All backups upload to: `pcloud:backups/paperless/{instance_name}/`
+Backups go to: `pcloud:backups/paperless/{instance_name}/`
 
 Each snapshot includes:
 - PostgreSQL database dump
 - Incremental tarballs (media, data, export)
-- Environment configuration
-- Docker compose file
+- Environment and compose configuration
+- Docker image versions
 - Manifest with metadata and checksums
-- Integrity verification (archives tested, DB restored to temp container)
 
-### Manual Backups
+### Manual Backup
 
 ```bash
 paperless
-# → Option 3 (Backup management)
-# → Choose full/incremental/archive
+→ Backup management
+→ Choose full/incremental/archive
 ```
 
 ### Restore
 
 ```bash
 paperless
-# → Option 4 (Restore from backup)
-# → Select snapshot (or "latest")
-# → Confirm restoration
+→ Restore from backup
+→ Select snapshot
+→ Confirm
 ```
 
-The restore process:
+Restore process:
 1. Stops containers
 2. Downloads snapshot chain from pCloud
 3. Applies incrementals in order
@@ -229,17 +179,11 @@ The restore process:
 
 ### Presets
 
-During installation, choose a preset or skip:
+Choose during installation:
 
-**Traefik** (`presets/traefik.env`)
-- Traefik reverse proxy
-- Automatic HTTPS with Let's Encrypt
-- Requires domain pointing to your server
+**Traefik** - Reverse proxy with automatic HTTPS via Let's Encrypt. Requires domain DNS pointing to server.
 
-**Direct** (`presets/direct.env`)
-- Direct HTTP access
-- Bind to localhost port (default 8000)
-- No HTTPS
+**Direct** - Direct HTTP access on localhost (default port 8000). No HTTPS.
 
 ### Environment Variables
 
@@ -256,114 +200,115 @@ PAPERLESS_URL=https://your-domain.com
 
 POSTGRES_PASSWORD=...
 
-ENABLE_TRAEFIK=yes  # or "no"
+ENABLE_TRAEFIK=yes
 DOMAIN=paperless.example.com
 LETSENCRYPT_EMAIL=admin@example.com
-HTTP_PORT=8000  # if ENABLE_TRAEFIK=no
+HTTP_PORT=8000
 
 RCLONE_REMOTE_NAME=pcloud
 RCLONE_REMOTE_PATH=backups/paperless/paperless
 RETENTION_DAYS=30
 
-CRON_FULL_TIME=30 3 * * 0     # Weekly Sunday 3:30 AM
-CRON_INCR_TIME=0 0 * * *      # Daily midnight
-CRON_ARCHIVE_TIME=            # Disabled (or set cron)
+CRON_FULL_TIME=30 3 * * 0
+CRON_INCR_TIME=0 0 * * *
 ```
 
 ### Multiple Instances
 
-The manager tracks all instances in `/etc/paperless-bulletproof/instances.json`
+Instance metadata stored in `/etc/paperless-bulletproof/instances.json`
 
-To add an existing instance:
+Add existing instance:
 ```bash
 paperless
-# → Option 6 (Instance management)
-# → Option 2 (Add existing instance)
+→ Instance management
+→ Add existing instance
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
-paperless.py              # Single entry point (CLI)
-lib/                      # All Python modules
-├── manager.py           # Interactive TUI manager
+paperless.py              # Entry point
+lib/
+├── manager.py           # Interactive TUI
+├── config.py            # Configuration constants
 ├── installer/           # Installation modules
-│   ├── common.py       # Configuration & helpers
+│   ├── common.py       # Configuration and helpers
 │   ├── deps.py         # System dependencies
 │   ├── files.py        # File generation
-│   └── pcloud.py       # Backup configuration
-├── modules/             # Core functionality
+│   ├── pcloud.py       # Backup configuration
+│   ├── cloudflared.py  # Cloudflare tunnel setup
+│   ├── tailscale.py    # Tailscale setup
+│   └── traefik.py      # Traefik configuration
+├── modules/
 │   ├── backup.py       # Snapshot creation
 │   └── restore.py      # Snapshot restoration
-└── utils/               # Utilities
+└── utils/
+    ├── common.py       # Shared utilities
     └── selftest.py     # Health checks
-compose/                  # Docker Compose templates
+compose/
 ├── docker-compose-direct.yml
 └── docker-compose-traefik.yml
-presets/                  # Environment presets
+presets/
 ├── direct.env
 └── traefik.env
 ```
 
 ---
 
-## 🛠️ Development
+## Development
 
-### Repository
 ```bash
 git clone https://github.com/obidose/obidose-paperless-ngx-bulletproof.git
 cd obidose-paperless-ngx-bulletproof
-
-# Test locally
 sudo python3 paperless.py --branch dev
 ```
 
-### Branches
-- **main**: Stable, production-ready
-- **dev**: Latest features, active development
+Branches:
+- **main**: Stable
+- **dev**: Active development
 
 ---
 
 ## Troubleshooting
 
 ### pCloud OAuth Fails
-- Ensure you paste the **complete JSON** token
-- Use the same rclone version if possible
-- Try WebDAV as fallback
+- Paste the complete JSON token
+- Try the same rclone version
+- Use WebDAV as fallback
 
 ### HTTPS Not Working
-- Verify DNS points to your server
-- Check ports 80/443 are accessible
-- Review Traefik logs: `paperless` → Option 7 → View logs → traefik
+- Check DNS points to server
+- Verify ports 80/443 are open
+- Check Traefik logs via manager
 
 ### No Snapshots Found
-- Run a manual backup first: `paperless` → Option 3
+- Run a manual backup first
 - Verify rclone: `rclone lsd pcloud:`
-- Check remote path in .env file
+- Check remote path in .env
 
 ### Containers Won't Start
 - Check Docker: `docker ps -a`
-- View logs: `paperless` → Option 7 → View logs
-- Run health check: `paperless` → Option 5
+- View logs via manager
+- Run health check
 
 ### Backup Fails
 - Check disk space: `df -h`
-- Verify pCloud connection: `rclone about pcloud:`
-- Review backup.log: `cat /home/docker/paperless-setup/backup.log`
+- Verify pCloud: `rclone about pcloud:`
+- Review backup.log in stack directory
 
 ---
 
 ## Uninstall
 
-To remove the stack (keeps backups):
+Remove stack (keeps backups):
 
 ```bash
 cd /home/docker/paperless-setup
-docker compose down -v  # Removes containers and volumes
+docker compose down -v
 
-# Optional: Remove files
+# Optional: remove files
 sudo rm -rf /home/docker/paperless
 sudo rm -rf /home/docker/paperless-setup
 sudo rm /usr/local/bin/paperless
@@ -371,7 +316,7 @@ sudo rm -rf /usr/local/lib/paperless-bulletproof
 sudo rm -rf /etc/paperless-bulletproof
 ```
 
-Your pCloud backups remain intact for future restoration.
+pCloud backups remain intact.
 
 ---
 
@@ -382,46 +327,36 @@ Your pCloud backups remain intact for future restoration.
 - Bootstraps from GitHub if needed
 - Launches installer or manager
 
-**Installer** (`installer/`)
+**Installer** (`lib/installer/`)
 - Installs Docker, rclone, dependencies
 - Configures pCloud
-- Creates docker-compose.yml and .env
+- Generates docker-compose.yml and .env
 - Sets up cron jobs
 
-**Manager** (`paperless_manager.py`)
+**Manager** (`lib/manager.py`)
 - Interactive TUI
 - Multi-instance management
 - Backup/restore operations
 - Health monitoring
 - Container control
 
-**Modules** (`modules/`)
-- `backup.py`: Snapshot creation and upload
-- `restore.py`: Snapshot download and restoration
+**Modules** (`lib/modules/`)
+- `backup.py`: Creates and uploads snapshots
+- `restore.py`: Downloads and applies snapshots
+
+**Utilities** (`lib/utils/`)
+- `common.py`: Shared output and environment functions
+- `selftest.py`: Stack health validation
 
 ---
 
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Test on fresh Ubuntu install
-4. Submit pull request
-
----
-
-## 📝 License
+## License
 
 MIT License
 
 ---
 
-## 📞 Support
+## Support
 
-- **Issues**: [GitHub Issues](https://github.com/obidose/obidose-paperless-ngx-bulletproof/issues)
-- **Documentation**: This README and inline help (`paperless` → "About & Help")
-
----
-
-**Made with ❤️ for reliable document management**
+- [GitHub Issues](https://github.com/obidose/obidose-paperless-ngx-bulletproof/issues)
+- In-app help via `paperless` → "About & Help"
