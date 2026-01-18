@@ -700,8 +700,21 @@ class PaperlessManager:
         running_count = sum(1 for i in instances if i.is_running)
         stopped_count = len(instances) - running_count
         
-        # System overview box
-        print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
+        # System overview box - use fixed width with helper function
+        import re
+        box_inner_width = 58  # Content area width (between the │ characters)
+        
+        def box_line(content: str) -> str:
+            """Create a properly padded box line."""
+            # Strip ANSI codes for length calculation
+            clean = re.sub(r'\033\[[0-9;]+m', '', content)
+            padding = box_inner_width - len(clean)
+            if padding < 0:
+                # Truncate if too long
+                return colorize("│", Colors.CYAN) + content[:box_inner_width] + colorize("│", Colors.CYAN)
+            return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+        
+        print(colorize("╭" + "─" * box_inner_width + "╮", Colors.CYAN))
         
         if self.rclone_configured:
             # Get backup info (count only instance folders with at least one snapshot)
@@ -746,27 +759,14 @@ class PaperlessManager:
             backup_status = colorize("⚠ Not connected", Colors.YELLOW)
             backup_detail = "Configure to enable backups"
         
-        # Calculate padding for proper box alignment
-        box_width = 62
-        backup_line = f" Backup Server:  {backup_status} {backup_detail}"
-        # Strip ANSI codes for length calculation
-        import re
-        clean_line = re.sub(r'\033\[[0-9;]+m', '', backup_line)
-        padding = max(0, box_width - len(clean_line) - 2)
-        print(colorize("│", Colors.CYAN) + backup_line + " " * padding + colorize("│", Colors.CYAN))
+        print(box_line(f" Backup Server:  {backup_status} {backup_detail}"))
         
         # Instances status
         if instances:
             instance_status = f"{running_count} running, {stopped_count} stopped"
-            instance_line = f" Instances:      {len(instances)} total • {instance_status}"
-            clean_line = re.sub(r'\033\[[0-9;]+m', '', instance_line)
-            padding = max(0, box_width - len(clean_line) - 2)
-            print(colorize("│", Colors.CYAN) + instance_line + " " * padding + colorize("│", Colors.CYAN))
+            print(box_line(f" Instances:      {len(instances)} total • {instance_status}"))
         else:
-            no_instances_line = f" Instances:      {colorize('No instances configured', Colors.YELLOW)}"
-            clean_line = re.sub(r'\033\[[0-9;]+m', '', no_instances_line)
-            padding = max(0, box_width - len(clean_line) - 2)
-            print(colorize("│", Colors.CYAN) + no_instances_line + " " * padding + colorize("│", Colors.CYAN))
+            print(box_line(f" Instances:      {colorize('No instances configured', Colors.YELLOW)}"))
         
         # Networking services status
         # Traefik
@@ -780,10 +780,7 @@ class PaperlessManager:
                 traefik_status = f"{colorize('✓', Colors.GREEN)} Running"
         else:
             traefik_status = colorize("○ Not installed", Colors.CYAN)
-        traefik_line = f" Traefik:        {traefik_status}"
-        clean_line = re.sub(r'\033\[[0-9;]+m', '', traefik_line)
-        padding = max(0, box_width - len(clean_line) - 2)
-        print(colorize("│", Colors.CYAN) + traefik_line + " " * padding + colorize("│", Colors.CYAN))
+        print(box_line(f" Traefik:        {traefik_status}"))
         
         # Cloudflare Tunnel
         from lib.installer.cloudflared import is_cloudflared_installed
@@ -798,10 +795,7 @@ class PaperlessManager:
                 cloudflared_status = f"{colorize('✓', Colors.GREEN)} Installed"
         else:
             cloudflared_status = colorize("○ Not installed", Colors.CYAN)
-        cloudflared_line = f" Cloudflare:     {cloudflared_status}"
-        clean_line = re.sub(r'\033\[[0-9;]+m', '', cloudflared_line)
-        padding = max(0, box_width - len(clean_line) - 2)
-        print(colorize("│", Colors.CYAN) + cloudflared_line + " " * padding + colorize("│", Colors.CYAN))
+        print(box_line(f" Cloudflare:     {cloudflared_status}"))
         
         # Tailscale
         from lib.installer.tailscale import is_tailscale_installed, is_connected, get_ip
@@ -816,12 +810,9 @@ class PaperlessManager:
                 tailscale_status = f"{colorize('○', Colors.YELLOW)} Installed • Disconnected"
         else:
             tailscale_status = colorize("○ Not installed", Colors.CYAN)
-        tailscale_line = f" Tailscale:      {tailscale_status}"
-        clean_line = re.sub(r'\033\[[0-9;]+m', '', tailscale_line)
-        padding = max(0, box_width - len(clean_line) - 2)
-        print(colorize("│", Colors.CYAN) + tailscale_line + " " * padding + colorize("│", Colors.CYAN))
+        print(box_line(f" Tailscale:      {tailscale_status}"))
         
-        print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
+        print(colorize("╰" + "─" * box_inner_width + "╯", Colors.CYAN))
         print()
         
         # Quick instance list
@@ -1868,10 +1859,20 @@ WantedBy=multi-user.target
             except:
                 system_backups = []
             
-            print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
-            print(colorize("│", Colors.CYAN) + f" Current System: {len(instances)} instance(s) configured" + " " * (58 - len(f" Current System: {len(instances)} instance(s) configured")) + colorize("│", Colors.CYAN))
-            print(colorize("│", Colors.CYAN) + f" System Backups: {len(system_backups)} available" + " " * (58 - len(f" System Backups: {len(system_backups)} available")) + colorize("│", Colors.CYAN))
-            print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
+            # System overview box
+            import re
+            box_inner_width = 58
+            def box_line(content: str) -> str:
+                clean = re.sub(r'\033\[[0-9;]+m', '', content)
+                padding = box_inner_width - len(clean)
+                if padding < 0:
+                    return colorize("│", Colors.CYAN) + content[:box_inner_width] + colorize("│", Colors.CYAN)
+                return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+            
+            print(colorize("╭" + "─" * box_inner_width + "╮", Colors.CYAN))
+            print(box_line(f" Current System: {len(instances)} instance(s) configured"))
+            print(box_line(f" System Backups: {len(system_backups)} available"))
+            print(colorize("╰" + "─" * box_inner_width + "╯", Colors.CYAN))
             print()
             
             print(colorize("What is System Backup?", Colors.BOLD))
