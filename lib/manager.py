@@ -655,7 +655,9 @@ class PaperlessManager:
             for instance in instances[:5]:  # Show max 5
                 status_icon = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
                 url = instance.get_access_url()
-                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD):<25} {url}")
+                # Format: status icon, name (fixed 25 chars), then URL
+                name_padded = f"{instance.name:<25}"
+                print(f"  {status_icon} {colorize(name_padded, Colors.BOLD)} {url}")
             
             if len(instances) > 5:
                 print(f"  {colorize(f'... and {len(instances) - 5} more', Colors.CYAN)}")

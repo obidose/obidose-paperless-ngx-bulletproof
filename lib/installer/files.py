@@ -89,6 +89,8 @@ def write_env_file() -> None:
     log(f"Writing {cfg.env_file}")
     if cfg.enable_traefik == "yes":
         paperless_url = f"https://{cfg.domain}"
+    elif cfg.enable_cloudflared == "yes":
+        paperless_url = f"https://{cfg.domain}"
     else:
         paperless_url = f"http://localhost:{cfg.http_port}"
 
@@ -121,6 +123,8 @@ def write_env_file() -> None:
         POSTGRES_PASSWORD={cfg.postgres_password}
 
         ENABLE_TRAEFIK={cfg.enable_traefik}
+        ENABLE_CLOUDFLARED={cfg.enable_cloudflared}
+        ENABLE_TAILSCALE={cfg.enable_tailscale}
         DOMAIN={cfg.domain}
         LETSENCRYPT_EMAIL={cfg.letsencrypt_email}
         HTTP_PORT={cfg.http_port}
