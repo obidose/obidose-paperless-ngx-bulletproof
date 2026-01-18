@@ -168,6 +168,13 @@ def prompt_core_values() -> None:
         cfg.data_root = "/home/docker/paperless"
         cfg.stack_dir = "/home/docker/paperless-setup"
     
+    # Show computed defaults
+    print()
+    say(f"Instance '{cfg.instance_name}' will use:")
+    print(f"  Data root: {cfg.data_root}")
+    print(f"  Stack dir: {cfg.stack_dir}")
+    print()
+    
     # Now prompt with the updated defaults
     cfg.data_root = prompt("Data root (persistent storage; Enter=default)", cfg.data_root)
     cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", cfg.stack_dir)
