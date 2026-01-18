@@ -2140,14 +2140,7 @@ instance_count: {len(instances)}
         error("Backups on pCloud will NOT be deleted")
         print()
         
-        # First confirmation
-        response = get_input("Type 'YES' to proceed", "")
-        if response != "YES":
-            say("Cancelled")
-            input("\nPress Enter to continue...")
-            return
-        
-        # Double confirm with NUKE
+        # Single confirmation with NUKE
         confirmation = get_input("Type the word NUKE in capitals to confirm", "")
         if confirmation != "NUKE":
             say("Cancelled - confirmation did not match")
@@ -2214,9 +2207,14 @@ instance_count: {len(instances)}
             
             # Remove instance tracking
             say("Removing instance tracking...")
-            tracking_file = Path("/root/.paperless_instances.json")
+            tracking_file = Path("/etc/paperless-bulletproof/instances.json")
             if tracking_file.exists():
                 tracking_file.unlink()
+            
+            # Also remove old tracking file location if it exists
+            old_tracking = Path("/root/.paperless_instances.json")
+            if old_tracking.exists():
+                old_tracking.unlink()
             
             # Reload instance manager to reflect changes
             self.instance_manager = InstanceManager()
