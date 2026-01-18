@@ -185,36 +185,40 @@ def run_stack_tests(compose_file: Path, env_file: Path, project_name: Optional[s
         all_passed = False
         log("Redis connectivity", False)
     
-    # Check 5: HTTP endpoint (wait a bit for app to be ready)
-    http_ok = True
-    try:
-        # Give the app a moment to fully initialize if just started
-        time.sleep(2)
-        url = f"http://localhost:{http_port}/"
-        req = urllib.request.Request(url, method='HEAD')
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status >= 500:
-                warnings.append(f"HTTP endpoint returned {response.status}")
-                http_ok = False
-                all_passed = False
-        log("HTTP endpoint responding", http_ok)
-    except urllib.error.HTTPError as e:
-        # 401/403 is fine - means the app is running but needs auth
-        if e.code < 500:
-            log("HTTP endpoint responding", True)
-        else:
-            warnings.append(f"HTTP endpoint error: {e.code}")
-            http_ok = False
-            all_passed = False
-            log("HTTP endpoint responding", False)
-    except urllib.error.URLError as e:
-        warnings.append(f"HTTP endpoint unreachable: {e.reason}")
-        http_ok = False
-        all_passed = False
-        log("HTTP endpoint responding", False)
-    except Exception as e:
-        warnings.append(f"HTTP check error: {e}")
-        http_ok = False
+    # Check 5: HTTP endpoint (with retry for slow startup)
+    http_ok = False
+    max_retries = 12  # 12 retries * 5 seconds = 60 seconds max wait
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            url = f"http://localhost:{http_port}/"
+            req = urllib.request.Request(url, method='HEAD')
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status < 500:
+                    http_ok = True
+                    break
+        except urllib.error.HTTPError as e:
+            # 401/403 is fine - means the app is running but needs auth
+            if e.code < 500:
+                http_ok = True
+                break
+        except (urllib.error.URLError, ConnectionResetError, ConnectionRefusedError):
+            # Connection not ready yet, retry
+            pass
+        except Exception:
+            pass
+        
+        # Only sleep and retry if not the last attempt
+        if attempt < max_retries - 1:
+            if verbose and attempt == 0:
+                print(f"  ... waiting for HTTP endpoint (up to 60s)")
+            time.sleep(retry_delay)
+    
+    if http_ok:
+        log("HTTP endpoint responding", True)
+    else:
+        warnings.append("HTTP endpoint not responding after 60 seconds")
         all_passed = False
         log("HTTP endpoint responding", False)
     

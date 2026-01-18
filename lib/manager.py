@@ -538,6 +538,204 @@ def get_input(prompt: str, default: str = "") -> str:
     return input(display).strip() or default
 
 
+def is_valid_domain(domain: str) -> tuple[bool, str]:
+    """Validate a domain name.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    import re
+    
+    if not domain:
+        return False, "Domain cannot be empty"
+    
+    # Check for @ symbol (common mistake: entering email instead of domain)
+    if '@' in domain:
+        return False, "Domain cannot contain '@' - did you enter an email address?"
+    
+    # Check for spaces
+    if ' ' in domain:
+        return False, "Domain cannot contain spaces"
+    
+    # Check for protocol prefix
+    if domain.startswith(('http://', 'https://')):
+        return False, "Domain should not include http:// or https://"
+    
+    # Check for path
+    if '/' in domain:
+        return False, "Domain should not include a path (no '/' allowed)"
+    
+    # Basic domain format validation
+    # Allow subdomains, letters, numbers, hyphens
+    domain_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
+    if not re.match(domain_pattern, domain):
+        return False, "Invalid domain format (e.g., paperless.example.com)"
+    
+    return True, ""
+
+
+def get_domain_input(prompt: str, default: str = "") -> str:
+    """Get and validate domain input from user."""
+    while True:
+        domain = get_input(prompt, default)
+        
+        # Allow empty if there's a default and user just pressed enter
+        if not domain and default:
+            domain = default
+        
+        is_valid, error_msg = is_valid_domain(domain)
+        if is_valid:
+            return domain
+        
+        error(error_msg)
+
+
+def is_valid_email(email: str) -> tuple[bool, str]:
+    """Validate email format.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    import re
+    
+    if not email:
+        return False, "Email cannot be empty"
+    
+    # Check for spaces
+    if ' ' in email:
+        return False, "Email cannot contain spaces"
+    
+    # Must contain exactly one @
+    if email.count('@') != 1:
+        return False, "Email must contain exactly one '@' symbol"
+    
+    # Split and validate parts
+    local, domain = email.split('@')
+    
+    if not local:
+        return False, "Email local part (before @) cannot be empty"
+    
+    if not domain:
+        return False, "Email domain (after @) cannot be empty"
+    
+    # Domain must have at least one dot
+    if '.' not in domain:
+        return False, "Email domain must include a TLD (e.g., .com, .org)"
+    
+    # Basic format validation
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(pattern, email):
+        return False, "Invalid email format (e.g., admin@example.com)"
+    
+    return True, ""
+
+
+def get_email_input(prompt: str, default: str = "") -> str:
+    """Get and validate email input from user."""
+    while True:
+        email = get_input(prompt, default)
+        
+        if not email and default:
+            email = default
+        
+        is_valid, error_msg = is_valid_email(email)
+        if is_valid:
+            return email
+        
+        error(error_msg)
+
+
+def is_valid_port(port: str) -> tuple[bool, str]:
+    """Validate port number.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not port:
+        return False, "Port cannot be empty"
+    
+    if not port.isdigit():
+        return False, "Port must be a number"
+    
+    port_num = int(port)
+    
+    if port_num < 1 or port_num > 65535:
+        return False, "Port must be between 1 and 65535"
+    
+    if port_num < 1024:
+        return False, "Port must be 1024 or higher (privileged ports not allowed)"
+    
+    return True, ""
+
+
+def get_port_input(prompt: str, default: str = "") -> str:
+    """Get and validate port input from user."""
+    while True:
+        port = get_input(prompt, default)
+        
+        if not port and default:
+            port = default
+        
+        is_valid, error_msg = is_valid_port(port)
+        if is_valid:
+            return port
+        
+        error(error_msg)
+
+
+def is_valid_instance_name(name: str, existing_instances: list[str] = None) -> tuple[bool, str]:
+    """Validate instance name.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if existing_instances is None:
+        existing_instances = []
+    
+    if not name:
+        return False, "Instance name cannot be empty"
+    
+    # Check for spaces
+    if ' ' in name:
+        return False, "Instance name cannot contain spaces"
+    
+    # Check length
+    if len(name) > 50:
+        return False, "Instance name must be 50 characters or less"
+    
+    # Must start with alphanumeric
+    if not name[0].isalnum():
+        return False, "Instance name must start with a letter or number"
+    
+    # Only allow alphanumeric, hyphens, underscores
+    if not name.replace("-", "").replace("_", "").isalnum():
+        return False, "Instance name can only contain letters, numbers, hyphens, and underscores"
+    
+    # Check if already exists
+    if name in existing_instances:
+        return False, f"Instance '{name}' already exists"
+    
+    return True, ""
+
+
+def get_instance_name_input(prompt: str, default: str = "", existing_instances: list[str] = None) -> str:
+    """Get and validate instance name input from user."""
+    if existing_instances is None:
+        existing_instances = []
+    
+    while True:
+        name = get_input(prompt, default)
+        
+        if not name and default:
+            name = default
+        
+        is_valid, error_msg = is_valid_instance_name(name, existing_instances)
+        if is_valid:
+            return name
+        
+        error(error_msg)
+
+
 def confirm(prompt: str, default: bool = False) -> bool:
     """Ask for yes/no confirmation."""
     options = "[Y/n]" if default else "[y/N]"
@@ -884,24 +1082,44 @@ class HealthChecker:
         except Exception:
             return False
     
-    def check_http_endpoint(self) -> bool:
-        """Check if HTTP endpoint is responding."""
+    def check_http_endpoint(self, retry: bool = False) -> bool:
+        """Check if HTTP endpoint is responding.
+        
+        Args:
+            retry: If True, retry for up to 60 seconds (useful after creation).
+                   If False, check once (faster for status display).
+        """
         import urllib.request
         import urllib.error
+        import time
         
         if not self.instance.is_running:
             return False
-        try:
-            http_port = self.instance.get_env_value("PAPERLESS_PORT", "8000")
-            url = f"http://localhost:{http_port}/"
-            req = urllib.request.Request(url, method='HEAD')
-            with urllib.request.urlopen(req, timeout=10) as response:
-                return response.status < 500
-        except urllib.error.HTTPError as e:
-            # 401/403 is fine - app running but needs auth
-            return e.code < 500
-        except Exception:
-            return False
+        
+        http_port = self.instance.get_env_value("HTTP_PORT", "8000")
+        url = f"http://localhost:{http_port}/"
+        
+        max_attempts = 12 if retry else 1  # 12 * 5s = 60s max
+        retry_delay = 5
+        
+        for attempt in range(max_attempts):
+            try:
+                req = urllib.request.Request(url, method='HEAD')
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status < 500:
+                        return True
+            except urllib.error.HTTPError as e:
+                # 401/403 is fine - app running but needs auth
+                if e.code < 500:
+                    return True
+            except Exception:
+                pass
+            
+            # Only sleep and retry if not the last attempt
+            if attempt < max_attempts - 1:
+                time.sleep(retry_delay)
+        
+        return False
     
     def check_rclone(self) -> bool:
         """Check if rclone is installed."""
@@ -1735,12 +1953,7 @@ class PaperlessManager:
                     input("\nPress Enter to continue...")
                 else:
                     # Install
-                    while True:
-                        email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
-                        if traefik.validate_email(email):
-                            break
-                        error(f"Invalid email format: {email}")
-                        say("Please enter a valid email address (e.g., admin@example.com)")
+                    email = get_email_input("Let's Encrypt email for SSL certificates", "admin@example.com")
                     
                     if traefik.setup_system_traefik(email):
                         ok("Traefik installed and started successfully!")
@@ -1752,12 +1965,7 @@ class PaperlessManager:
                 # Update email
                 current = configured_email or "admin@example.com"
                 say(f"Current email: {current}")
-                while True:
-                    email = get_input("New Let's Encrypt email", current)
-                    if traefik.validate_email(email):
-                        break
-                    error(f"Invalid email format: {email}")
-                    say("Please enter a valid email address (e.g., admin@example.com)")
+                email = get_email_input("New Let's Encrypt email", current)
                 
                 if confirm("Restart Traefik with new email?", True):
                     traefik.stop_system_traefik()
@@ -2070,22 +2278,14 @@ class PaperlessManager:
                 suggested_name = original_name
             
             while True:
-                new_name = get_input("Instance name", suggested_name)
-                
-                if new_name in existing_instances:
-                    warn(f"Instance '{new_name}' already exists - choose another name")
-                    suggested_name = f"{new_name}-2"
-                    continue
-                
-                if not new_name or not new_name.replace("-", "").replace("_", "").isalnum():
-                    warn("Name must be alphanumeric (hyphens and underscores allowed)")
-                    continue
+                new_name = get_instance_name_input("Instance name", suggested_name, existing_instances)
                 
                 # Check if new paths would conflict
                 new_data_root = f"/home/docker/{new_name}"
                 new_stack_dir = f"/home/docker/{new_name}-setup"
                 if Path(new_data_root).exists() or Path(new_stack_dir).exists():
-                    warn(f"Paths for '{new_name}' already exist - choose another name")
+                    error(f"Paths for '{new_name}' already exist - choose another name")
+                    suggested_name = f"{new_name}-2"
                     continue
                 
                 break
@@ -2146,7 +2346,7 @@ class PaperlessManager:
             if access_choice == "2":
                 common.cfg.enable_traefik = "yes"
                 common.cfg.enable_cloudflared = "no"
-                common.cfg.domain = get_input("Domain", default_domain)
+                common.cfg.domain = get_domain_input("Domain", default_domain)
                 
                 if not net_status["traefik_running"]:
                     warn("Traefik is not running - HTTPS won't work until configured")
@@ -2156,7 +2356,7 @@ class PaperlessManager:
             elif access_choice == "3":
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "yes"
-                common.cfg.domain = get_input("Domain", default_domain)
+                common.cfg.domain = get_domain_input("Domain", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
                     warn("Cloudflare Tunnel not configured")
@@ -2171,7 +2371,7 @@ class PaperlessManager:
             if port_conflict:
                 warn(f"Port {original_port} is already in use!")
                 available_port = get_next_available_port(int(original_port) + 1)
-                common.cfg.http_port = get_input("HTTP port (must change)", str(available_port))
+                common.cfg.http_port = get_port_input("HTTP port (must change)", str(available_port))
                 
                 # Verify new port isn't also in use
                 while True:
@@ -2184,13 +2384,13 @@ class PaperlessManager:
                         if result == 0:
                             warn(f"Port {common.cfg.http_port} is also in use!")
                             available_port = get_next_available_port(int(common.cfg.http_port) + 1)
-                            common.cfg.http_port = get_input("HTTP port", str(available_port))
+                            common.cfg.http_port = get_port_input("HTTP port", str(available_port))
                         else:
                             break
                     except:
                         break
             else:
-                common.cfg.http_port = get_input("HTTP port", original_port)
+                common.cfg.http_port = get_port_input("HTTP port", original_port)
             
             # Tailscale option
             original_tailscale = backup_env.get("ENABLE_TAILSCALE", "no")
@@ -2369,18 +2569,7 @@ class PaperlessManager:
             print()
             
             # Get instance name with validation
-            while True:
-                instance_name = get_input("Instance name", "paperless")
-                
-                if instance_name in existing_instances:
-                    warn(f"Instance '{instance_name}' already exists. Choose another name.")
-                    continue
-                
-                if not instance_name or not instance_name.replace("-", "").replace("_", "").isalnum():
-                    warn("Name must be alphanumeric (hyphens and underscores allowed)")
-                    continue
-                
-                break
+            instance_name = get_instance_name_input("Instance name", "paperless", existing_instances)
             
             # Set up paths
             common.cfg.instance_name = instance_name
@@ -2437,11 +2626,11 @@ class PaperlessManager:
                 from lib.installer.traefik import get_base_domain as get_traefik_domain
                 traefik_base = get_traefik_domain()
                 default_domain = f"{instance_name}.{traefik_base}" if traefik_base else f"{instance_name}.example.com"
-                common.cfg.domain = get_input("Domain (DNS must point to this server)", default_domain)
+                common.cfg.domain = get_domain_input("Domain (DNS must point to this server)", default_domain)
                 
                 if not net_status["traefik_running"]:
                     # Only ask for email if Traefik isn't running yet (will need to be set up)
-                    common.cfg.letsencrypt_email = get_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
+                    common.cfg.letsencrypt_email = get_email_input("Email for Let's Encrypt", common.cfg.letsencrypt_email)
                     warn("Traefik is not running!")
                     print()
                     print("  1) Set up Traefik now (recommended)")
@@ -2477,7 +2666,7 @@ class PaperlessManager:
                 from lib.installer.cloudflared import get_base_domain as get_cloudflare_domain
                 cloudflare_base = get_cloudflare_domain()
                 default_domain = f"{instance_name}.{cloudflare_base}" if cloudflare_base else f"{instance_name}.example.com"
-                common.cfg.domain = get_input("Domain (configured in Cloudflare)", default_domain)
+                common.cfg.domain = get_domain_input("Domain (configured in Cloudflare)", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
                     warn("Cloudflare Tunnel not configured!")
@@ -2494,7 +2683,7 @@ class PaperlessManager:
             print()
             from lib.installer.common import get_next_available_port
             available_port = get_next_available_port(8000)  # Always start checking from 8000
-            common.cfg.http_port = get_input("HTTP port", available_port)
+            common.cfg.http_port = get_port_input("HTTP port", available_port)
             
             # Tailscale add-on
             print()
@@ -3164,7 +3353,7 @@ class PaperlessManager:
         """Edit instance domain."""
         current = instance.get_env_value("DOMAIN", "localhost")
         say(f"Current domain: {current}")
-        new_domain = get_input("New domain (or Enter to cancel)", current)
+        new_domain = get_domain_input("New domain (or Enter to keep current)", current)
         
         if new_domain and new_domain != current:
             if self._update_instance_env(instance, "DOMAIN", new_domain):
@@ -3182,17 +3371,14 @@ class PaperlessManager:
         """Edit instance HTTP port."""
         current = instance.get_env_value("HTTP_PORT", "8000")
         say(f"Current port: {current}")
-        new_port = get_input("New HTTP port (or Enter to cancel)", current)
+        new_port = get_port_input("New HTTP port (or Enter to keep current)", current)
         
         if new_port and new_port != current:
-            if new_port.isdigit() and 1024 <= int(new_port) <= 65535:
-                if self._update_instance_env(instance, "HTTP_PORT", new_port):
-                    ok(f"HTTP port changed to: {new_port}")
-                    warn("You must recreate containers for port changes:")
-                    say(f"  docker compose -f {instance.compose_file} down")
-                    say(f"  docker compose -f {instance.compose_file} up -d")
-            else:
-                error("Invalid port number (must be 1024-65535)")
+            if self._update_instance_env(instance, "HTTP_PORT", new_port):
+                ok(f"HTTP port changed to: {new_port}")
+                warn("You must recreate containers for port changes:")
+                say(f"  docker compose -f {instance.compose_file} down")
+                say(f"  docker compose -f {instance.compose_file} up -d")
         input("\nPress Enter to continue...")
     
     def _toggle_instance_traefik(self, instance: Instance) -> None:
@@ -3216,7 +3402,7 @@ class PaperlessManager:
             elif confirm("Enable Traefik HTTPS for this instance?", True):
                 domain = instance.get_env_value("DOMAIN", "localhost")
                 if domain == "localhost":
-                    domain = get_input("Enter domain for HTTPS", "paperless.example.com")
+                    domain = get_domain_input("Enter domain for HTTPS", "paperless.example.com")
                     self._update_instance_env(instance, "DOMAIN", domain)
                 
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "yes")
@@ -3264,7 +3450,7 @@ class PaperlessManager:
             elif confirm("Enable Cloudflare Tunnel for this instance?", True):
                 domain = instance.get_env_value("DOMAIN", "localhost")
                 if domain == "localhost":
-                    domain = get_input("Enter domain for Cloudflare Tunnel", "paperless.example.com")
+                    domain = get_domain_input("Enter domain for Cloudflare Tunnel", "paperless.example.com")
                     self._update_instance_env(instance, "DOMAIN", domain)
                 
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "yes")
@@ -4042,7 +4228,7 @@ rclone_config: {network_info['rclone']['enabled']}
                 # Legacy backup - just install Traefik
                 if not traefik.is_traefik_running():
                     say("System backup had Traefik enabled. Installing Traefik...")
-                    email = get_input("Let's Encrypt email for SSL certificates", "admin@example.com")
+                    email = get_email_input("Let's Encrypt email for SSL certificates", "admin@example.com")
                     if traefik.setup_system_traefik(email):
                         ok("Traefik installed and running")
                     else:

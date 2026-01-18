@@ -29,6 +29,9 @@ def ok(msg: str) -> None:
 def warn(msg: str) -> None:
     print(f"{COLOR_YELLOW}[!]{COLOR_OFF} {msg}")
 
+def error(msg: str) -> None:
+    print(f"{COLOR_RED}[ERROR]{COLOR_OFF} {msg}")
+
 def die(msg: str, code: int = 1) -> None:
     print(f"{COLOR_RED}[x]{COLOR_OFF} {msg}")
     sys.exit(code)
@@ -70,6 +73,135 @@ def prompt(msg: str, default: str | None = None) -> str:
     else:
         ans = _read(f"{msg}: ")
     return ans.strip()
+
+
+def is_valid_domain(domain: str) -> tuple[bool, str]:
+    """Validate a domain name.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    import re
+    
+    if not domain:
+        return False, "Domain cannot be empty"
+    
+    # Check for @ symbol (common mistake: entering email instead of domain)
+    if '@' in domain:
+        return False, "Domain cannot contain '@' - did you enter an email address?"
+    
+    # Check for spaces
+    if ' ' in domain:
+        return False, "Domain cannot contain spaces"
+    
+    # Check for protocol prefix
+    if domain.startswith(('http://', 'https://')):
+        return False, "Domain should not include http:// or https://"
+    
+    # Check for path
+    if '/' in domain:
+        return False, "Domain should not include a path (no '/' allowed)"
+    
+    # Basic domain format validation
+    domain_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
+    if not re.match(domain_pattern, domain):
+        return False, "Invalid domain format (e.g., paperless.example.com)"
+    
+    return True, ""
+
+
+def prompt_domain(msg: str, default: str | None = None) -> str:
+    """Prompt for and validate a domain name."""
+    while True:
+        domain = prompt(msg, default)
+        
+        is_valid, error_msg = is_valid_domain(domain)
+        if is_valid:
+            return domain
+        
+        error(error_msg)
+
+
+def is_valid_email(email: str) -> tuple[bool, str]:
+    """Validate email format.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    import re
+    
+    if not email:
+        return False, "Email cannot be empty"
+    
+    if ' ' in email:
+        return False, "Email cannot contain spaces"
+    
+    if email.count('@') != 1:
+        return False, "Email must contain exactly one '@' symbol"
+    
+    local, domain = email.split('@')
+    
+    if not local:
+        return False, "Email local part (before @) cannot be empty"
+    
+    if not domain:
+        return False, "Email domain (after @) cannot be empty"
+    
+    if '.' not in domain:
+        return False, "Email domain must include a TLD (e.g., .com, .org)"
+    
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(pattern, email):
+        return False, "Invalid email format (e.g., admin@example.com)"
+    
+    return True, ""
+
+
+def prompt_email(msg: str, default: str | None = None) -> str:
+    """Prompt for and validate an email address."""
+    while True:
+        email = prompt(msg, default)
+        
+        is_valid, error_msg = is_valid_email(email)
+        if is_valid:
+            return email
+        
+        error(error_msg)
+
+
+def is_valid_port(port: str) -> tuple[bool, str]:
+    """Validate port number.
+    
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not port:
+        return False, "Port cannot be empty"
+    
+    if not port.isdigit():
+        return False, "Port must be a number"
+    
+    port_num = int(port)
+    
+    if port_num < 1 or port_num > 65535:
+        return False, "Port must be between 1 and 65535"
+    
+    if port_num < 1024:
+        return False, "Port must be 1024 or higher (privileged ports not allowed)"
+    
+    return True, ""
+
+
+def prompt_port(msg: str, default: str | None = None) -> str:
+    """Prompt for and validate a port number."""
+    while True:
+        port = prompt(msg, default)
+        
+        is_valid, error_msg = is_valid_port(port)
+        if is_valid:
+            return port
+        
+        error(error_msg)
 
 
 def prompt_secret(msg: str) -> str:
@@ -224,11 +356,11 @@ def prompt_networking() -> None:
     if choice == "2":
         cfg.enable_traefik = "yes"
         cfg.enable_cloudflared = "no"
-        cfg.domain = prompt("Domain for Paperless (DNS A/AAAA must point here; Enter=default)", cfg.domain)
+        cfg.domain = prompt_domain("Domain for Paperless (DNS A/AAAA must point here; Enter=default)", cfg.domain)
     elif choice == "3":
         cfg.enable_traefik = "no"
         cfg.enable_cloudflared = "yes"
-        cfg.domain = prompt("Domain for Paperless (configured in Cloudflare)", cfg.domain)
+        cfg.domain = prompt_domain("Domain for Paperless (configured in Cloudflare)", cfg.domain)
     else:
         cfg.enable_traefik = "no"
         cfg.enable_cloudflared = "no"
@@ -240,7 +372,7 @@ def prompt_networking() -> None:
         cfg.http_port = suggested_port
     
     # Always set an http_port (needed for direct access or as backend)
-    cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
+    cfg.http_port = prompt_port("Bind Paperless on host port (Enter=default)", cfg.http_port)
     
     # Tailscale is additive - can be used alongside any other method
     print()
