@@ -257,8 +257,7 @@ def main() -> Path:
         warn(f"No .env found at {ENV_FILE}")
 
     if COMPOSE_FILE.exists():
-        shutil_path = work / "compose.snapshot.yml"
-        shutil_path.write_text(COMPOSE_FILE.read_text())
+        (work / "compose.snapshot.yml").write_text(COMPOSE_FILE.read_text())
     
     # Capture Docker image versions for restoration
     capture_docker_versions(work)

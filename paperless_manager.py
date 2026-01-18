@@ -449,6 +449,11 @@ class PaperlessManager:
         
         # Show backup connection status
         instances = self.instance_manager.list_instances()
+        running_count = sum(1 for i in instances if i.is_running)
+        stopped_count = len(instances) - running_count
+        
+        # System overview box
+        print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
         
         if self.rclone_configured:
             # Get backup info
@@ -468,41 +473,51 @@ class PaperlessManager:
                     backup_mgr = BackupManager(inst)
                     snaps = backup_mgr.fetch_snapshots()
                     if snaps:
-                        latest_backup = snaps[-1][0]  # Most recent snapshot name
+                        latest_backup = snaps[-1][0][:16]  # Just date/time
                         break
                 
-                backup_info = f"{colorize('pCloud Connected', Colors.GREEN)} • {backed_up_count} backed up instances"
+                backup_status = colorize("✓ Connected", Colors.GREEN)
+                backup_detail = f"{backed_up_count} backed up"
                 if latest_backup != "none":
-                    backup_info += f" • Last: {latest_backup}"
+                    backup_detail += f" • Last: {latest_backup}"
             except:
-                backup_info = colorize("pCloud Connected", Colors.GREEN)
+                backup_status = colorize("✓ Connected", Colors.GREEN)
+                backup_detail = "Ready"
         else:
-            backup_info = colorize("Not connected", Colors.YELLOW) + " (configure to enable backups)"
+            backup_status = colorize("⚠ Not connected", Colors.YELLOW)
+            backup_detail = "Configure to enable backups"
         
-        print(f"Backup: {backup_info}")
+        print(colorize("│", Colors.CYAN) + f" Backup Server:  {backup_status:<20} {backup_detail}" + " " * (58 - len(backup_detail) - 35) + colorize("│", Colors.CYAN))
+        
+        # Instances status
+        if instances:
+            instance_status = f"{colorize(str(running_count), Colors.GREEN)} running, {colorize(str(stopped_count), Colors.YELLOW) if stopped_count > 0 else str(stopped_count)} stopped"
+            print(colorize("│", Colors.CYAN) + f" Instances:      {len(instances)} total • {instance_status}" + " " * (58 - len(f"{len(instances)} total • ") - running_count - stopped_count - 22) + colorize("│", Colors.CYAN))
+        else:
+            print(colorize("│", Colors.CYAN) + f" Instances:      {colorize('No instances configured', Colors.YELLOW)}" + " " * 22 + colorize("│", Colors.CYAN))
+        
+        print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
         print()
         
-        # Show instances overview
+        # Quick instance list
         if instances:
-            print(f"Instances ({len(instances)}):")
+            print(colorize("Active Instances:", Colors.BOLD))
             for instance in instances[:5]:  # Show max 5
                 status_icon = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
-                status_text = "Running" if instance.is_running else "Stopped"
-                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD)} - {status_text}")
+                domain = instance.get_env_value("DOMAIN", "localhost")
+                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD):<25} {Colors.CYAN}{domain}{Colors.OFF}")
             
             if len(instances) > 5:
-                print(f"  ... and {len(instances) - 5} more")
-        else:
-            print(colorize("No instances configured", Colors.YELLOW))
-        
-        print()
+                print(f"  {colorize(f'... and {len(instances) - 5} more', Colors.CYAN)}")
+            print()
         
         # Main menu options
         options = [
-            ("1", "Instances" + (f" ({len(instances)})" if instances else "")),
-            ("2", "Backups" + (" ✓" if self.rclone_configured else " ⚠")),
-            ("3", "Backup server connection"),
-            ("0", "Quit")
+            ("1", colorize("▸", Colors.GREEN) + " Manage Instances" + (f" ({len(instances)})" if instances else "")),
+            ("2", colorize("▸", Colors.BLUE) + " Browse Backups" + (" ✓" if self.rclone_configured else " ⚠")),
+            ("3", colorize("▸", Colors.MAGENTA) + " System Backup/Restore"),
+            ("4", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
+            ("0", colorize("◀", Colors.RED) + " Quit")
         ]
         print_menu(options)
     
@@ -518,6 +533,8 @@ class PaperlessManager:
             else:
                 self.backups_menu()
         elif choice == "3":
+            self.system_backup_menu()
+        elif choice == "4":
             self.configure_backup_connection()
         else:
             warn("Invalid option")
@@ -787,24 +804,43 @@ class PaperlessManager:
         while True:
             print_header(f"Instance: {instance.name}")
             
-            status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
-            print(f"Status: {status}")
-            print(f"Stack: {instance.stack_dir}")
-            print(f"Data:  {instance.data_root}")
+            status = colorize("● Running", Colors.GREEN) if instance.is_running else colorize("○ Stopped", Colors.YELLOW)
+            domain = instance.get_env_value("DOMAIN", "localhost")
+            url = instance.get_env_value("PAPERLESS_URL", "")
+            
+            print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
+            print(colorize("│", Colors.CYAN) + f" Status: {status}" + " " * (58 - len("Status: ") - 10) + colorize("│", Colors.CYAN))
+            print(colorize("│", Colors.CYAN) + f" Domain: {colorize(domain, Colors.BOLD)}" + " " * (58 - len("Domain: ") - len(domain)) + colorize("│", Colors.CYAN))
+            if url:
+                print(colorize("│", Colors.CYAN) + f" URL:    {colorize(url, Colors.CYAN)}" + " " * (58 - len("URL:    ") - len(url)) + colorize("│", Colors.CYAN))
+            print(colorize("│", Colors.CYAN) + f" Stack:  {instance.stack_dir}" + " " * (58 - len("Stack:  ") - len(str(instance.stack_dir))) + colorize("│", Colors.CYAN))
+            print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
             print()
             
             options = [
-                ("1", "View details"),
-                ("2", "Health check"),
-                ("3", "Update instance (backup + upgrade)"),
-                ("4", "Backup now"),
-                ("5", "Restore/revert from backup"),
-                ("6", "Container operations"),
-                ("7", "Edit settings"),
-                ("8", "Delete instance"),
-                ("0", "Back")
+                ("", colorize("Information:", Colors.BOLD)),
+                ("1", "  • View full details"),
+                ("2", "  • Health check"),
+                ("", ""),
+                ("", colorize("Operations:", Colors.BOLD)),
+                ("3", "  • Update instance " + colorize("(backup + upgrade)", Colors.YELLOW)),
+                ("4", "  • Backup now"),
+                ("5", "  • Restore from backup"),
+                ("6", "  • Container operations"),
+                ("", ""),
+                ("", colorize("Advanced:", Colors.BOLD)),
+                ("7", "  • Edit settings"),
+                ("8", "  • " + colorize("Delete instance", Colors.RED)),
+                ("", ""),
+                ("0", colorize("◀ Back", Colors.CYAN))
             ]
-            print_menu(options)
+            
+            for key, desc in options:
+                if key:
+                    print(f"  {colorize(key + ')', Colors.BOLD)} {desc}")
+                else:
+                    print(f"  {desc}")
+            print()
             
             choice = get_input("Select option", "")
             
@@ -1156,6 +1192,305 @@ class PaperlessManager:
         warn("This feature is under development")
         input("\nPress Enter to continue...")
     
+    def system_backup_menu(self) -> None:
+        """System-level backup and restore menu."""
+        while True:
+            print_header("System Backup & Restore")
+            
+            if not self.rclone_configured:
+                warn("Backup server not configured!")
+                input("\nPress Enter to continue...")
+                return
+            
+            instances = self.instance_manager.list_instances()
+            
+            # Check for existing system backups
+            try:
+                result = subprocess.run(
+                    ["rclone", "lsd", "pcloud:backups/paperless-system"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5
+                )
+                system_backups = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+            except:
+                system_backups = []
+            
+            print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
+            print(colorize("│", Colors.CYAN) + f" Current System: {len(instances)} instance(s) configured" + " " * (58 - len(f" Current System: {len(instances)} instance(s) configured")) + colorize("│", Colors.CYAN))
+            print(colorize("│", Colors.CYAN) + f" System Backups: {len(system_backups)} available" + " " * (58 - len(f" System Backups: {len(system_backups)} available")) + colorize("│", Colors.CYAN))
+            print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
+            print()
+            
+            print(colorize("What is System Backup?", Colors.BOLD))
+            print("  • Backs up metadata about ALL instances")
+            print("  • Records which instances exist, their config, state")
+            print("  • Enables disaster recovery: restore entire multi-instance setup")
+            print("  • Separate from individual instance data backups")
+            print()
+            
+            options = [
+                ("1", colorize("💾", Colors.GREEN) + " Backup current system"),
+                ("2", colorize("📋", Colors.BLUE) + " View system backups"),
+                ("3", colorize("🔄", Colors.YELLOW) + " Restore system from backup"),
+                ("0", colorize("◀ Back", Colors.CYAN))
+            ]
+            print_menu(options)
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._backup_system()
+            elif choice == "2":
+                self._view_system_backups()
+            elif choice == "3":
+                self._restore_system()
+            else:
+                warn("Invalid option")
+    
+    def _backup_system(self) -> None:
+        """Backup current system configuration."""
+        print_header("Backup Current System")
+        
+        instances = self.instance_manager.list_instances()
+        
+        if not instances:
+            warn("No instances to backup!")
+            input("\nPress Enter to continue...")
+            return
+        
+        print(f"This will backup metadata for {len(instances)} instance(s):")
+        for inst in instances:
+            status = "running" if inst.is_running else "stopped"
+            print(f"  • {inst.name} ({status})")
+        print()
+        
+        if not confirm("Create system backup?", True):
+            return
+        
+        try:
+            from datetime import datetime
+            import json
+            import tempfile
+            
+            # Create temp directory for system backup
+            backup_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            work = Path(tempfile.mkdtemp(prefix="paperless-system-"))
+            
+            say(f"Creating system backup: {backup_name}")
+            
+            # Backup instances.json
+            system_info = {
+                "backup_date": datetime.utcnow().isoformat(),
+                "backup_name": backup_name,
+                "instance_count": len(instances),
+                "instances": {},
+                "instances_registry": json.loads(self.instance_manager.config_file.read_text()) if self.instance_manager.config_file.exists() else {}
+            }
+            
+            for inst in instances:
+                inst_info = {
+                    "name": inst.name,
+                    "stack_dir": str(inst.stack_dir),
+                    "data_root": str(inst.data_root),
+                    "running": inst.is_running,
+                    "env_vars": {},
+                    "latest_backup": None
+                }
+                
+                # Capture key env variables
+                if inst.env_file.exists():
+                    for key in ["DOMAIN", "PAPERLESS_URL", "POSTGRES_DB", "ENABLE_TRAEFIK", 
+                               "RCLONE_REMOTE_PATH", "INSTANCE_NAME"]:
+                        inst_info["env_vars"][key] = inst.get_env_value(key, "")
+                
+                # Find latest backup for this instance
+                try:
+                    backup_mgr = BackupManager(inst)
+                    snaps = backup_mgr.fetch_snapshots()
+                    if snaps:
+                        inst_info["latest_backup"] = snaps[-1][0]
+                except:
+                    pass
+                
+                system_info["instances"][inst.name] = inst_info
+            
+            (work / "system-info.json").write_text(json.dumps(system_info, indent=2))
+            
+            # Create manifest
+            manifest = f"""system_backup: true
+backup_date: {datetime.utcnow().isoformat()}
+instance_count: {len(instances)}
+"""
+            (work / "manifest.yaml").write_text(manifest)
+            
+            # Upload to pCloud
+            remote = f"pcloud:backups/paperless-system/{backup_name}"
+            say("Uploading to pCloud...")
+            subprocess.run(
+                ["rclone", "copy", str(work), remote],
+                check=True,
+                stdout=subprocess.DEVNULL
+            )
+            
+            ok(f"System backup created: {backup_name}")
+            print()
+            print("This backup contains:")
+            print("  ✓ Instance registry (instances.json)")
+            print("  ✓ Metadata for all instances")
+            print("  ✓ References to latest data backups")
+            print()
+            print("To restore: Use 'Restore system from backup' option")
+            
+            # Cleanup
+            import shutil
+            shutil.rmtree(work)
+            
+        except Exception as e:
+            error(f"System backup failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _view_system_backups(self) -> None:
+        """View available system backups."""
+        print_header("System Backups")
+        
+        try:
+            result = subprocess.run(
+                ["rclone", "lsd", "pcloud:backups/paperless-system"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                warn("No system backups found")
+                input("\nPress Enter to continue...")
+                return
+            
+            backups = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+            
+            print(colorize("Available System Backups:", Colors.BOLD))
+            print()
+            
+            for idx, backup in enumerate(sorted(backups, reverse=True), 1):
+                # Get backup info
+                try:
+                    info = subprocess.run(
+                        ["rclone", "cat", f"pcloud:backups/paperless-system/{backup}/system-info.json"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if info.returncode == 0:
+                        import json
+                        data = json.loads(info.stdout)
+                        inst_count = data.get("instance_count", "?")
+                        print(f"  {idx}) {backup} - {inst_count} instance(s)")
+                    else:
+                        print(f"  {idx}) {backup}")
+                except:
+                    print(f"  {idx}) {backup}")
+            
+        except Exception as e:
+            error(f"Failed to list system backups: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _restore_system(self) -> None:
+        """Restore system from backup."""
+        print_header("Restore System from Backup")
+        
+        warn("⚠  IMPORTANT: System restore will:")
+        print("  • Register all instances from the backup")
+        print("  • Restore data from individual instance backups")
+        print("  • May overwrite existing instance registry")
+        print()
+        
+        try:
+            result = subprocess.run(
+                ["rclone", "lsd", "pcloud:backups/paperless-system"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                warn("No system backups found")
+                input("\nPress Enter to continue...")
+                return
+            
+            backups = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()], reverse=True)
+            
+            print("Available system backups:")
+            for idx, backup in enumerate(backups, 1):
+                print(f"  {idx}) {backup}")
+            print()
+            
+            choice = get_input(f"Select backup [1-{len(backups)}] or 'cancel'", "cancel")
+            
+            if not choice.isdigit() or not (1 <= int(choice) <= len(backups)):
+                return
+            
+            backup_name = backups[int(choice) - 1]
+            
+            # Download and parse system info
+            say("Downloading system backup...")
+            import json
+            import tempfile
+            
+            work = Path(tempfile.mkdtemp(prefix="paperless-system-restore-"))
+            subprocess.run(
+                ["rclone", "copy", f"pcloud:backups/paperless-system/{backup_name}", str(work)],
+                check=True,
+                stdout=subprocess.DEVNULL
+            )
+            
+            system_info = json.loads((work / "system-info.json").read_text())
+            
+            print()
+            print(f"System backup: {backup_name}")
+            print(f"Created: {system_info['backup_date']}")
+            print(f"Instances: {system_info['instance_count']}")
+            print()
+            print("Instances in backup:")
+            for inst_name, inst_data in system_info["instances"].items():
+                latest = inst_data.get("latest_backup", "no backup")
+                print(f"  • {inst_name} - latest backup: {latest}")
+            print()
+            
+            if not confirm("Restore this system configuration?", False):
+                import shutil
+                shutil.rmtree(work)
+                return
+            
+            # Restore instances registry from system info
+            if "instances_registry" in system_info:
+                say("Restoring instance registry...")
+                self.instance_manager.config_file.parent.mkdir(parents=True, exist_ok=True)
+                self.instance_manager.config_file.write_text(
+                    json.dumps(system_info["instances_registry"], indent=2)
+                )
+                self.instance_manager.load_instances()
+            
+            ok("System configuration restored!")
+            print()
+            print("Next steps:")
+            print("  1. Check 'Manage Instances' to see restored instances")
+            print("  2. Use each instance's 'Restore from backup' to restore data")
+            print(f"     (Latest backups are shown in the system info above)")
+            
+            import shutil
+            shutil.rmtree(work)
+            
+        except Exception as e:
+            error(f"System restore failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
     def backups_menu(self) -> None:
         """Backups explorer and management."""
         while True:
@@ -1284,20 +1619,24 @@ class PaperlessManager:
                 snapshots = sorted(snapshots, key=lambda x: x[0])
                 
                 # Display snapshots
-                print(f"{'#':<4} {'Name':<30} {'Mode':<8} {'Created':<20} {'Docker'}")
-                print("─" * 85)
+                print(colorize("Available Snapshots:", Colors.BOLD))
+                print()
+                print(f"{colorize('#', Colors.BOLD):<5} {colorize('Snapshot Name', Colors.BOLD):<30} {colorize('Mode', Colors.BOLD):<10} {colorize('Created', Colors.BOLD):<20} {colorize('Docker', Colors.BOLD)}")
+                print(colorize("─" * 85, Colors.CYAN))
                 
                 for idx, (name, mode, parent, created, has_vers) in enumerate(snapshots, 1):
                     mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN
-                    vers_icon = "✓" if has_vers else "✗"
-                    print(f"{idx:<4} {name:<30} {colorize(mode, mode_color):<18} {created:<20} {vers_icon}")
+                    vers_icon = colorize("✓", Colors.GREEN) if has_vers else colorize("✗", Colors.RED)
+                    print(f"{idx:<5} {name:<30} {colorize(mode.upper(), mode_color):<20} {created:<20} {vers_icon}")
                 print()
                 
                 # Options
-                options = [(str(i), f"View details") for i in range(1, len(snapshots) + 1)]
-                options.append((str(len(snapshots) + 1), "Restore to new instance"))
-                options.append((str(len(snapshots) + 2), "Delete snapshot"))
-                options.append(("0", "Back"))
+                options = []
+                for i in range(1, len(snapshots) + 1):
+                    options.append((str(i), f"View details of snapshot #{i}"))
+                options.append((str(len(snapshots) + 1), colorize("↻", Colors.GREEN) + " Restore to new instance"))
+                options.append((str(len(snapshots) + 2), colorize("✗", Colors.RED) + " Delete snapshot"))
+                options.append(("0", colorize("◀ Back", Colors.CYAN)))
                 print_menu(options)
                 
                 choice = get_input("Select option", "")
@@ -1322,20 +1661,49 @@ class PaperlessManager:
         """View detailed information about a snapshot."""
         name, mode, parent, created, has_versions = snapshot
         
-        print_header(f"Snapshot Details: {name}")
+        print_header(f"Snapshot: {name}")
         
-        print(f"Instance: {instance_name}")
-        print(f"Snapshot: {name}")
-        print(f"Mode: {mode}")
-        print(f"Created: {created}")
+        print(colorize("╭──────────────────────────────────────────────────────────────────────────────╮", Colors.CYAN))
+        print(colorize("│", Colors.CYAN) + f" Instance:  {colorize(instance_name, Colors.BOLD)}" + " " * (80 - len("Instance:  ") - len(instance_name)) + colorize("│", Colors.CYAN))
+        print(colorize("│", Colors.CYAN) + f" Snapshot:  {name}" + " " * (80 - len("Snapshot:  ") - len(name)) + colorize("│", Colors.CYAN))
+        mode_display = colorize(mode.upper(), Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN)
+        print(colorize("│", Colors.CYAN) + f" Mode:      {mode_display}" + " " * (80 - len("Mode:      ") - len(mode) - 10) + colorize("│", Colors.CYAN))
+        print(colorize("│", Colors.CYAN) + f" Created:   {created}" + " " * (80 - len("Created:   ") - len(created)) + colorize("│", Colors.CYAN))
         if mode == "incr" and parent != "?":
-            print(f"Parent: {parent}")
+            print(colorize("│", Colors.CYAN) + f" Parent:    {parent}" + " " * (80 - len("Parent:    ") - len(parent)) + colorize("│", Colors.CYAN))
+        print(colorize("╰──────────────────────────────────────────────────────────────────────────────╯", Colors.CYAN))
         print()
         
         remote_path = f"pcloud:backups/paperless/{instance_name}/{name}"
         
+        # Show Docker versions FIRST and prominently if available
+        if has_versions:
+            print(colorize("▸ Docker Container Versions at Backup Time:", Colors.BOLD))
+            print()
+            versions = subprocess.run(
+                ["rclone", "cat", f"{remote_path}/docker-images.txt"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if versions.returncode == 0:
+                for line in versions.stdout.strip().splitlines():
+                    # Parse and colorize
+                    if ":" in line:
+                        print(f"  {colorize('•', Colors.GREEN)} {line}")
+                    else:
+                        print(f"  {line}")
+            else:
+                warn("Could not load Docker version information")
+            print()
+        else:
+            warn("⚠  No Docker version information in this snapshot")
+            print("   (This snapshot was created before version tracking was added)")
+            print()
+        
         # Show files in snapshot
-        say("Snapshot contents:")
+        print(colorize("▸ Snapshot Contents:", Colors.BOLD))
+        print()
         result = subprocess.run(
             ["rclone", "ls", remote_path],
             capture_output=True,
@@ -1344,10 +1712,12 @@ class PaperlessManager:
         )
         
         if result.returncode == 0:
+            total_size = 0
             for line in result.stdout.splitlines():
                 parts = line.strip().split(None, 1)
                 if len(parts) == 2:
                     size_bytes = int(parts[0])
+                    total_size += size_bytes
                     filename = parts[1]
                     # Convert to human readable
                     if size_bytes < 1024:
@@ -1358,24 +1728,27 @@ class PaperlessManager:
                         size = f"{size_bytes / (1024 * 1024):.1f}MB"
                     else:
                         size = f"{size_bytes / (1024 * 1024 * 1024):.2f}GB"
+                    
+                    # Color-code file types
+                    if filename.endswith('.tar.gz'):
+                        filename = colorize(filename, Colors.CYAN)
+                    elif filename.endswith('.sql'):
+                        filename = colorize(filename, Colors.GREEN)
+                    elif filename.endswith('.yaml') or filename.endswith('.yml'):
+                        filename = colorize(filename, Colors.YELLOW)
+                    
                     print(f"  {size:>10}  {filename}")
+            
+            # Show total
+            if total_size > 0:
+                if total_size < 1024 * 1024 * 1024:
+                    total = f"{total_size / (1024 * 1024):.1f}MB"
+                else:
+                    total = f"{total_size / (1024 * 1024 * 1024):.2f}GB"
+                print()
+                print(f"  {colorize('Total:', Colors.BOLD)} {colorize(total, Colors.GREEN)}")
         
         print()
-        
-        # Show Docker versions if available
-        if has_versions:
-            say("Docker images at backup time:")
-            versions = subprocess.run(
-                ["rclone", "cat", f"{remote_path}/docker-images.txt"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if versions.returncode == 0:
-                for line in versions.stdout.strip().splitlines():
-                    print(f"  {line}")
-            print()
-        
         input("\nPress Enter to continue...")
     
     def _restore_from_explorer(self, instance_name: str, snapshots: list) -> None:
@@ -1401,7 +1774,8 @@ class PaperlessManager:
         if confirm(f"Restore {instance_name}/{snapshot_name} as '{new_instance}'?", False):
             try:
                 say("Restoring instance...")
-                # Use the existing restore flow
+                
+                # Set up config for restore
                 sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
                 from installer import common
                 
@@ -1410,8 +1784,15 @@ class PaperlessManager:
                 common.cfg.rclone_remote_path = f"backups/paperless/{instance_name}"
                 common.cfg.refresh_paths()
                 
-                restore_script = Path("/usr/local/lib/paperless-bulletproof/modules/restore.py")
-                subprocess.run([sys.executable, str(restore_script), snapshot_name], check=True)
+                # Set up environment for restore module
+                os.environ["INSTANCE_NAME"] = new_instance
+                os.environ["STACK_DIR"] = str(common.cfg.stack_dir)
+                os.environ["DATA_ROOT"] = str(common.cfg.data_root)
+                os.environ["RCLONE_REMOTE_PATH"] = f"backups/paperless/{instance_name}"
+                
+                # Call restore module
+                restore_module = Path("/usr/local/lib/paperless-bulletproof/modules/restore.py")
+                subprocess.run([sys.executable, str(restore_module), snapshot_name], check=True)
                 
                 # Register instance
                 self.instance_manager.add_instance(
