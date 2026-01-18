@@ -2192,11 +2192,23 @@ instance_count: {len(instances)}
             
             # Remove instance directories
             say("Removing instance directories...")
-            subprocess.run(["rm", "-rf", "/home/docker/*"], shell=True, check=False)
+            import shutil
+            docker_home = Path("/home/docker")
+            if docker_home.exists():
+                for item in docker_home.iterdir():
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                    except Exception as e:
+                        warn(f"Could not remove {item}: {e}")
             
             # Remove Traefik config
             say("Removing Traefik configuration...")
-            subprocess.run(["rm", "-rf", "/opt/traefik"], check=False, capture_output=True)
+            traefik_dir = Path("/opt/traefik")
+            if traefik_dir.exists():
+                shutil.rmtree(traefik_dir)
             
             # Remove instance tracking
             say("Removing instance tracking...")
