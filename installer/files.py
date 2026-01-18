@@ -173,10 +173,8 @@ def write_compose_file() -> None:
                 networks: [paperless]
 
               tika:
-                image: ghcr.io/paperless-ngx/tika:latest
+                image: apache/tika:latest
                 restart: unless-stopped
-                volumes:
-                  - {cfg.dir_tika_cache}:/cache
                 networks: [paperless]
 
               paperless:
@@ -269,10 +267,8 @@ def write_compose_file() -> None:
                 networks: [paperless]
 
               tika:
-                image: ghcr.io/paperless-ngx/tika:latest
+                image: apache/tika:latest
                 restart: unless-stopped
-                volumes:
-                  - {cfg.dir_tika_cache}:/cache
                 networks: [paperless]
 
               paperless:

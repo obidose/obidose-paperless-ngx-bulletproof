@@ -427,9 +427,9 @@ class PaperlessManager:
         while True:
             self._scan_system()
             self.show_main_menu()
-            choice = get_input("Select option", "").lower()
+            choice = get_input("Select option", "")
             
-            if choice in ('q', 'quit', 'exit'):
+            if choice == "0":
                 print("\nGoodbye! 👋\n")
                 break
             
@@ -502,7 +502,7 @@ class PaperlessManager:
             ("1", "Instances" + (f" ({len(instances)})" if instances else "")),
             ("2", "Backups" + (" ✓" if self.rclone_configured else " ⚠")),
             ("3", "Backup server connection"),
-            ("q", "Quit")
+            ("0", "Quit")
         ]
         print_menu(options)
     
@@ -555,26 +555,25 @@ class PaperlessManager:
             else:
                 print("  No instances configured\n")
             
-            options = [
-                ("a", "Add new instance"),
-                ("d", "Delete all instances"),
-            ]
-            
-            # Add instance selection options
+            # Build options with numbers for instances first, then operations
+            options = []
             for idx in range(1, len(instances) + 1):
-                options.insert(idx, (str(idx), f"Manage '{instances[idx-1].name}'"))
+                options.append((str(idx), f"Manage '{instances[idx-1].name}'"))
             
-            options.append(("b", "Back to main menu"))
+            next_num = len(instances) + 1
+            options.append((str(next_num), "Add new instance"))
+            options.append((str(next_num + 1), "Delete all instances"))
+            options.append(("0", "Back to main menu"))
             
             print_menu(options)
             
-            choice = get_input("Select option", "").lower()
+            choice = get_input("Select option", "")
             
-            if choice == "b":
+            if choice == "0":
                 break
-            elif choice == "a":
+            elif choice == str(next_num):
                 self.add_instance_menu()
-            elif choice == "d":
+            elif choice == str(next_num + 1):
                 if confirm("Delete ALL instances from tracking?", False):
                     for inst in instances:
                         self.instance_manager.remove_instance(inst.name)
@@ -592,17 +591,17 @@ class PaperlessManager:
         options = [
             ("1", "Create fresh instance"),
             ("2", "Restore from backup"),
-            ("b", "Back")
+            ("0", "Back")
         ]
         print_menu(options)
         
-        choice = get_input("Select option", "").lower()
+        choice = get_input("Select option", "")
         
         if choice == "1":
             self.create_fresh_instance()
         elif choice == "2":
             self.restore_instance_from_backup()
-        # else back
+        # else back (0 or any other)
     
     def create_fresh_instance(self) -> None:
         """Create a new fresh instance."""
@@ -802,13 +801,13 @@ class PaperlessManager:
                 ("5", "Container operations"),
                 ("6", "Edit settings"),
                 ("7", "Delete instance"),
-                ("b", "Back")
+                ("0", "Back")
             ]
             print_menu(options)
             
-            choice = get_input("Select option", "").lower()
+            choice = get_input("Select option", "")
             
-            if choice == "b":
+            if choice == "0":
                 break
             elif choice == "1":
                 self.view_instance_details(instance)
@@ -871,7 +870,7 @@ class PaperlessManager:
             ("1", "Incremental backup"),
             ("2", "Full backup"),
             ("3", "Archive backup"),
-            ("b", "Cancel")
+            ("0", "Cancel")
         ]
         print_menu(options)
         
@@ -943,13 +942,13 @@ class PaperlessManager:
                 ("4", "View status"),
                 ("5", "View logs"),
                 ("6", "Upgrade containers"),
-                ("b", "Back")
+                ("0", "Back")
             ]
             print_menu(options)
             
-            choice = get_input("Select option", "").lower()
+            choice = get_input("Select option", "")
             
-            if choice == "b":
+            if choice == "0":
                 break
             elif choice == "1":
                 self._docker_command(instance, "up", "-d")
