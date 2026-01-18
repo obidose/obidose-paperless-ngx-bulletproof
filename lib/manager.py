@@ -530,7 +530,10 @@ class PaperlessManager:
             ("2", colorize("▸", Colors.BLUE) + " Browse Backups" + (" ✓" if self.rclone_configured else " ⚠")),
             ("3", colorize("▸", Colors.MAGENTA) + " System Backup/Restore"),
             ("4", colorize("▸", Colors.CYAN) + " Manage Traefik (HTTPS)"),
-            ("5", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
+            ("5", colorize("▸", Colors.CYAN) + " Manage Cloudflare Tunnel"),
+            ("6", colorize("▸", Colors.CYAN) + " Manage Tailscale"),
+            ("7", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
+            ("8", colorize("▸", Colors.RED) + " Nuke Setup (Clean Start)"),
             ("0", colorize("◀", Colors.RED) + " Quit")
         ]
         print_menu(options)
@@ -551,7 +554,13 @@ class PaperlessManager:
         elif choice == "4":
             self.traefik_menu()
         elif choice == "5":
+            self.cloudflared_menu()
+        elif choice == "6":
+            self.tailscale_menu()
+        elif choice == "7":
             self.configure_backup_connection()
+        elif choice == "8":
+            self.nuke_setup()
         else:
             warn("Invalid option")
     
@@ -1993,6 +2002,214 @@ instance_count: {len(instances)}
                 ok("Snapshot deleted")
             except Exception as e:
                 error(f"Failed to delete snapshot: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def cloudflared_menu(self) -> None:
+        """Cloudflare Tunnel management menu."""
+        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+        from lib.installer import cloudflared
+        
+        while True:
+            print_header("Manage Cloudflare Tunnel")
+            
+            installed = cloudflared.is_cloudflared_installed()
+            authenticated = cloudflared.is_authenticated() if installed else False
+            
+            if not installed:
+                say(colorize("⚠ Cloudflared not installed", Colors.YELLOW))
+                print("\nCloudflare Tunnel provides secure access without exposing ports.")
+                print()
+                options = [("1", "Install cloudflared"), ("0", "Back to main menu")]
+            elif not authenticated:
+                say(colorize("⚠ Not authenticated with Cloudflare", Colors.YELLOW))
+                print()
+                options = [("1", "Authenticate with Cloudflare"), ("0", "Back to main menu")]
+            else:
+                say(colorize("✓ Cloudflared installed and authenticated", Colors.GREEN))
+                tunnels = cloudflared.list_tunnels()
+                if tunnels:
+                    print(f"\nActive tunnels: {len(tunnels)}")
+                    for tunnel in tunnels[:5]:
+                        print(f"  • {tunnel.get('name')}")
+                print()
+                options = [
+                    ("1", "List all tunnels"),
+                    ("2", "View tunnel status"),
+                    ("0", "Back to main menu")
+                ]
+            
+            print_menu(options)
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                if not installed:
+                    if cloudflared.install_cloudflared():
+                        ok("Cloudflared installed!")
+                    else:
+                        error("Installation failed")
+                elif not authenticated:
+                    if cloudflared.authenticate():
+                        ok("Authentication successful!")
+                    else:
+                        error("Authentication failed")
+                else:
+                    # List tunnels
+                    tunnels = cloudflared.list_tunnels()
+                    if tunnels:
+                        for t in tunnels:
+                            print(f"\n{t.get('name')} - {t.get('id')}")
+                    else:
+                        say("No tunnels found")
+                input("\nPress Enter to continue...")
+    
+    def tailscale_menu(self) -> None:
+        """Tailscale management menu."""
+        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+        from lib.installer import tailscale
+        
+        while True:
+            print_header("Manage Tailscale")
+            
+            installed = tailscale.is_tailscale_installed()
+            connected = tailscale.is_connected() if installed else False
+            
+            if not installed:
+                say(colorize("⚠ Tailscale not installed", Colors.YELLOW))
+                print("\nTailscale provides secure private network access.")
+                print()
+                options = [("1", "Install Tailscale"), ("0", "Back to main menu")]
+            elif not connected:
+                say(colorize("⚠ Tailscale not connected", Colors.YELLOW))
+                print()
+                options = [
+                    ("1", "Connect to Tailscale"),
+                    ("0", "Back to main menu")
+                ]
+            else:
+                say(colorize("✓ Tailscale connected", Colors.GREEN))
+                ip = tailscale.get_ip()
+                if ip:
+                    print(f"Tailscale IP: {colorize(ip, Colors.CYAN)}")
+                print()
+                options = [
+                    ("1", "View status"),
+                    ("2", "Disconnect"),
+                    ("0", "Back to main menu")
+                ]
+            
+            print_menu(options)
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                if not installed:
+                    if tailscale.install_tailscale():
+                        ok("Tailscale installed!")
+                    else:
+                        error("Installation failed")
+                elif not connected:
+                    if tailscale.connect():
+                        ok("Connected to Tailscale!")
+                    else:
+                        error("Connection failed")
+                else:
+                    # Show status
+                    print(tailscale.get_status())
+                input("\nPress Enter to continue...")
+            elif choice == "2" and connected:
+                if tailscale.disconnect():
+                    ok("Disconnected from Tailscale")
+                input("\nPress Enter to continue...")
+    
+    def nuke_setup(self) -> None:
+        """Nuclear option - delete all instances and Docker resources."""
+        print_header("Nuke Setup (Clean Start)")
+        
+        warn("This will DELETE EVERYTHING:")
+        print("  • All Docker containers (stopped and running)")
+        print("  • All Docker networks")
+        print("  • All Docker volumes")
+        print("  • All instance directories (/home/docker/*)")
+        print("  • All instance tracking data")
+        print("  • Traefik configuration")
+        print()
+        error("Backups on pCloud will NOT be deleted")
+        print()
+        
+        if not confirm("Type 'NUKE' to confirm complete deletion", False):
+            say("Cancelled")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Double confirm
+        confirmation = get_input("Type the word NUKE in capitals to confirm", "")
+        if confirmation != "NUKE":
+            say("Cancelled - confirmation did not match")
+            input("\nPress Enter to continue...")
+            return
+        
+        say("Starting nuclear cleanup...")
+        print()
+        
+        try:
+            # Stop all containers
+            say("Stopping all Docker containers...")
+            subprocess.run(
+                ["docker", "stop", "$(docker ps -aq)"],
+                shell=True,
+                check=False,
+                capture_output=True
+            )
+            
+            # Remove all containers
+            say("Removing all Docker containers...")
+            subprocess.run(
+                ["docker", "rm", "$(docker ps -aq)"],
+                shell=True,
+                check=False,
+                capture_output=True
+            )
+            
+            # Remove all networks (except default ones)
+            say("Removing Docker networks...")
+            result = subprocess.run(
+                ["docker", "network", "ls", "--format", "{{.Name}}"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            for network in result.stdout.splitlines():
+                if network not in ["bridge", "host", "none"]:
+                    subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+            
+            # Prune volumes
+            say("Pruning Docker volumes...")
+            subprocess.run(["docker", "volume", "prune", "-f"], check=False, capture_output=True)
+            
+            # Remove instance directories
+            say("Removing instance directories...")
+            subprocess.run(["rm", "-rf", "/home/docker/*"], shell=True, check=False)
+            
+            # Remove Traefik config
+            say("Removing Traefik configuration...")
+            subprocess.run(["rm", "-rf", "/opt/traefik"], check=False, capture_output=True)
+            
+            # Remove instance tracking
+            say("Removing instance tracking...")
+            tracking_file = Path("/root/.paperless_instances.json")
+            if tracking_file.exists():
+                tracking_file.unlink()
+            
+            ok("Nuclear cleanup complete!")
+            say("System is now in clean state")
+            say("You can start fresh by creating new instances")
+            
+        except Exception as e:
+            error(f"Cleanup error: {e}")
         
         input("\nPress Enter to continue...")
 
