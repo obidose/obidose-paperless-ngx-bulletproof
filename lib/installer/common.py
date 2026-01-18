@@ -192,7 +192,7 @@ def prompt_core_values() -> None:
     if prompt("Enable Traefik with HTTPS? (yes/no; Enter=default)", cfg.enable_traefik).lower() in ["y", "yes", "true", "1"]:
         cfg.enable_traefik = "yes"
         cfg.domain = prompt("Domain for Paperless (DNS A/AAAA must point here; Enter=default)", cfg.domain)
-        cfg.letsencrypt_email = prompt("Let's Encrypt email (Enter=default)", cfg.letsencrypt_email)
+        # Let's Encrypt email is configured once during Traefik installation
     else:
         cfg.enable_traefik = "no"
         cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)

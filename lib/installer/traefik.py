@@ -73,6 +73,7 @@ def setup_system_traefik(email: str = "admin@example.com") -> bool:
             "-p", "443:443",
             "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
             "-v", f"{acme_file}:/acme.json",
+            "-e", "DOCKER_API_VERSION=1.44",
             "traefik:v3.0",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
