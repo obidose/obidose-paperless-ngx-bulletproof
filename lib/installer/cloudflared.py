@@ -148,8 +148,22 @@ ingress:
         config_file.write_text(config_content)
         
         # Create or ensure DNS record
+        # First try to delete any existing record (in case it points to old tunnel)
         say(f"Ensuring DNS record for {domain}")
-        subprocess.run(["cloudflared", "tunnel", "route", "dns", tunnel_name, domain], check=False)
+        result = subprocess.run(
+            ["cloudflared", "tunnel", "route", "dns", tunnel_name, domain],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        # If failed because record exists, try with --overwrite-dns
+        if result.returncode != 0 and "already exists" in result.stderr:
+            say(f"DNS record exists, updating to point to new tunnel...")
+            subprocess.run(
+                ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", tunnel_name, domain],
+                check=False
+            )
         
         ok(f"Cloudflare tunnel ready for {domain}")
         say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
@@ -177,4 +191,53 @@ def delete_tunnel(instance_name: str) -> bool:
         return True
     except subprocess.CalledProcessError as e:
         warn(f"Failed to delete tunnel: {e}")
+        return False
+
+
+def update_tunnel_dns(instance_name: str, domain: str) -> bool:
+    """Update DNS record to point to the tunnel (fixes stale DNS)."""
+    tunnel_name = f"paperless-{instance_name}"
+    
+    tunnel = get_tunnel_for_instance(instance_name)
+    if not tunnel:
+        warn(f"No tunnel found for instance {instance_name}")
+        return False
+    
+    say(f"Updating DNS for {domain} to point to tunnel {tunnel_name}...")
+    
+    # Try with --overwrite-dns flag first
+    result = subprocess.run(
+        ["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", tunnel_name, domain],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    
+    if result.returncode == 0:
+        ok(f"DNS record updated for {domain}")
+        return True
+    else:
+        warn(f"Failed to update DNS: {result.stderr}")
+        return False
+
+
+def is_tunnel_service_running(instance_name: str) -> bool:
+    """Check if the tunnel systemd service is running."""
+    result = subprocess.run(
+        ["systemctl", "is-active", f"cloudflared-{instance_name}"],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    return result.stdout.strip() == "active"
+
+
+def restart_tunnel_service(instance_name: str) -> bool:
+    """Restart the tunnel systemd service."""
+    try:
+        subprocess.run(["systemctl", "restart", f"cloudflared-{instance_name}"], check=True)
+        ok(f"Tunnel service cloudflared-{instance_name} restarted")
+        return True
+    except subprocess.CalledProcessError:
+        warn(f"Failed to restart tunnel service")
         return False
