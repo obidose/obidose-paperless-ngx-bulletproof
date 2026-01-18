@@ -94,8 +94,27 @@ def confirm(msg: str, default: bool = True) -> bool:
 @dataclass
 class Config:
     instance_name: str = os.environ.get("INSTANCE_NAME", "paperless")
-    stack_dir: str = os.environ.get("STACK_DIR", "/home/docker/paperless-setup")
-    data_root: str = os.environ.get("DATA_ROOT", "/home/docker/paperless")
+    
+    # Compute instance-specific defaults
+    _default_stack_dir: str = None
+    _default_data_root: str = None
+    
+    stack_dir: str = None
+    data_root: str = None
+    
+    def __post_init__(self):
+        # Set instance-specific defaults if not provided
+        if self.stack_dir is None:
+            if self.instance_name == "paperless":
+                self.stack_dir = os.environ.get("STACK_DIR", "/home/docker/paperless-setup")
+            else:
+                self.stack_dir = os.environ.get("STACK_DIR", f"/home/docker/{self.instance_name}-setup")
+        
+        if self.data_root is None:
+            if self.instance_name == "paperless":
+                self.data_root = os.environ.get("DATA_ROOT", "/home/docker/paperless")
+            else:
+                self.data_root = os.environ.get("DATA_ROOT", f"/home/docker/{self.instance_name}")
 
     tz: str = os.environ.get("TZ", open('/etc/timezone').read().strip() if Path('/etc/timezone').exists() else 'Etc/UTC')
     puid: str = os.environ.get("PUID", "1001")
@@ -159,8 +178,19 @@ def prompt_core_values() -> None:
     print("Press Enter to accept the [default] value, or type a custom value.")
     cfg.tz = prompt("Timezone (IANA, e.g., Pacific/Auckland; Enter=default)", cfg.tz)
     cfg.instance_name = prompt("Instance name (Enter=default)", cfg.instance_name)
+    
+    # Update defaults based on instance name
+    cfg.__post_init__()
+    
+    # Prompt for paths with instance-specific defaults
     cfg.data_root = prompt("Data root (persistent storage; Enter=default)", cfg.data_root)
     cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", cfg.stack_dir)
+    
+    # Warn if paths already exist
+    if Path(cfg.stack_dir).exists():
+        warn(f"Stack directory {cfg.stack_dir} already exists - may conflict with existing instance")
+    if Path(cfg.data_root).exists():
+        warn(f"Data directory {cfg.data_root} already exists - may conflict with existing instance")
 
     cfg.paperless_admin_user = prompt("Paperless admin username (Enter=default)", cfg.paperless_admin_user)
     cfg.paperless_admin_password = prompt("Paperless admin password (Enter=default)", cfg.paperless_admin_password)

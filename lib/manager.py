@@ -487,14 +487,27 @@ class PaperlessManager:
             backup_status = colorize("⚠ Not connected", Colors.YELLOW)
             backup_detail = "Configure to enable backups"
         
-        print(colorize("│", Colors.CYAN) + f" Backup Server:  {backup_status:<20} {backup_detail}" + " " * (58 - len(backup_detail) - 35) + colorize("│", Colors.CYAN))
+        # Calculate padding for proper box alignment
+        box_width = 62
+        backup_line = f" Backup Server:  {backup_status} {backup_detail}"
+        # Strip ANSI codes for length calculation
+        import re
+        clean_line = re.sub(r'\033\[[0-9;]+m', '', backup_line)
+        padding = max(0, box_width - len(clean_line) - 2)
+        print(colorize("│", Colors.CYAN) + backup_line + " " * padding + colorize("│", Colors.CYAN))
         
         # Instances status
         if instances:
-            instance_status = f"{colorize(str(running_count), Colors.GREEN)} running, {colorize(str(stopped_count), Colors.YELLOW) if stopped_count > 0 else str(stopped_count)} stopped"
-            print(colorize("│", Colors.CYAN) + f" Instances:      {len(instances)} total • {instance_status}" + " " * (58 - len(f"{len(instances)} total • ") - running_count - stopped_count - 22) + colorize("│", Colors.CYAN))
+            instance_status = f"{running_count} running, {stopped_count} stopped"
+            instance_line = f" Instances:      {len(instances)} total • {instance_status}"
+            clean_line = re.sub(r'\033\[[0-9;]+m', '', instance_line)
+            padding = max(0, box_width - len(clean_line) - 2)
+            print(colorize("│", Colors.CYAN) + instance_line + " " * padding + colorize("│", Colors.CYAN))
         else:
-            print(colorize("│", Colors.CYAN) + f" Instances:      {colorize('No instances configured', Colors.YELLOW)}" + " " * 22 + colorize("│", Colors.CYAN))
+            no_instances_line = f" Instances:      {colorize('No instances configured', Colors.YELLOW)}"
+            clean_line = re.sub(r'\033\[[0-9;]+m', '', no_instances_line)
+            padding = max(0, box_width - len(clean_line) - 2)
+            print(colorize("│", Colors.CYAN) + no_instances_line + " " * padding + colorize("│", Colors.CYAN))
         
         print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
         print()
