@@ -185,11 +185,69 @@ class InstanceManager:
         self.save_instances()
         return instance
     
-    def remove_instance(self, name: str) -> None:
-        """Remove an instance from tracking (does not delete files)."""
-        if name in self._instances:
-            del self._instances[name]
-            self.save_instances()
+    def remove_instance(self, name: str, delete_files: bool = True) -> None:
+        """Remove an instance from tracking and optionally delete files.
+        
+        Args:
+            name: Instance name
+            delete_files: If True, stop containers and delete stack_dir and data_root directories
+        """
+        if name not in self._instances:
+            return
+        
+        instance = self._instances[name]
+        
+        if delete_files:
+            import shutil
+            
+            # Stop and remove containers first
+            if instance.compose_file.exists():
+                try:
+                    subprocess.run(
+                        ["docker", "compose", "-f", str(instance.compose_file), "down", "-v"],
+                        cwd=instance.stack_dir,
+                        capture_output=True,
+                        check=False
+                    )
+                except:
+                    pass
+            
+            # Delete stack directory
+            if instance.stack_dir.exists():
+                try:
+                    shutil.rmtree(instance.stack_dir)
+                except Exception as e:
+                    warn(f"Could not delete stack directory: {e}")
+            
+            # Delete data directory
+            if instance.data_root.exists():
+                try:
+                    shutil.rmtree(instance.data_root)
+                except Exception as e:
+                    warn(f"Could not delete data directory: {e}")
+            
+            # Stop and remove cloudflared service if exists
+            try:
+                subprocess.run(
+                    ["systemctl", "stop", f"cloudflared-{name}"],
+                    capture_output=True,
+                    check=False
+                )
+                subprocess.run(
+                    ["systemctl", "disable", f"cloudflared-{name}"],
+                    capture_output=True,
+                    check=False
+                )
+                service_file = Path(f"/etc/systemd/system/cloudflared-{name}.service")
+                if service_file.exists():
+                    service_file.unlink()
+                subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+            except:
+                pass
+        
+        # Remove from tracking
+        del self._instances[name]
+        self.save_instances()
     
     def get_instance(self, name: str) -> Optional[Instance]:
         """Get an instance by name."""
@@ -537,9 +595,9 @@ class PaperlessManager:
         
         # Networking services status
         # Traefik
-        traefik_running = self.is_traefik_installed()
+        from lib.installer.traefik import is_traefik_running, get_traefik_email
+        traefik_running = is_traefik_running()
         if traefik_running:
-            from lib.installer.traefik import get_traefik_email
             email = get_traefik_email()
             if email:
                 traefik_status = f"{colorize('✓', Colors.GREEN)} Running • {email}"
@@ -697,11 +755,23 @@ class PaperlessManager:
             elif choice == str(next_num):
                 self.add_instance_menu()
             elif choice == str(next_num + 1):
-                if confirm("Delete ALL instances from tracking?", False):
-                    for inst in instances:
-                        self.instance_manager.remove_instance(inst.name)
-                    ok("All instances removed from tracking")
-                    input("\nPress Enter to continue...")
+                print()
+                warn(f"This will DELETE all {len(instances)} instances completely!")
+                print("  • All instance directories")
+                print("  • All Docker containers")
+                print("  • All data and configurations")
+                print("  • All Cloudflared services")
+                print()
+                
+                if confirm("Delete ALL instances and their files?", False):
+                    confirmation = get_input("Type 'DELETE ALL' to confirm", "")
+                    if confirmation == "DELETE ALL":
+                        for inst in instances:
+                            self.instance_manager.remove_instance(inst.name, delete_files=True)
+                        ok(f"All {len(instances)} instances completely deleted")
+                        input("\nPress Enter to continue...")
+                    else:
+                        warn("Deletion cancelled")
             elif choice.isdigit() and 1 <= int(choice) <= len(instances):
                 self.instance_detail_menu(instances[int(choice) - 1])
             else:
@@ -1153,11 +1223,27 @@ WantedBy=multi-user.target
             elif choice == "7":
                 self.edit_instance(instance)
             elif choice == "8":
-                if confirm(f"Delete instance '{instance.name}' from tracking?", False):
-                    self.instance_manager.remove_instance(instance.name)
-                    ok(f"Instance '{instance.name}' removed from tracking")
-                    input("\nPress Enter to continue...")
-                    break
+                print()
+                warn(f"This will DELETE instance '{instance.name}' completely!")
+                print(f"  • Stack directory: {instance.stack_dir}")
+                print(f"  • Data directory:  {instance.data_root}")
+                print(f"  • Docker containers")
+                print(f"  • Cloudflared service (if exists)")
+                print()
+                
+                if confirm("Delete ALL files and containers?", False):
+                    if confirm("Are you ABSOLUTELY sure? This cannot be undone!", False):
+                        self.instance_manager.remove_instance(instance.name, delete_files=True)
+                        ok(f"Instance '{instance.name}' completely deleted")
+                        input("\nPress Enter to continue...")
+                        break
+                else:
+                    # Just remove from tracking
+                    if confirm(f"Remove from tracking only (keep files)?", False):
+                        self.instance_manager.remove_instance(instance.name, delete_files=False)
+                        ok(f"Instance '{instance.name}' removed from tracking")
+                        input("\nPress Enter to continue...")
+                        break
             else:
                 warn("Invalid option")
     
