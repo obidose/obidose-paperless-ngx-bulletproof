@@ -417,7 +417,17 @@ class BackupManager:
             return False
         
         try:
-            subprocess.run([str(script), mode], check=True)
+            # Ensure backup script uses the correct instance context
+            env = os.environ.copy()
+            env.update({
+                "ENV_FILE": str(self.instance.env_file),
+                "COMPOSE_FILE": str(self.instance.compose_file),
+                "STACK_DIR": str(self.instance.stack_dir),
+                "DATA_ROOT": str(self.instance.data_root),
+                "RCLONE_REMOTE_NAME": self.remote_name,
+                "RCLONE_REMOTE_PATH": self.remote_path,
+            })
+            subprocess.run([str(script), mode], check=True, env=env)
             return True
         except subprocess.CalledProcessError:
             return False
@@ -434,7 +444,17 @@ class BackupManager:
             cmd.append(snapshot)
         
         try:
-            subprocess.run(cmd, check=True)
+            # Ensure restore script uses the correct instance context
+            env = os.environ.copy()
+            env.update({
+                "ENV_FILE": str(self.instance.env_file),
+                "COMPOSE_FILE": str(self.instance.compose_file),
+                "STACK_DIR": str(self.instance.stack_dir),
+                "DATA_ROOT": str(self.instance.data_root),
+                "RCLONE_REMOTE_NAME": self.remote_name,
+                "RCLONE_REMOTE_PATH": self.remote_path,
+            })
+            subprocess.run(cmd, check=True, env=env)
             return True
         except subprocess.CalledProcessError:
             return False
@@ -597,7 +617,7 @@ class PaperlessManager:
         print(colorize("╭──────────────────────────────────────────────────────────╮", Colors.CYAN))
         
         if self.rclone_configured:
-            # Get backup info
+            # Get backup info (count only instance folders with at least one snapshot)
             try:
                 result = subprocess.run(
                     ["rclone", "lsd", "pcloud:backups/paperless"],
@@ -606,7 +626,18 @@ class PaperlessManager:
                     check=False,
                     timeout=5
                 )
-                backed_up_count = len([l for l in result.stdout.splitlines() if l.strip()])
+                instance_dirs = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+                backed_up_count = 0
+                for inst_dir in instance_dirs:
+                    check = subprocess.run(
+                        ["rclone", "lsd", f"pcloud:backups/paperless/{inst_dir}"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5
+                    )
+                    if check.stdout.strip():
+                        backed_up_count += 1
                 
                 # Get most recent backup date across all instances
                 latest_backup = "none"
@@ -2000,6 +2031,8 @@ instance_count: {len(instances)}
                 print()
                 
                 options = [(str(i), f"Explore '{backup_instances[i-1]}'" ) for i in range(1, len(backup_instances) + 1)]
+                options.append((str(len(backup_instances) + 1), colorize("🧹", Colors.YELLOW) + " Clean empty folders (auto)"))
+                options.append((str(len(backup_instances) + 2), colorize("🧹", Colors.YELLOW) + " Clean empty folders (select)"))
                 options.append(("0", "Back to main menu"))
                 print_menu(options)
                 
@@ -2009,6 +2042,10 @@ instance_count: {len(instances)}
                     break
                 elif choice.isdigit() and 1 <= int(choice) <= len(backup_instances):
                     self._explore_instance_backups(backup_instances[int(choice) - 1])
+                elif choice == str(len(backup_instances) + 1):
+                    self._clean_empty_backup_folders()
+                elif choice == str(len(backup_instances) + 2):
+                    self._clean_empty_backup_folders_selective()
                 else:
                     warn("Invalid option")
                     
@@ -2095,6 +2132,7 @@ instance_count: {len(instances)}
                     options.append((str(i), f"View details of snapshot #{i}"))
                 options.append((str(len(snapshots) + 1), colorize("↻", Colors.GREEN) + " Restore to new instance"))
                 options.append((str(len(snapshots) + 2), colorize("✗", Colors.RED) + " Delete snapshot"))
+                options.append((str(len(snapshots) + 3), colorize("🗑", Colors.RED) + " Delete entire backup folder"))
                 options.append(("0", colorize("◀ Back", Colors.CYAN)))
                 print_menu(options)
                 
@@ -2108,6 +2146,8 @@ instance_count: {len(instances)}
                     self._restore_from_explorer(instance_name, snapshots)
                 elif choice == str(len(snapshots) + 2):
                     self._delete_snapshot(instance_name, snapshots)
+                elif choice == str(len(snapshots) + 3):
+                    self._delete_instance_backup_folder(instance_name, len(snapshots))
                 else:
                     warn("Invalid option")
                     
@@ -2122,15 +2162,22 @@ instance_count: {len(instances)}
         
         print_header(f"Snapshot: {name}")
         
-        print(colorize("╭──────────────────────────────────────────────────────────────────────────────╮", Colors.CYAN))
-        print(colorize("│", Colors.CYAN) + f" Instance:  {colorize(instance_name, Colors.BOLD)}" + " " * (80 - len("Instance:  ") - len(instance_name)) + colorize("│", Colors.CYAN))
-        print(colorize("│", Colors.CYAN) + f" Snapshot:  {name}" + " " * (80 - len("Snapshot:  ") - len(name)) + colorize("│", Colors.CYAN))
+        import re
+        box_width = 84  # matches border length below
+        def pad_line(content: str) -> str:
+            clean = re.sub(r"\033\[[0-9;]+m", "", content)
+            padding = max(0, box_width - len(clean) - 2)  # minus borders
+            return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+        
+        print(colorize("╭" + "─" * (box_width - 2) + "╮", Colors.CYAN))
+        print(pad_line(f" Instance:  {colorize(instance_name, Colors.BOLD)}"))
+        print(pad_line(f" Snapshot:  {name}"))
         mode_display = colorize(mode.upper(), Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN)
-        print(colorize("│", Colors.CYAN) + f" Mode:      {mode_display}" + " " * (80 - len("Mode:      ") - len(mode) - 10) + colorize("│", Colors.CYAN))
-        print(colorize("│", Colors.CYAN) + f" Created:   {created}" + " " * (80 - len("Created:   ") - len(created)) + colorize("│", Colors.CYAN))
+        print(pad_line(f" Mode:      {mode_display}"))
+        print(pad_line(f" Created:   {created}"))
         if mode == "incr" and parent != "?":
-            print(colorize("│", Colors.CYAN) + f" Parent:    {parent}" + " " * (80 - len("Parent:    ") - len(parent)) + colorize("│", Colors.CYAN))
-        print(colorize("╰──────────────────────────────────────────────────────────────────────────────╯", Colors.CYAN))
+            print(pad_line(f" Parent:    {parent}"))
+        print(colorize("╰" + "─" * (box_width - 2) + "╯", Colors.CYAN))
         print()
         
         remote_path = f"pcloud:backups/paperless/{instance_name}/{name}"
@@ -2208,6 +2255,125 @@ instance_count: {len(instances)}
                 print(f"  {colorize('Total:', Colors.BOLD)} {colorize(total, Colors.GREEN)}")
         
         print()
+        input("\nPress Enter to continue...")
+
+    def _clean_empty_backup_folders(self) -> None:
+        """Scan and delete empty instance backup folders (lists before deleting)."""
+        print_header("Clean Empty Backup Folders")
+        try:
+            # List instance directories
+            result = subprocess.run(
+                ["rclone", "lsd", "pcloud:backups/paperless"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error("Unable to list backup root")
+                input("\nPress Enter to continue...")
+                return
+            instance_dirs = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+            empty = []
+            for name in instance_dirs:
+                check = subprocess.run(
+                    ["rclone", "lsd", f"pcloud:backups/paperless/{name}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5
+                )
+                # Consider empty when there are no snapshot subfolders
+                if not check.stdout.strip():
+                    empty.append(name)
+            
+            if not empty:
+                ok("No empty backup folders found")
+                input("\nPress Enter to continue...")
+                return
+            
+            print(colorize("Empty backup folders:", Colors.BOLD))
+            for name in empty:
+                print(f"  • {name}")
+            print()
+            if confirm("Delete ALL listed empty folders?", False):
+                deleted = 0
+                for name in empty:
+                    try:
+                        # Purge (safe even if empty); ensures removal across remotes
+                        subprocess.run(["rclone", "purge", f"pcloud:backups/paperless/{name}"], check=False)
+                        deleted += 1
+                    except Exception:
+                        pass
+                ok(f"Deleted {deleted}/{len(empty)} empty folders")
+            else:
+                say("No changes made")
+        except Exception as e:
+            error(f"Cleanup failed: {e}")
+        input("\nPress Enter to continue...")
+
+    def _clean_empty_backup_folders_selective(self) -> None:
+        """List empty instance backup folders and allow selective deletion."""
+        print_header("Clean Empty Folders (Select)")
+        try:
+            result = subprocess.run(
+                ["rclone", "lsd", "pcloud:backups/paperless"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10
+            )
+            if result.returncode != 0:
+                error("Unable to list backup root")
+                input("\nPress Enter to continue...")
+                return
+            instance_dirs = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+            empties = []
+            for name in instance_dirs:
+                check = subprocess.run(
+                    ["rclone", "lsd", f"pcloud:backups/paperless/{name}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5
+                )
+                if not check.stdout.strip():
+                    empties.append(name)
+            if not empties:
+                ok("No empty backup folders found")
+                input("\nPress Enter to continue...")
+                return
+            print(colorize("Empty folders:", Colors.BOLD))
+            for idx, name in enumerate(empties, 1):
+                print(f"  {idx}) {name}")
+            print()
+            choice = get_input("Enter numbers to delete (space-separated), 'all' or 'cancel'", "cancel")
+            if choice == "cancel":
+                say("Cancelled")
+                input("\nPress Enter to continue...")
+                return
+            targets = empties if choice.strip().lower() == "all" else []
+            if not targets:
+                for part in choice.split():
+                    if part.isdigit() and 1 <= int(part) <= len(empties):
+                        targets.append(empties[int(part) - 1])
+            if not targets:
+                warn("No valid selections")
+                input("\nPress Enter to continue...")
+                return
+            if confirm(f"Delete {len(targets)} empty folder(s)?", False):
+                deleted = 0
+                for name in targets:
+                    try:
+                        subprocess.run(["rclone", "purge", f"pcloud:backups/paperless/{name}"], check=False)
+                        deleted += 1
+                    except Exception:
+                        pass
+                ok(f"Deleted {deleted}/{len(targets)} folders")
+            else:
+                say("No changes made")
+        except Exception as e:
+            error(f"Cleanup failed: {e}")
         input("\nPress Enter to continue...")
     
     def _restore_from_explorer(self, instance_name: str, snapshots: list) -> None:
@@ -2295,6 +2461,26 @@ instance_count: {len(instances)}
             except Exception as e:
                 error(f"Failed to delete snapshot: {e}")
         
+        input("\nPress Enter to continue...")
+
+    def _delete_instance_backup_folder(self, instance_name: str, snapshot_count: int) -> None:
+        """Delete the entire backup folder for an instance (warn if non-empty)."""
+        print_header("Delete Backup Folder")
+        if snapshot_count > 0:
+            warn(f"Folder '{instance_name}' contains {snapshot_count} snapshot(s)")
+        else:
+            say(f"Folder '{instance_name}' is empty")
+        print()
+        confirm_text = get_input(f"Type DELETE {instance_name} to confirm", "")
+        if confirm_text != f"DELETE {instance_name}":
+            say("Cancelled")
+            input("\nPress Enter to continue...")
+            return
+        try:
+            subprocess.run(["rclone", "purge", f"pcloud:backups/paperless/{instance_name}"], check=False)
+            ok(f"Deleted backup folder '{instance_name}'")
+        except Exception as e:
+            error(f"Failed to delete folder: {e}")
         input("\nPress Enter to continue...")
     
     def cloudflared_menu(self) -> None:
