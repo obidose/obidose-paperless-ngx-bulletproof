@@ -34,6 +34,9 @@ def _parse_branch() -> str:
 
 BRANCH = _parse_branch()
 
+# Set environment variable for manager to use
+os.environ["BP_BRANCH"] = BRANCH
+
 
 def _bootstrap() -> None:
     """Download repository if not already present."""

@@ -4,7 +4,7 @@ One-command setup and management for Paperless-NGX with automated backups to pCl
 
 ## Quick Start
 
-**One command does everything** - works on fresh or existing installations:
+**One command installs everything:**
 
 ```bash
 # From main branch (stable)
@@ -14,19 +14,33 @@ curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulle
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py --branch dev
 ```
 
+**What happens:**
+1. Installs base system (Docker, rclone)
+2. Connects to backup server (pCloud)
+3. Launches interactive manager
+4. From there: create instances, restore from backups, manage everything
+
 After installation, manage with: `paperless`
 
 ---
 
 ## What You Get
 
-- **Paperless-NGX** with PostgreSQL, Redis, Gotenberg, Tika
-- **Optional Traefik** with automatic HTTPS (Let's Encrypt)
+- **Multiple Instances** - Run separate Paperless-NGX for yourself, family, clients - all on one machine
+- **Paperless-NGX** with PostgreSQL, Redis, Gotenberg, Tika per instance
+- **Optional Traefik** with automatic HTTPS (Let's Encrypt) shared across instances
 - **Automated backups** to pCloud (full + incremental + optional archive)
 - **Easy restore** from any snapshot with automatic chain resolution
-- **Multi-instance** management
-- **Health monitoring** and container management
-- **Interactive TUI** for all operations
+- **Centralized management** - one TUI to rule them all
+- **Health monitoring** and container management per instance
+- **Interactive workflows** for all operations
+
+**Example multi-instance setup:**
+- `paperless-personal` → https://docs.yourdomain.com
+- `paperless-dad` → https://docs-dad.yourdomain.com  
+- `paperless-client1` → https://docs.client.com
+
+All managed from one command: `paperless`
 
 ---
 
@@ -42,22 +56,35 @@ That's it! The installer handles Docker, rclone, and everything else.
 
 ## First Run
 
-The unified command detects your environment and guides you:
+The installation is smart and guides you through:
 
-### On Fresh Machine
+### Fresh Machine
+1. **Installs base system** (Docker, rclone - fully automated)
+2. **Connects to pCloud** (paste OAuth token - takes 30 seconds)
+3. **Launches manager** with overview of system status
+
+From the manager menu:
+- **Add Instance** → Create fresh or restore from backup
+- Each instance can have its own domain, settings, users
+- All instances share the same base system but are isolated
+
+### Example: Family Setup
 ```
-Welcome to Paperless-NGX Bulletproof!
-
-Options:
-  1) Quick setup (guided installation)
-  2) Advanced options (manual configuration)  
-  3) Restore from existing backup
-
-Choose [1-3]:
+paperless               # Launch manager
+→ Instances
+  → Add new instance
+    → Name: paperless-personal
+    → Domain: docs.mydomain.com
+  → Add new instance  
+    → Name: paperless-dad
+    → Domain: docs-dad.mydomain.com
 ```
 
-### On Existing Installation
-Launches the interactive management TUI with all features.
+Each instance:
+- Runs independently
+- Has its own database, media, documents
+- Backed up separately to pCloud
+- Can be restored independently
 
 ---
 

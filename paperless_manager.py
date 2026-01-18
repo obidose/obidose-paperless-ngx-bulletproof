@@ -14,6 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Determine branch (set by paperless.py or default to main)
+BRANCH = os.environ.get("BP_BRANCH", "main")
+
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 
@@ -444,26 +447,61 @@ class PaperlessManager:
         """Display the main menu."""
         print_header("Paperless-NGX Bulletproof Manager")
         
-        # Show system status
+        # Show backup connection status
         instances = self.instance_manager.list_instances()
-        backup_status = colorize("Connected", Colors.GREEN) if self.rclone_configured else colorize("Not configured", Colors.YELLOW)
         
-        print(f"Backup Server: {backup_status}")
-        print(f"Instances: {len(instances)}")
+        if self.rclone_configured:
+            # Get backup info
+            try:
+                result = subprocess.run(
+                    ["rclone", "lsd", "pcloud:backups/paperless"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5
+                )
+                backed_up_count = len([l for l in result.stdout.splitlines() if l.strip()])
+                
+                # Get most recent backup date across all instances
+                latest_backup = "none"
+                for inst in instances:
+                    backup_mgr = BackupManager(inst)
+                    snaps = backup_mgr.fetch_snapshots()
+                    if snaps:
+                        latest_backup = snaps[-1][0]  # Most recent snapshot name
+                        break
+                
+                backup_info = f"{colorize('pCloud Connected', Colors.GREEN)} • {backed_up_count} backed up instances"
+                if latest_backup != "none":
+                    backup_info += f" • Last: {latest_backup}"
+            except:
+                backup_info = colorize("pCloud Connected", Colors.GREEN)
+        else:
+            backup_info = colorize("Not connected", Colors.YELLOW) + " (configure to enable backups)"
         
+        print(f"Backup: {backup_info}")
+        print()
+        
+        # Show instances overview
         if instances:
-            print("\nInstances:")
-            for instance in instances:
-                status = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
-                print(f"  {status} {instance.name} ({instance.stack_dir})")
+            print(f"Instances ({len(instances)}):")
+            for instance in instances[:5]:  # Show max 5
+                status_icon = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
+                status_text = "Running" if instance.is_running else "Stopped"
+                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD)} - {status_text}")
+            
+            if len(instances) > 5:
+                print(f"  ... and {len(instances) - 5} more")
+        else:
+            print(colorize("No instances configured", Colors.YELLOW))
         
         print()
         
         # Main menu options
         options = [
-            ("1", "Configure backup server connection"),
-            ("2", "Instances"),
-            ("3", "Backups"),
+            ("1", "Instances" + (f" ({len(instances)})" if instances else "")),
+            ("2", "Backups" + (" ✓" if self.rclone_configured else " ⚠")),
+            ("3", "Backup server connection"),
             ("q", "Quit")
         ]
         print_menu(options)
@@ -471,16 +509,16 @@ class PaperlessManager:
     def handle_main_choice(self, choice: str) -> None:
         """Handle main menu selection."""
         if choice == "1":
-            self.configure_backup_connection()
-        elif choice == "2":
             self.instances_menu()
-        elif choice == "3":
+        elif choice == "2":
             if not self.rclone_configured:
                 warn("Backup server not configured!")
                 if confirm("Configure now?", True):
                     self.configure_backup_connection()
             else:
                 self.backups_menu()
+        elif choice == "3":
+            self.configure_backup_connection()
         else:
             warn("Invalid option")
     
@@ -571,11 +609,52 @@ class PaperlessManager:
         print_header("Create Fresh Instance")
         
         say("This will guide you through creating a new Paperless-NGX instance")
+        print()
         
-        # This needs to call the installer with proper parameters
-        # For now, show message
-        warn("This feature requires completing the instance creation workflow")
-        warn("Coming soon - will integrate with installer.common for guided setup")
+        if os.geteuid() != 0:
+            error("Creating instances requires root privileges. Please run with sudo.")
+            input("\nPress Enter to continue...")
+            return
+        
+        try:
+            # Import installer modules
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from installer import common, files
+            
+            # Run the guided setup
+            common.pick_and_merge_preset(
+                f"https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/{BRANCH}"
+            )
+            common.prompt_core_values()
+            common.prompt_backup_plan()
+            common.ensure_dir_tree(common.cfg)
+            
+            files.write_env_file()
+            files.write_compose_file()
+            files.copy_helper_scripts()
+            files.bring_up_stack()
+            
+            # Run self-test
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from utils.selftest import run_stack_tests
+            if run_stack_tests(Path(common.cfg.compose_file), Path(common.cfg.env_file)):
+                common.ok("Self-test passed")
+            else:
+                common.warn("Self-test failed; check container logs")
+            
+            files.install_cron_backup()
+            
+            # Register instance
+            self.instance_manager.add_instance(
+                common.cfg.instance_name,
+                Path(common.cfg.stack_dir),
+                Path(common.cfg.data_root)
+            )
+            
+            ok(f"Instance '{common.cfg.instance_name}' created successfully!")
+            
+        except Exception as e:
+            error(f"Failed to create instance: {e}")
         
         input("\nPress Enter to continue...")
     
@@ -583,13 +662,124 @@ class PaperlessManager:
         """Restore instance from backup."""
         if not self.rclone_configured:
             error("Backup server not configured!")
+            input("\nPress Enter to continue...")
             return
         
         print_header("Restore Instance from Backup")
         
-        # Show available backups
-        # This will be implemented in backups_menu
-        warn("Use the Backups menu to browse and restore")
+        say("Scanning for available backups...")
+        
+        # Get rclone remote settings
+        remote_name = "pcloud"  # TODO: make configurable
+        remote_base = f"{remote_name}:backups/paperless"
+        
+        try:
+            # List all instance folders in backup
+            result = subprocess.run(
+                ["rclone", "lsd", remote_base],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                warn("No backups found")
+                input("\nPress Enter to continue...")
+                return
+            
+            # Parse instance names
+            backup_instances = []
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if parts:
+                    backup_instances.append(parts[-1])
+            
+            if not backup_instances:
+                warn("No backup instances found")
+                input("\nPress Enter to continue...")
+                return
+            
+            # Show available instances
+            print("Available backup instances:")
+            for idx, inst_name in enumerate(backup_instances, 1):
+                print(f"  {idx}) {inst_name}")
+            print()
+            
+            choice = get_input(f"Select instance [1-{len(backup_instances)}] or 'cancel'", "cancel")
+            
+            if not choice.isdigit() or not (1 <= int(choice) <= len(backup_instances)):
+                return
+            
+            selected_instance = backup_instances[int(choice) - 1]
+            
+            # Now show snapshots for this instance
+            remote_path = f"{remote_base}/{selected_instance}"
+            result = subprocess.run(
+                ["rclone", "lsd", remote_path],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                warn(f"No snapshots found for {selected_instance}")
+                input("\nPress Enter to continue...")
+                return
+            
+            # Parse snapshots
+            snapshots = []
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if parts:
+                    snapshots.append(parts[-1])
+            
+            snapshots = sorted(snapshots)
+            
+            print(f"\nSnapshots for '{selected_instance}':")
+            for idx, snap in enumerate(snapshots, 1):
+                print(f"  {idx}) {snap}")
+            print()
+            
+            snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
+            
+            if snap_choice == "latest":
+                snapshot = snapshots[-1]
+            elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
+                snapshot = snapshots[int(snap_choice) - 1]
+            else:
+                return
+            
+            # Prompt for new instance name
+            new_name = get_input("New instance name", selected_instance)
+            
+            say(f"Restoring {selected_instance}/{snapshot} as '{new_name}'...")
+            
+            # Set up config for restore
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from installer import common
+            
+            # Use defaults but allow customization
+            common.cfg.instance_name = new_name
+            common.cfg.rclone_remote_name = remote_name
+            common.cfg.rclone_remote_path = f"backups/paperless/{selected_instance}"
+            
+            # Run restore
+            restore_script = Path(f"/tmp/restore_{new_name}.py")
+            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "modules" / "restore.py").read_text())
+            
+            subprocess.run([sys.executable, str(restore_script), snapshot], check=True)
+            
+            # Register the restored instance
+            self.instance_manager.add_instance(
+                new_name,
+                Path(common.cfg.stack_dir),
+                Path(common.cfg.data_root)
+            )
+            
+            ok(f"Instance '{new_name}' restored successfully!")
+            
+        except Exception as e:
+            error(f"Restore failed: {e}")
         
         input("\nPress Enter to continue...")
     
