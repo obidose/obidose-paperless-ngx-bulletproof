@@ -51,7 +51,7 @@ def _bootstrap() -> None:
     import tempfile
     import urllib.request
 
-    url = f"{config.GITHUB_ARCHIVE_URL if config else 'https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof'}/{BRANCH}"
+    url = f"https://codeload.github.com/obidose/obidose-paperless-ngx-bulletproof/tar.gz/refs/heads/{BRANCH}"
     tmpdir = tempfile.mkdtemp(prefix="paperless-")
     with urllib.request.urlopen(url) as resp:
         with tarfile.open(fileobj=io.BytesIO(resp.read()), mode="r:gz") as tf:
