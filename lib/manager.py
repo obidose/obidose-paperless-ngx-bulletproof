@@ -98,28 +98,85 @@ class Instance:
         return default
     
     def get_access_mode(self) -> str:
-        """Determine how this instance is accessed."""
-        if self.get_env_value("ENABLE_TRAEFIK") == "yes":
-            return "traefik"
-        elif self.get_env_value("ENABLE_CLOUDFLARED") == "yes":
-            return "cloudflared"
-        elif self.get_env_value("ENABLE_TAILSCALE") == "yes":
-            return "tailscale"
-        else:
-            return "http"
+        """Determine how this instance is accessed by probing live status."""
+        # Check for active Traefik routing
+        try:
+            # Check if instance has Traefik labels in docker-compose
+            if self.compose_file.exists():
+                compose_content = self.compose_file.read_text()
+                if "traefik.enable=true" in compose_content:
+                    # Verify Traefik is actually running
+                    result = subprocess.run(
+                        ["docker", "ps", "--filter", "name=traefik-system", "--format", "{{.Names}}"],
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    if "traefik-system" in result.stdout:
+                        return "traefik"
+        except:
+            pass
+        
+        # Check for active Cloudflare tunnel service
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", f"cloudflared-{self.name}"],
+                capture_output=True,
+                check=False
+            )
+            if result.returncode == 0:  # Service is active
+                return "cloudflared"
+        except:
+            pass
+        
+        # Check for Tailscale connectivity
+        try:
+            result = subprocess.run(
+                ["tailscale", "status"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Tailscale is connected, check if this instance is configured for it
+                enable_tailscale = self.get_env_value("ENABLE_TAILSCALE", "no")
+                if enable_tailscale == "yes":
+                    return "tailscale"
+        except:
+            pass
+        
+        # Default: direct HTTP access
+        return "http"
     
     def get_access_url(self) -> str:
-        """Get the access URL with mode indicator."""
+        """Get the access URL with mode indicator by checking live status."""
         mode = self.get_access_mode()
         domain = self.get_env_value("DOMAIN", "localhost")
         
         if mode == "traefik":
-            return f"🔒 {domain}"
+            # Traefik with HTTPS
+            return f"🔒 https://{domain}"
         elif mode == "cloudflared":
-            return f"☁️  {domain}"
+            # Cloudflare Tunnel with HTTPS
+            return f"☁️  https://{domain}"
         elif mode == "tailscale":
+            # Tailscale with private IP
+            try:
+                result = subprocess.run(
+                    ["tailscale", "ip", "-4"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    ip = result.stdout.strip()
+                    port = self.get_env_value("HTTP_PORT", "8000")
+                    return f"🔐 http://{ip}:{port}"
+            except:
+                pass
             return f"🔐 {domain}"
         else:
+            # Direct HTTP access
             port = self.get_env_value("HTTP_PORT", "8000")
             return f"🌐 localhost:{port}"
 
