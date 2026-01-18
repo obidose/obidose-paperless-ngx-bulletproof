@@ -63,6 +63,33 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
+# ─── UI Utilities ─────────────────────────────────────────────────────────────
+
+import re as _re
+
+def create_box_helper(width: int = 58):
+    """Create a box line helper with specified inner width."""
+    def box_line(content: str) -> str:
+        """Create a properly padded box line."""
+        clean = _re.sub(r'\033\[[0-9;]+m', '', content)
+        padding = width - len(clean)
+        if padding < 0:
+            truncated = clean[:width-3] + "..."
+            return colorize("│", Colors.CYAN) + truncated + colorize("│", Colors.CYAN)
+        return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+    return box_line, width
+
+
+def draw_box_top(width: int = 58) -> str:
+    """Draw box top border."""
+    return colorize("╭" + "─" * width + "╮", Colors.CYAN)
+
+
+def draw_box_bottom(width: int = 58) -> str:
+    """Draw box bottom border."""
+    return colorize("╰" + "─" * width + "╯", Colors.CYAN)
+
+
 # ─── Instance Configuration ───────────────────────────────────────────────────
 
 @dataclass
@@ -97,15 +124,15 @@ class Instance:
                 return line.split("=", 1)[1].strip()
         return default
     
-    def get_access_mode(self) -> str:
-        """Determine how this instance is accessed by probing live status."""
+    def get_access_modes(self) -> list[str]:
+        """Determine all active access modes for this instance."""
+        modes = []
+        
         # Check for active Traefik routing
         try:
-            # Check if instance has Traefik labels in docker-compose
             if self.compose_file.exists():
                 compose_content = self.compose_file.read_text()
                 if "traefik.enable=true" in compose_content:
-                    # Verify Traefik is actually running
                     result = subprocess.run(
                         ["docker", "ps", "--filter", "name=traefik-system", "--format", "{{.Names}}"],
                         capture_output=True,
@@ -113,7 +140,7 @@ class Instance:
                         check=False
                     )
                     if "traefik-system" in result.stdout:
-                        return "traefik"
+                        modes.append("traefik")
         except:
             pass
         
@@ -125,11 +152,11 @@ class Instance:
                 check=False
             )
             if result.returncode == 0:  # Service is active
-                return "cloudflared"
+                modes.append("cloudflared")
         except:
             pass
         
-        # Check for Tailscale connectivity
+        # Check for Tailscale connectivity (additive - can work with other modes)
         try:
             result = subprocess.run(
                 ["tailscale", "status"],
@@ -138,29 +165,41 @@ class Instance:
                 check=False
             )
             if result.returncode == 0 and result.stdout.strip():
-                # Tailscale is connected, check if this instance is configured for it
                 enable_tailscale = self.get_env_value("ENABLE_TAILSCALE", "no")
                 if enable_tailscale == "yes":
-                    return "tailscale"
+                    modes.append("tailscale")
         except:
             pass
         
-        # Default: direct HTTP access
+        # Always have direct HTTP as fallback if no other modes
+        if not modes or "traefik" not in modes and "cloudflared" not in modes:
+            modes.append("http")
+        
+        return modes
+    
+    def get_access_mode(self) -> str:
+        """Get primary access mode (for backward compatibility)."""
+        modes = self.get_access_modes()
+        # Priority: traefik > cloudflared > tailscale > http
+        for priority in ["traefik", "cloudflared", "tailscale", "http"]:
+            if priority in modes:
+                return priority
         return "http"
     
-    def get_access_url(self) -> str:
-        """Get the access URL with mode indicator by checking live status."""
-        mode = self.get_access_mode()
+    def get_access_urls(self) -> list[tuple[str, str]]:
+        """Get all access URLs with mode indicators."""
+        urls = []
+        modes = self.get_access_modes()
         domain = self.get_env_value("DOMAIN", "localhost")
+        port = self.get_env_value("HTTP_PORT", "8000")
         
-        if mode == "traefik":
-            # Traefik with HTTPS
-            return f"🔒 https://{domain}"
-        elif mode == "cloudflared":
-            # Cloudflare Tunnel with HTTPS
-            return f"☁️  https://{domain}"
-        elif mode == "tailscale":
-            # Tailscale with private IP
+        if "traefik" in modes:
+            urls.append(("🔒 Traefik HTTPS", f"https://{domain}"))
+        
+        if "cloudflared" in modes:
+            urls.append(("☁️  Cloudflare", f"https://{domain}"))
+        
+        if "tailscale" in modes:
             try:
                 result = subprocess.run(
                     ["tailscale", "ip", "-4"],
@@ -170,15 +209,22 @@ class Instance:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     ip = result.stdout.strip()
-                    port = self.get_env_value("HTTP_PORT", "8000")
-                    return f"🔐 http://{ip}:{port}"
+                    urls.append(("🔐 Tailscale", f"http://{ip}:{port}"))
             except:
-                pass
-            return f"🔐 {domain}"
-        else:
-            # Direct HTTP access
-            port = self.get_env_value("HTTP_PORT", "8000")
-            return f"🌐 localhost:{port}"
+                urls.append(("🔐 Tailscale", f"http://tailscale-ip:{port}"))
+        
+        if "http" in modes:
+            urls.append(("🌐 Direct", f"http://localhost:{port}"))
+        
+        return urls
+    
+    def get_access_url(self) -> str:
+        """Get the primary access URL with mode indicator (for backward compatibility)."""
+        urls = self.get_access_urls()
+        if urls:
+            return f"{urls[0][0]}: {urls[0][1]}"
+        port = self.get_env_value("HTTP_PORT", "8000")
+        return f"🌐 localhost:{port}"
 
 
 class InstanceManager:
@@ -700,22 +746,10 @@ class PaperlessManager:
         running_count = sum(1 for i in instances if i.is_running)
         stopped_count = len(instances) - running_count
         
-        # System overview box - use fixed width with helper function
-        import re
-        box_inner_width = 58  # Content area width (between the │ characters)
+        # System overview box - use centralized helper
+        box_line, box_width = create_box_helper(58)
         
-        def box_line(content: str) -> str:
-            """Create a properly padded box line."""
-            # Strip ANSI codes for length calculation
-            clean = re.sub(r'\033\[[0-9;]+m', '', content)
-            padding = box_inner_width - len(clean)
-            if padding < 0:
-                # Content too long - truncate clean version and lose colors
-                truncated = clean[:box_inner_width-3] + "..."
-                return colorize("│", Colors.CYAN) + truncated + colorize("│", Colors.CYAN)
-            return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
-        
-        print(colorize("╭" + "─" * box_inner_width + "╮", Colors.CYAN))
+        print(draw_box_top(box_width))
         
         if self.rclone_configured:
             # Get backup info (count only instance folders with at least one snapshot)
@@ -813,7 +847,7 @@ class PaperlessManager:
             tailscale_status = colorize("○ Not installed", Colors.CYAN)
         print(box_line(f" Tailscale:      {tailscale_status}"))
         
-        print(colorize("╰" + "─" * box_inner_width + "╯", Colors.CYAN))
+        print(draw_box_bottom(box_width))
         print()
         
         # Quick instance list
@@ -896,9 +930,14 @@ class PaperlessManager:
             if instances:
                 for idx, instance in enumerate(instances, 1):
                     status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
-                    url = instance.get_access_url()
+                    access_urls = instance.get_access_urls()
                     print(f"  {idx}) {instance.name} [{status}]")
-                    print(f"      Access: {url}")
+                    if len(access_urls) == 1:
+                        print(f"      Access: {access_urls[0][0]}: {access_urls[0][1]}")
+                    else:
+                        print(f"      Access:")
+                        for mode_label, url in access_urls:
+                            print(f"        {mode_label}: {url}")
                     print(f"      Stack:  {instance.stack_dir}")
                     print(f"      Data:   {instance.data_root}")
                 print()
@@ -1426,22 +1465,22 @@ WantedBy=multi-user.target
             
             status = colorize("● Running", Colors.GREEN) if instance.is_running else colorize("○ Stopped", Colors.YELLOW)
             domain = instance.get_env_value("DOMAIN", "localhost")
-            url = instance.get_env_value("PAPERLESS_URL", "")
+            access_urls = instance.get_access_urls()
             
-            import re
-            box_width = 62
-            def pad_line(content: str) -> str:
-                clean = re.sub(r"\033\[[0-9;]+m", "", content)
-                padding = max(0, box_width - len(clean) - 2)
-                return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+            box_line, box_width = create_box_helper(60)
             
-            print(colorize("╭" + "─" * (box_width - 2) + "╮", Colors.CYAN))
-            print(pad_line(f" Status: {status}"))
-            print(pad_line(f" Domain: {colorize(domain, Colors.BOLD)}"))
-            if url:
-                print(pad_line(f" URL:    {colorize(url, Colors.CYAN)}"))
-            print(pad_line(f" Stack:  {instance.stack_dir}"))
-            print(colorize("╰" + "─" * (box_width - 2) + "╯", Colors.CYAN))
+            print(draw_box_top(box_width))
+            print(box_line(f" Status: {status}"))
+            print(box_line(f" Domain: {colorize(domain, Colors.BOLD)}"))
+            
+            # Show all access URLs
+            if access_urls:
+                print(box_line(f" Access:"))
+                for mode_label, url in access_urls:
+                    print(box_line(f"   {mode_label}: {colorize(url, Colors.CYAN)}"))
+            
+            print(box_line(f" Stack:  {instance.stack_dir}"))
+            print(draw_box_bottom(box_width))
             print()
             
             options = [
@@ -1524,10 +1563,18 @@ WantedBy=multi-user.target
         print(f"Compose File: {instance.compose_file}")
         print()
         
+        # Show access URLs
+        access_urls = instance.get_access_urls()
+        if access_urls:
+            print("Access Methods:")
+            for mode_label, url in access_urls:
+                print(f"  {mode_label}: {url}")
+            print()
+        
         # Show key settings from env file
         if instance.env_file.exists():
             print("Settings:")
-            for key in ["PAPERLESS_URL", "POSTGRES_DB", "TZ", "ENABLE_TRAEFIK", "DOMAIN"]:
+            for key in ["PAPERLESS_URL", "POSTGRES_DB", "TZ", "ENABLE_TRAEFIK", "ENABLE_CLOUDFLARED", "ENABLE_TAILSCALE", "DOMAIN", "HTTP_PORT"]:
                 value = instance.get_env_value(key, "not set")
                 print(f"  {key}: {value}")
         
@@ -1829,12 +1876,326 @@ WantedBy=multi-user.target
         input("\nPress Enter to continue...")
     
     def edit_instance(self, instance: Instance) -> None:
-        """Edit instance settings."""
-        print_header(f"Edit: {instance.name}")
-        warn("Instance editing requires stopping containers and updating configuration")
-        warn("This feature is under development")
+        """Edit instance settings - networking, domain, ports, etc."""
+        while True:
+            print_header(f"Edit: {instance.name}")
+            
+            # Show current settings
+            box_line, box_width = create_box_helper(62)
+            print(draw_box_top(box_width))
+            print(box_line(f" Status: {'Running' if instance.is_running else 'Stopped'}"))
+            print(box_line(f""))
+            print(box_line(f" {colorize('Current Settings:', Colors.BOLD)}"))
+            print(box_line(f"   Domain:        {instance.get_env_value('DOMAIN', 'localhost')}"))
+            print(box_line(f"   HTTP Port:     {instance.get_env_value('HTTP_PORT', '8000')}"))
+            print(box_line(f"   Traefik:       {instance.get_env_value('ENABLE_TRAEFIK', 'no')}"))
+            print(box_line(f"   Cloudflare:    {instance.get_env_value('ENABLE_CLOUDFLARED', 'no')}"))
+            print(box_line(f"   Tailscale:     {instance.get_env_value('ENABLE_TAILSCALE', 'no')}"))
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # Show active access methods
+            access_urls = instance.get_access_urls()
+            if access_urls:
+                print(colorize("Active Access Methods:", Colors.BOLD))
+                for mode_label, url in access_urls:
+                    print(f"  {mode_label}: {url}")
+                print()
+            
+            options = [
+                ("", colorize("Networking:", Colors.BOLD)),
+                ("1", "  Change domain"),
+                ("2", "  Change HTTP port"),
+                ("3", "  Toggle Traefik (HTTPS)"),
+                ("4", "  Toggle Cloudflare Tunnel"),
+                ("5", "  Toggle Tailscale"),
+                ("", ""),
+                ("", colorize("Credentials:", Colors.BOLD)),
+                ("6", "  Change admin password"),
+                ("", ""),
+                ("0", colorize("◀ Back", Colors.CYAN))
+            ]
+            
+            for key, desc in options:
+                if key:
+                    print(f"  {colorize(key + ')', Colors.BOLD)} {desc}")
+                else:
+                    print(f"  {desc}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._edit_instance_domain(instance)
+            elif choice == "2":
+                self._edit_instance_port(instance)
+            elif choice == "3":
+                self._toggle_instance_traefik(instance)
+            elif choice == "4":
+                self._toggle_instance_cloudflare(instance)
+            elif choice == "5":
+                self._toggle_instance_tailscale(instance)
+            elif choice == "6":
+                self._edit_instance_admin_password(instance)
+            else:
+                warn("Invalid option")
+    
+    def _update_instance_env(self, instance: Instance, key: str, value: str) -> bool:
+        """Update a single value in the instance's .env file."""
+        try:
+            if not instance.env_file.exists():
+                error(f"Env file not found: {instance.env_file}")
+                return False
+            
+            content = instance.env_file.read_text()
+            lines = content.splitlines()
+            updated = False
+            
+            for i, line in enumerate(lines):
+                if line.strip().startswith(f"{key}="):
+                    lines[i] = f"{key}={value}"
+                    updated = True
+                    break
+            
+            if not updated:
+                # Add new key
+                lines.append(f"{key}={value}")
+            
+            instance.env_file.write_text("\n".join(lines) + "\n")
+            return True
+        except Exception as e:
+            error(f"Failed to update env file: {e}")
+            return False
+    
+    def _edit_instance_domain(self, instance: Instance) -> None:
+        """Edit instance domain."""
+        current = instance.get_env_value("DOMAIN", "localhost")
+        say(f"Current domain: {current}")
+        new_domain = get_input("New domain (or Enter to cancel)", current)
+        
+        if new_domain and new_domain != current:
+            if self._update_instance_env(instance, "DOMAIN", new_domain):
+                # Also update PAPERLESS_URL if traefik or cloudflare enabled
+                enable_traefik = instance.get_env_value("ENABLE_TRAEFIK", "no")
+                enable_cloudflared = instance.get_env_value("ENABLE_CLOUDFLARED", "no")
+                if enable_traefik == "yes" or enable_cloudflared == "yes":
+                    self._update_instance_env(instance, "PAPERLESS_URL", f"https://{new_domain}")
+                
+                ok(f"Domain changed to: {new_domain}")
+                warn("Restart containers for changes to take effect")
         input("\nPress Enter to continue...")
     
+    def _edit_instance_port(self, instance: Instance) -> None:
+        """Edit instance HTTP port."""
+        current = instance.get_env_value("HTTP_PORT", "8000")
+        say(f"Current port: {current}")
+        new_port = get_input("New HTTP port (or Enter to cancel)", current)
+        
+        if new_port and new_port != current:
+            if new_port.isdigit() and 1024 <= int(new_port) <= 65535:
+                if self._update_instance_env(instance, "HTTP_PORT", new_port):
+                    ok(f"HTTP port changed to: {new_port}")
+                    warn("You must recreate containers for port changes:")
+                    say(f"  docker compose -f {instance.compose_file} down")
+                    say(f"  docker compose -f {instance.compose_file} up -d")
+            else:
+                error("Invalid port number (must be 1024-65535)")
+        input("\nPress Enter to continue...")
+    
+    def _toggle_instance_traefik(self, instance: Instance) -> None:
+        """Toggle Traefik HTTPS for instance."""
+        current = instance.get_env_value("ENABLE_TRAEFIK", "no")
+        
+        if current == "yes":
+            # Disable Traefik
+            if confirm("Disable Traefik HTTPS for this instance?", False):
+                self._update_instance_env(instance, "ENABLE_TRAEFIK", "no")
+                port = instance.get_env_value("HTTP_PORT", "8000")
+                self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
+                ok("Traefik disabled - instance will use direct HTTP")
+                warn("Restart containers and regenerate docker-compose.yml")
+        else:
+            # Enable Traefik
+            from lib.installer.traefik import is_traefik_running
+            if not is_traefik_running():
+                error("System Traefik is not running!")
+                say("Install Traefik from main menu first")
+            elif confirm("Enable Traefik HTTPS for this instance?", True):
+                domain = instance.get_env_value("DOMAIN", "localhost")
+                if domain == "localhost":
+                    domain = get_input("Enter domain for HTTPS", "paperless.example.com")
+                    self._update_instance_env(instance, "DOMAIN", domain)
+                
+                self._update_instance_env(instance, "ENABLE_TRAEFIK", "yes")
+                self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")  # Mutually exclusive
+                self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
+                ok(f"Traefik enabled for https://{domain}")
+                warn("You must regenerate docker-compose.yml and recreate containers")
+                self._offer_regenerate_compose(instance)
+        
+        input("\nPress Enter to continue...")
+    
+    def _toggle_instance_cloudflare(self, instance: Instance) -> None:
+        """Toggle Cloudflare Tunnel for instance."""
+        current = instance.get_env_value("ENABLE_CLOUDFLARED", "no")
+        
+        if current == "yes":
+            # Disable Cloudflare
+            if confirm("Disable Cloudflare Tunnel for this instance?", False):
+                self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")
+                port = instance.get_env_value("HTTP_PORT", "8000")
+                self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
+                
+                # Stop and remove tunnel service
+                service_name = f"cloudflared-{instance.name}"
+                try:
+                    subprocess.run(["systemctl", "stop", service_name], check=False, capture_output=True)
+                    subprocess.run(["systemctl", "disable", service_name], check=False, capture_output=True)
+                    service_file = Path(f"/etc/systemd/system/{service_name}.service")
+                    if service_file.exists():
+                        service_file.unlink()
+                    subprocess.run(["systemctl", "daemon-reload"], check=False, capture_output=True)
+                except:
+                    pass
+                
+                ok("Cloudflare Tunnel disabled")
+        else:
+            # Enable Cloudflare
+            from lib.installer.cloudflared import is_cloudflared_installed, is_authenticated, create_tunnel
+            if not is_cloudflared_installed():
+                error("Cloudflared is not installed!")
+                say("Install from main menu: Manage Cloudflare Tunnel")
+            elif not is_authenticated():
+                error("Cloudflared is not authenticated!")
+                say("Authenticate from main menu: Manage Cloudflare Tunnel")
+            elif confirm("Enable Cloudflare Tunnel for this instance?", True):
+                domain = instance.get_env_value("DOMAIN", "localhost")
+                if domain == "localhost":
+                    domain = get_input("Enter domain for Cloudflare Tunnel", "paperless.example.com")
+                    self._update_instance_env(instance, "DOMAIN", domain)
+                
+                self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "yes")
+                self._update_instance_env(instance, "ENABLE_TRAEFIK", "no")  # Mutually exclusive
+                self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
+                
+                # Create tunnel
+                say("Creating Cloudflare tunnel...")
+                if create_tunnel(instance.name, domain):
+                    # Create and start systemd service
+                    self._create_cloudflare_service(instance.name)
+                    ok(f"Cloudflare Tunnel enabled for https://{domain}")
+                else:
+                    warn("Tunnel creation failed - you may need to set it up manually")
+        
+        input("\nPress Enter to continue...")
+    
+    def _toggle_instance_tailscale(self, instance: Instance) -> None:
+        """Toggle Tailscale access for instance."""
+        current = instance.get_env_value("ENABLE_TAILSCALE", "no")
+        
+        if current == "yes":
+            if confirm("Disable Tailscale access for this instance?", False):
+                self._update_instance_env(instance, "ENABLE_TAILSCALE", "no")
+                ok("Tailscale access disabled")
+        else:
+            from lib.installer.tailscale import is_tailscale_installed, is_connected, get_ip
+            if not is_tailscale_installed():
+                error("Tailscale is not installed!")
+                say("Install from main menu: Manage Tailscale")
+            elif not is_connected():
+                error("Tailscale is not connected!")
+                say("Connect from main menu: Manage Tailscale")
+            elif confirm("Enable Tailscale access for this instance?", True):
+                self._update_instance_env(instance, "ENABLE_TAILSCALE", "yes")
+                ip = get_ip()
+                port = instance.get_env_value("HTTP_PORT", "8000")
+                ok(f"Tailscale enabled - access via http://{ip}:{port}")
+                say("Note: Tailscale works alongside other access methods")
+        
+        input("\nPress Enter to continue...")
+    
+    def _edit_instance_admin_password(self, instance: Instance) -> None:
+        """Change the Paperless admin password."""
+        say("This will update the admin password in the configuration.")
+        warn("The password is stored in the .env file.")
+        
+        new_password = get_input("New admin password (or Enter to cancel)", "")
+        if new_password:
+            if len(new_password) < 8:
+                error("Password must be at least 8 characters")
+            else:
+                if self._update_instance_env(instance, "PAPERLESS_ADMIN_PASSWORD", new_password):
+                    ok("Admin password updated in configuration")
+                    say("To apply, you need to recreate the admin user:")
+                    say(f"  docker compose -f {instance.compose_file} exec paperless python manage.py changepassword admin")
+        
+        input("\nPress Enter to continue...")
+    
+    def _create_cloudflare_service(self, instance_name: str) -> bool:
+        """Create and start a systemd service for Cloudflare tunnel."""
+        try:
+            service_content = f"""[Unit]
+Description=Cloudflare Tunnel for {instance_name}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+"""
+            service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
+            service_file.write_text(service_content)
+            
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
+            subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
+            
+            ok("Cloudflare tunnel service started")
+            return True
+        except Exception as e:
+            warn(f"Failed to create service: {e}")
+            return False
+    
+    def _offer_regenerate_compose(self, instance: Instance) -> None:
+        """Offer to regenerate docker-compose.yml for the instance."""
+        if confirm("Regenerate docker-compose.yml now?", True):
+            try:
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                from lib.installer import common, files
+                
+                # Load values from env file into config
+                common.cfg.instance_name = instance.name
+                common.cfg.stack_dir = str(instance.stack_dir)
+                common.cfg.data_root = str(instance.data_root)
+                common.cfg.enable_traefik = instance.get_env_value("ENABLE_TRAEFIK", "no")
+                common.cfg.enable_cloudflared = instance.get_env_value("ENABLE_CLOUDFLARED", "no")
+                common.cfg.enable_tailscale = instance.get_env_value("ENABLE_TAILSCALE", "no")
+                common.cfg.domain = instance.get_env_value("DOMAIN", "localhost")
+                common.cfg.http_port = instance.get_env_value("HTTP_PORT", "8000")
+                common.cfg.postgres_version = instance.get_env_value("POSTGRES_VERSION", "15")
+                common.cfg.postgres_db = instance.get_env_value("POSTGRES_DB", "paperless")
+                common.cfg.postgres_user = instance.get_env_value("POSTGRES_USER", "paperless")
+                common.cfg.postgres_password = instance.get_env_value("POSTGRES_PASSWORD", "")
+                common.cfg.refresh_paths()
+                
+                # Write new compose file
+                files.write_compose_file()
+                ok("docker-compose.yml regenerated")
+                
+                if confirm("Recreate containers now?", True):
+                    self._docker_command(instance, "down")
+                    self._docker_command(instance, "up", "-d")
+                    ok("Containers recreated")
+            except Exception as e:
+                error(f"Failed to regenerate: {e}")
+
     def system_backup_menu(self) -> None:
         """System-level backup and restore menu."""
         while True:
@@ -1861,19 +2222,12 @@ WantedBy=multi-user.target
                 system_backups = []
             
             # System overview box
-            import re
-            box_inner_width = 58
-            def box_line(content: str) -> str:
-                clean = re.sub(r'\033\[[0-9;]+m', '', content)
-                padding = box_inner_width - len(clean)
-                if padding < 0:
-                    return colorize("│", Colors.CYAN) + content[:box_inner_width] + colorize("│", Colors.CYAN)
-                return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+            box_line, box_width = create_box_helper(58)
             
-            print(colorize("╭" + "─" * box_inner_width + "╮", Colors.CYAN))
+            print(draw_box_top(box_width))
             print(box_line(f" Current System: {len(instances)} instance(s) configured"))
             print(box_line(f" System Backups: {len(system_backups)} available"))
-            print(colorize("╰" + "─" * box_inner_width + "╯", Colors.CYAN))
+            print(draw_box_bottom(box_width))
             print()
             
             print(colorize("What is System Backup?", Colors.BOLD))
@@ -2347,22 +2701,17 @@ instance_count: {len(instances)}
         
         print_header(f"Snapshot: {name}")
         
-        import re
-        box_width = 84  # matches border length below
-        def pad_line(content: str) -> str:
-            clean = re.sub(r"\033\[[0-9;]+m", "", content)
-            padding = max(0, box_width - len(clean) - 2)  # minus borders
-            return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
+        box_line, box_width = create_box_helper(82)
         
-        print(colorize("╭" + "─" * (box_width - 2) + "╮", Colors.CYAN))
-        print(pad_line(f" Instance:  {colorize(instance_name, Colors.BOLD)}"))
-        print(pad_line(f" Snapshot:  {name}"))
+        print(draw_box_top(box_width))
+        print(box_line(f" Instance:  {colorize(instance_name, Colors.BOLD)}"))
+        print(box_line(f" Snapshot:  {name}"))
         mode_display = colorize(mode.upper(), Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN)
-        print(pad_line(f" Mode:      {mode_display}"))
-        print(pad_line(f" Created:   {created}"))
+        print(box_line(f" Mode:      {mode_display}"))
+        print(box_line(f" Created:   {created}"))
         if mode == "incr" and parent != "?":
-            print(pad_line(f" Parent:    {parent}"))
-        print(colorize("╰" + "─" * (box_width - 2) + "╯", Colors.CYAN))
+            print(box_line(f" Parent:    {parent}"))
+        print(draw_box_bottom(box_width))
         print()
         
         remote_path = f"pcloud:backups/paperless/{instance_name}/{name}"
@@ -2653,15 +3002,49 @@ instance_count: {len(instances)}
                 options = [("1", "Authenticate with Cloudflare"), ("0", "Back to main menu")]
             else:
                 say(colorize("✓ Cloudflared installed and authenticated", Colors.GREEN))
+                
+                # Show per-instance tunnel status
+                instances = self.instance_manager.list_instances()
                 tunnels = cloudflared.list_tunnels()
-                if tunnels:
-                    print(f"\nActive tunnels: {len(tunnels)}")
-                    for tunnel in tunnels[:5]:
-                        print(f"  • {tunnel.get('name')}")
+                paperless_tunnels = [t for t in tunnels if t.get('name', '').startswith('paperless-')]
+                
+                if instances:
+                    print()
+                    print(colorize("Instance Tunnel Status:", Colors.BOLD))
+                    for inst in instances:
+                        tunnel = cloudflared.get_tunnel_for_instance(inst.name)
+                        cf_enabled = inst.get_env_value("ENABLE_CLOUDFLARED", "no") == "yes"
+                        
+                        # Check if service is running
+                        service_active = False
+                        try:
+                            result = subprocess.run(
+                                ["systemctl", "is-active", f"cloudflared-{inst.name}"],
+                                capture_output=True, check=False
+                            )
+                            service_active = result.returncode == 0
+                        except:
+                            pass
+                        
+                        if tunnel and service_active:
+                            status = colorize("● Active", Colors.GREEN)
+                            domain = inst.get_env_value("DOMAIN", "?")
+                            print(f"  {inst.name}: {status} → https://{domain}")
+                        elif tunnel:
+                            status = colorize("○ Configured", Colors.YELLOW)
+                            print(f"  {inst.name}: {status} (tunnel exists, service stopped)")
+                        elif cf_enabled:
+                            status = colorize("⚠ Misconfigured", Colors.RED)
+                            print(f"  {inst.name}: {status} (enabled but no tunnel)")
+                        else:
+                            status = colorize("○ Not enabled", Colors.CYAN)
+                            print(f"  {inst.name}: {status}")
+                
                 print()
                 options = [
                     ("1", "List all tunnels"),
-                    ("2", "View tunnel status"),
+                    ("2", "Enable tunnel for an instance"),
+                    ("3", "Disable tunnel for an instance"),
                     ("0", "Back to main menu")
                 ]
             
@@ -2685,10 +3068,41 @@ instance_count: {len(instances)}
                     # List tunnels
                     tunnels = cloudflared.list_tunnels()
                     if tunnels:
+                        print()
                         for t in tunnels:
-                            print(f"\n{t.get('name')} - {t.get('id')}")
+                            print(f"  {t.get('name')} - {t.get('id')}")
                     else:
                         say("No tunnels found")
+                input("\nPress Enter to continue...")
+            elif choice == "2" and authenticated:
+                # Enable tunnel for an instance
+                instances = self.instance_manager.list_instances()
+                available = [i for i in instances if i.get_env_value("ENABLE_CLOUDFLARED", "no") != "yes"]
+                if not available:
+                    say("All instances already have Cloudflare enabled")
+                else:
+                    print("\nSelect instance to enable Cloudflare tunnel:")
+                    for idx, inst in enumerate(available, 1):
+                        print(f"  {idx}) {inst.name}")
+                    sel = get_input(f"Select [1-{len(available)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(available):
+                        inst = available[int(sel) - 1]
+                        self._toggle_instance_cloudflare(inst)
+                input("\nPress Enter to continue...")
+            elif choice == "3" and authenticated:
+                # Disable tunnel for an instance
+                instances = self.instance_manager.list_instances()
+                enabled = [i for i in instances if i.get_env_value("ENABLE_CLOUDFLARED", "no") == "yes"]
+                if not enabled:
+                    say("No instances have Cloudflare enabled")
+                else:
+                    print("\nSelect instance to disable Cloudflare tunnel:")
+                    for idx, inst in enumerate(enabled, 1):
+                        print(f"  {idx}) {inst.name}")
+                    sel = get_input(f"Select [1-{len(enabled)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(enabled):
+                        inst = enabled[int(sel) - 1]
+                        self._toggle_instance_cloudflare(inst)
                 input("\nPress Enter to continue...")
     
     def tailscale_menu(self) -> None:
@@ -2719,10 +3133,28 @@ instance_count: {len(instances)}
                 ip = tailscale.get_ip()
                 if ip:
                     print(f"Tailscale IP: {colorize(ip, Colors.CYAN)}")
+                
+                # Show per-instance Tailscale status
+                instances = self.instance_manager.list_instances()
+                if instances:
+                    print()
+                    print(colorize("Instance Tailscale Status:", Colors.BOLD))
+                    for inst in instances:
+                        ts_enabled = inst.get_env_value("ENABLE_TAILSCALE", "no") == "yes"
+                        port = inst.get_env_value("HTTP_PORT", "8000")
+                        if ts_enabled:
+                            status = colorize("● Enabled", Colors.GREEN)
+                            print(f"  {inst.name}: {status} → http://{ip}:{port}")
+                        else:
+                            status = colorize("○ Not enabled", Colors.CYAN)
+                            print(f"  {inst.name}: {status}")
+                
                 print()
                 options = [
                     ("1", "View status"),
-                    ("2", "Disconnect"),
+                    ("2", "Enable Tailscale for an instance"),
+                    ("3", "Disable Tailscale for an instance"),
+                    ("4", "Disconnect from Tailscale"),
                     ("0", "Back to main menu")
                 ]
             
@@ -2747,6 +3179,36 @@ instance_count: {len(instances)}
                     print(tailscale.get_status())
                 input("\nPress Enter to continue...")
             elif choice == "2" and connected:
+                # Enable Tailscale for an instance
+                instances = self.instance_manager.list_instances()
+                available = [i for i in instances if i.get_env_value("ENABLE_TAILSCALE", "no") != "yes"]
+                if not available:
+                    say("All instances already have Tailscale enabled")
+                else:
+                    print("\nSelect instance to enable Tailscale:")
+                    for idx, inst in enumerate(available, 1):
+                        print(f"  {idx}) {inst.name}")
+                    sel = get_input(f"Select [1-{len(available)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(available):
+                        inst = available[int(sel) - 1]
+                        self._toggle_instance_tailscale(inst)
+                input("\nPress Enter to continue...")
+            elif choice == "3" and connected:
+                # Disable Tailscale for an instance
+                instances = self.instance_manager.list_instances()
+                enabled = [i for i in instances if i.get_env_value("ENABLE_TAILSCALE", "no") == "yes"]
+                if not enabled:
+                    say("No instances have Tailscale enabled")
+                else:
+                    print("\nSelect instance to disable Tailscale:")
+                    for idx, inst in enumerate(enabled, 1):
+                        print(f"  {idx}) {inst.name}")
+                    sel = get_input(f"Select [1-{len(enabled)}]", "")
+                    if sel.isdigit() and 1 <= int(sel) <= len(enabled):
+                        inst = enabled[int(sel) - 1]
+                        self._toggle_instance_tailscale(inst)
+                input("\nPress Enter to continue...")
+            elif choice == "4" and connected:
                 if tailscale.disconnect():
                     ok("Disconnected from Tailscale")
                 input("\nPress Enter to continue...")

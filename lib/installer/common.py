@@ -200,30 +200,36 @@ def prompt_core_values() -> None:
 def prompt_networking() -> None:
     """Ask how the instance should be accessed."""
     print()
-    say("How do you want to access this instance?")
-    print("  1) Direct HTTP - bind to a port (e.g., localhost:8000)")
+    say("How do you want to access this instance publicly?")
+    print("  1) Direct HTTP only - bind to a port (e.g., localhost:8000)")
     print("  2) HTTPS via Traefik - automatic SSL with Let's Encrypt")
-    print("  3) Cloudflare Tunnel - secure access via Cloudflare")
-    print("  4) Tailscale - private network access")
+    print("  3) Cloudflare Tunnel - secure access via Cloudflare (no open ports)")
     
-    choice = _read("Choose [1-4] [1]: ") or "1"
+    choice = _read("Choose [1-3] [1]: ") or "1"
     
     if choice == "2":
         cfg.enable_traefik = "yes"
+        cfg.enable_cloudflared = "no"
         cfg.domain = prompt("Domain for Paperless (DNS A/AAAA must point here; Enter=default)", cfg.domain)
     elif choice == "3":
         cfg.enable_traefik = "no"
         cfg.enable_cloudflared = "yes"
         cfg.domain = prompt("Domain for Paperless (configured in Cloudflare)", cfg.domain)
-        # Cloudflare tunnel name will be the instance name
-    elif choice == "4":
-        cfg.enable_traefik = "no"
-        cfg.enable_tailscale = "yes"
-        say("Instance will be accessible via Tailscale network")
-        cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
     else:
         cfg.enable_traefik = "no"
-        cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
+        cfg.enable_cloudflared = "no"
+    
+    # Always set an http_port (needed for direct access or as backend)
+    cfg.http_port = prompt("Bind Paperless on host port (Enter=default)", cfg.http_port)
+    
+    # Tailscale is additive - can be used alongside any other method
+    print()
+    say("Tailscale provides private VPN access and can be used alongside any method above.")
+    if _read("Also enable Tailscale for private network access? [y/N]: ").lower().startswith("y"):
+        cfg.enable_tailscale = "yes"
+        say("Instance will also be accessible via Tailscale network")
+    else:
+        cfg.enable_tailscale = "no"
 
 
 def prompt_backup_plan() -> None:
