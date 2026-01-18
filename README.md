@@ -12,12 +12,12 @@ Perfect for managing multiple Paperless-NGX instances (personal, family, clients
 
 #### Stable Release (main branch)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless.py && sudo python3 /tmp/paperless.py
 ```
 
 #### Development Version (dev branch)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py --branch dev
+curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless.py && sudo python3 /tmp/paperless.py --branch dev
 ```
 
 That's it! The installer will:

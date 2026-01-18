@@ -11,7 +11,7 @@ Usage:
   sudo python3 paperless.py
 
   # Or one-liner (downloads to temp and executes):
-  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py
+  curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless.py && sudo python3 /tmp/paperless.py
 
   # Installed system
   paperless
