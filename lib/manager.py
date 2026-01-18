@@ -1091,13 +1091,35 @@ class HealthChecker:
         """
         import urllib.request
         import urllib.error
+        import ssl
         import time
         
         if not self.instance.is_running:
             return False
         
+        # Determine the correct URL to check based on access method
+        enable_traefik = self.instance.get_env_value("ENABLE_TRAEFIK", "no")
+        enable_cloudflared = self.instance.get_env_value("ENABLE_CLOUDFLARED", "no")
+        domain = self.instance.get_env_value("DOMAIN", "")
         http_port = self.instance.get_env_value("HTTP_PORT", "8000")
-        url = f"http://localhost:{http_port}/"
+        
+        if enable_traefik == "yes" and domain:
+            # Traefik: check HTTPS endpoint via domain
+            url = f"https://{domain}/"
+            # Create SSL context that doesn't verify (in case cert is still provisioning)
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        elif enable_cloudflared == "yes" and domain:
+            # Cloudflare: check HTTPS endpoint via domain
+            url = f"https://{domain}/"
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        else:
+            # Direct HTTP: check localhost port
+            url = f"http://localhost:{http_port}/"
+            ssl_context = None
         
         max_attempts = 12 if retry else 1  # 12 * 5s = 60s max
         retry_delay = 5
@@ -1105,9 +1127,14 @@ class HealthChecker:
         for attempt in range(max_attempts):
             try:
                 req = urllib.request.Request(url, method='HEAD')
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    if response.status < 500:
-                        return True
+                if ssl_context:
+                    with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                        if response.status < 500:
+                            return True
+                else:
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        if response.status < 500:
+                            return True
             except urllib.error.HTTPError as e:
                 # 401/403 is fine - app running but needs auth
                 if e.code < 500:
