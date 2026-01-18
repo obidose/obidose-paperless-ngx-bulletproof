@@ -96,6 +96,32 @@ class Instance:
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip()
         return default
+    
+    def get_access_mode(self) -> str:
+        """Determine how this instance is accessed."""
+        if self.get_env_value("ENABLE_TRAEFIK") == "yes":
+            return "traefik"
+        elif self.get_env_value("ENABLE_CLOUDFLARED") == "yes":
+            return "cloudflared"
+        elif self.get_env_value("ENABLE_TAILSCALE") == "yes":
+            return "tailscale"
+        else:
+            return "http"
+    
+    def get_access_url(self) -> str:
+        """Get the access URL with mode indicator."""
+        mode = self.get_access_mode()
+        domain = self.get_env_value("DOMAIN", "localhost")
+        
+        if mode == "traefik":
+            return f"🔒 {domain}"
+        elif mode == "cloudflared":
+            return f"☁️  {domain}"
+        elif mode == "tailscale":
+            return f"🔐 {domain}"
+        else:
+            port = self.get_env_value("HTTP_PORT", "8000")
+            return f"🌐 localhost:{port}"
 
 
 class InstanceManager:
@@ -509,6 +535,59 @@ class PaperlessManager:
             padding = max(0, box_width - len(clean_line) - 2)
             print(colorize("│", Colors.CYAN) + no_instances_line + " " * padding + colorize("│", Colors.CYAN))
         
+        # Networking services status
+        # Traefik
+        traefik_running = self.is_traefik_installed()
+        if traefik_running:
+            from lib.installer.traefik import get_traefik_email
+            email = get_traefik_email()
+            if email:
+                traefik_status = f"{colorize('✓', Colors.GREEN)} Running • {email}"
+            else:
+                traefik_status = f"{colorize('✓', Colors.GREEN)} Running"
+        else:
+            traefik_status = colorize("○ Not installed", Colors.DARK_GRAY)
+        traefik_line = f" Traefik:        {traefik_status}"
+        clean_line = re.sub(r'\033\[[0-9;]+m', '', traefik_line)
+        padding = max(0, box_width - len(clean_line) - 2)
+        print(colorize("│", Colors.CYAN) + traefik_line + " " * padding + colorize("│", Colors.CYAN))
+        
+        # Cloudflare Tunnel
+        from lib.installer.cloudflared import is_cloudflared_installed
+        if is_cloudflared_installed():
+            # Count tunnels
+            try:
+                from lib.installer.cloudflared import list_tunnels
+                tunnels = list_tunnels()
+                tunnel_count = len([t for t in tunnels if t.get('name', '').startswith('paperless-')])
+                cloudflared_status = f"{colorize('✓', Colors.GREEN)} Installed • {tunnel_count} tunnel{'s' if tunnel_count != 1 else ''}"
+            except:
+                cloudflared_status = f"{colorize('✓', Colors.GREEN)} Installed"
+        else:
+            cloudflared_status = colorize("○ Not installed", Colors.DARK_GRAY)
+        cloudflared_line = f" Cloudflare:     {cloudflared_status}"
+        clean_line = re.sub(r'\033\[[0-9;]+m', '', cloudflared_line)
+        padding = max(0, box_width - len(clean_line) - 2)
+        print(colorize("│", Colors.CYAN) + cloudflared_line + " " * padding + colorize("│", Colors.CYAN))
+        
+        # Tailscale
+        from lib.installer.tailscale import is_tailscale_installed, is_connected, get_ip
+        if is_tailscale_installed():
+            if is_connected():
+                try:
+                    ip = get_ip()
+                    tailscale_status = f"{colorize('✓', Colors.GREEN)} Connected • {ip}"
+                except:
+                    tailscale_status = f"{colorize('✓', Colors.GREEN)} Connected"
+            else:
+                tailscale_status = f"{colorize('○', Colors.YELLOW)} Installed • Disconnected"
+        else:
+            tailscale_status = colorize("○ Not installed", Colors.DARK_GRAY)
+        tailscale_line = f" Tailscale:      {tailscale_status}"
+        clean_line = re.sub(r'\033\[[0-9;]+m', '', tailscale_line)
+        padding = max(0, box_width - len(clean_line) - 2)
+        print(colorize("│", Colors.CYAN) + tailscale_line + " " * padding + colorize("│", Colors.CYAN))
+        
         print(colorize("╰──────────────────────────────────────────────────────────╯", Colors.CYAN))
         print()
         
@@ -517,8 +596,8 @@ class PaperlessManager:
             print(colorize("Active Instances:", Colors.BOLD))
             for instance in instances[:5]:  # Show max 5
                 status_icon = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
-                domain = instance.get_env_value("DOMAIN", "localhost")
-                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD):<25} {Colors.CYAN}{domain}{Colors.OFF}")
+                url = instance.get_access_url()
+                print(f"  {status_icon} {colorize(instance.name, Colors.BOLD):<25} {url}")
             
             if len(instances) > 5:
                 print(f"  {colorize(f'... and {len(instances) - 5} more', Colors.CYAN)}")
@@ -590,9 +669,11 @@ class PaperlessManager:
             if instances:
                 for idx, instance in enumerate(instances, 1):
                     status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
+                    url = instance.get_access_url()
                     print(f"  {idx}) {instance.name} [{status}]")
-                    print(f"      Stack: {instance.stack_dir}")
-                    print(f"      Data:  {instance.data_root}")
+                    print(f"      Access: {url}")
+                    print(f"      Stack:  {instance.stack_dir}")
+                    print(f"      Data:   {instance.data_root}")
                 print()
             else:
                 print("  No instances configured\n")
