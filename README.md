@@ -1,8 +1,8 @@
 # Paperless-NGX Bulletproof
 
-A production-ready deployment system for Paperless-NGX with multi-instance support, automated backups, and disaster recovery.
+A deployment and instance management system for Paperless-NGX with, automated backups, and simple disaster recovery.
 
-Designed for managing multiple Paperless-NGX instances (personal, family, clients) from a single command.
+Designed for managing multiple Paperless-NGX instances (personal, family, whatever) from a single command.
 
 ---
 
