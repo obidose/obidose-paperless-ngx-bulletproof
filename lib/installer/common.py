@@ -160,17 +160,17 @@ def prompt_core_values() -> None:
     cfg.tz = prompt("Timezone (IANA, e.g., Pacific/Auckland; Enter=default)", cfg.tz)
     cfg.instance_name = prompt("Instance name (Enter=default)", cfg.instance_name)
     
-    # Update defaults based on new instance name
+    # Update default paths based on instance name BEFORE prompting
     if cfg.instance_name != "paperless":
-        default_data = f"/home/docker/{cfg.instance_name}"
-        default_stack = f"/home/docker/{cfg.instance_name}-setup"
+        cfg.data_root = f"/home/docker/{cfg.instance_name}"
+        cfg.stack_dir = f"/home/docker/{cfg.instance_name}-setup"
     else:
-        default_data = "/home/docker/paperless"
-        default_stack = "/home/docker/paperless-setup"
+        cfg.data_root = "/home/docker/paperless"
+        cfg.stack_dir = "/home/docker/paperless-setup"
     
-    # Prompt for paths with instance-specific defaults
-    cfg.data_root = prompt("Data root (persistent storage; Enter=default)", default_data)
-    cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", default_stack)
+    # Now prompt with the updated defaults
+    cfg.data_root = prompt("Data root (persistent storage; Enter=default)", cfg.data_root)
+    cfg.stack_dir = prompt("Stack dir (where docker-compose.yml lives; Enter=default)", cfg.stack_dir)
     
     # Warn if paths already exist
     if Path(cfg.stack_dir).exists():
