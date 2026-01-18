@@ -4818,7 +4818,7 @@ rclone_config: {network_info['rclone']['enabled']}
             # Stop all remaining containers
             say("Stopping all Docker containers...")
             subprocess.run(
-                ["docker", "stop", "$(docker ps -aq)"],
+                "docker stop $(docker ps -aq) 2>/dev/null",
                 shell=True,
                 check=False,
                 capture_output=True
@@ -4827,7 +4827,7 @@ rclone_config: {network_info['rclone']['enabled']}
             # Remove all containers
             say("Removing all Docker containers...")
             subprocess.run(
-                ["docker", "rm", "$(docker ps -aq)"],
+                "docker rm $(docker ps -aq) 2>/dev/null",
                 shell=True,
                 check=False,
                 capture_output=True
