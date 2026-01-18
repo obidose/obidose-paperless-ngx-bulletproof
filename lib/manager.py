@@ -998,6 +998,220 @@ class PaperlessManager:
             self.restore_instance_from_backup()
         # else back (0 or any other)
     
+    def restore_instance_from_backup(self, backup_instance: str = None, snapshot: str = None) -> None:
+        """Unified restore method that creates instance structure before restoring data.
+        
+        Args:
+            backup_instance: Name of the backup instance to restore from (prompts if None)
+            snapshot: Snapshot name to restore (prompts if None)
+        """
+        if not self.rclone_configured:
+            error("Backup server not configured!")
+            input("\nPress Enter to continue...")
+            return
+        
+        print_header("Restore Instance from Backup")
+        
+        # Get rclone remote settings
+        remote_name = "pcloud"  # TODO: make configurable
+        remote_base = f"{remote_name}:backups/paperless"
+        
+        try:
+            # Select backup instance if not provided
+            if not backup_instance:
+                say("Scanning for available backups...")
+                
+                # List all instance folders in backup
+                result = subprocess.run(
+                    ["rclone", "lsd", remote_base],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    warn("No backups found")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Parse instance names
+                backup_instances = []
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split()
+                    if parts:
+                        backup_instances.append(parts[-1])
+                
+                if not backup_instances:
+                    warn("No backup instances found")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Show available instances
+                print("Available backup instances:")
+                for idx, inst_name in enumerate(backup_instances, 1):
+                    print(f"  {idx}) {inst_name}")
+                print()
+                
+                selected = get_input(f"Select instance [1-{len(backup_instances)}] or 'cancel'", "cancel")
+                
+                if selected == "cancel" or not selected.isdigit():
+                    return
+                
+                idx = int(selected)
+                if not (1 <= idx <= len(backup_instances)):
+                    return
+                
+                backup_instance = backup_instances[idx - 1]
+            
+            # Select snapshot if not provided
+            if not snapshot:
+                # List snapshots for selected instance
+                result = subprocess.run(
+                    ["rclone", "lsd", f"{remote_base}/{backup_instance}"],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                
+                if result.returncode != 0 or not result.stdout.strip():
+                    warn(f"No snapshots found for {backup_instance}")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Parse snapshots
+                snapshots = []
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split()
+                    if parts:
+                        snapshots.append(parts[-1])
+                
+                snapshots = sorted(snapshots)
+                
+                print(f"\nSnapshots for '{backup_instance}':")
+                for idx, snap in enumerate(snapshots, 1):
+                    print(f"  {idx}) {snap}")
+                print()
+                
+                snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
+                
+                if snap_choice == "latest":
+                    snapshot = snapshots[-1]
+                elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
+                    snapshot = snapshots[int(snap_choice) - 1]
+                else:
+                    return
+            
+            # Prompt for new instance name
+            new_name = get_input("New instance name", backup_instance)
+            
+            # IMPORTANT: Create instance structure first
+            say(f"Setting up new instance '{new_name}'...")
+            
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import common, files, traefik, cloudflared, tailscale
+            
+            # Set up basic config
+            common.cfg.instance_name = new_name
+            common.cfg.rclone_remote_name = remote_name
+            common.cfg.rclone_remote_path = f"backups/paperless/{new_name}"  # Future backups go here
+            
+            # Ask for networking (or use sensible defaults for restore)
+            print()
+            say("Configure access for restored instance:")
+            common.prompt_networking()
+            
+            # Use default backup schedule
+            common.cfg.backup_full_freq = "weekly"
+            common.cfg.backup_full_day = 0
+            common.cfg.backup_full_time = "03:30"
+            common.cfg.backup_incr_freq = "daily"
+            common.cfg.backup_incr_time = "00:00"
+            common.cfg.backup_enable_archive = "no"
+            
+            # Refresh paths
+            common.cfg.refresh_paths()
+            
+            # Check networking dependencies
+            if common.cfg.enable_traefik == "yes" and not traefik.is_traefik_running():
+                common.warn("Traefik not running - instance will be on HTTP port only")
+            if common.cfg.enable_cloudflared == "yes" and not cloudflared.is_authenticated():
+                common.warn("Cloudflared not authenticated - tunnel won't be created")
+            if common.cfg.enable_tailscale == "yes" and not tailscale.is_connected():
+                common.warn("Tailscale not connected")
+            
+            # Create directory structure
+            common.ensure_dir_tree(common.cfg)
+            
+            # Write config files
+            files.write_env_file()
+            files.write_compose_file()
+            files.copy_helper_scripts()
+            
+            # NOW restore the data
+            say(f"Restoring data from {backup_instance}/{snapshot}...")
+            
+            restore_env = os.environ.copy()
+            restore_env.update({
+                "INSTANCE_NAME": new_name,
+                "ENV_FILE": str(common.cfg.env_file),
+                "COMPOSE_FILE": str(common.cfg.compose_file),
+                "STACK_DIR": str(common.cfg.stack_dir),
+                "DATA_ROOT": str(common.cfg.data_root),
+                "RCLONE_REMOTE_NAME": remote_name,
+                "RCLONE_REMOTE_PATH": f"backups/paperless/{backup_instance}"  # Read from original
+            })
+            
+            restore_script = Path(f"/tmp/restore_{new_name}.py")
+            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "lib" / "modules" / "restore.py").read_text())
+            
+            subprocess.run([sys.executable, str(restore_script), snapshot], env=restore_env, check=True)
+            
+            # Install backup cron
+            files.install_cron_backup()
+            
+            # Set up Cloudflare tunnel if enabled
+            if common.cfg.enable_cloudflared == "yes" and cloudflared.is_authenticated():
+                print()
+                common.say("Setting up Cloudflare Tunnel...")
+                if cloudflared.create_tunnel(new_name, common.cfg.domain):
+                    if confirm("Start tunnel as systemd service?", True):
+                        service_content = f"""[Unit]
+Description=Cloudflare Tunnel for {new_name}
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{new_name}.yml run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+"""
+                        service_file = Path(f"/etc/systemd/system/cloudflared-{new_name}.service")
+                        service_file.write_text(service_content)
+                        subprocess.run(["systemctl", "daemon-reload"], check=True)
+                        subprocess.run(["systemctl", "enable", f"cloudflared-{new_name}"], check=True)
+                        subprocess.run(["systemctl", "start", f"cloudflared-{new_name}"], check=True)
+                        common.ok("Tunnel service started")
+            
+            # Register the restored instance
+            self.instance_manager.add_instance(
+                new_name,
+                Path(common.cfg.stack_dir),
+                Path(common.cfg.data_root)
+            )
+            
+            ok(f"Instance '{new_name}' restored successfully!")
+            
+        except Exception as e:
+            error(f"Restore failed: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        input("\nPress Enter to continue...")
+    
     def create_fresh_instance(self) -> None:
         """Create a new fresh instance."""
         print_header("Create Fresh Instance")
@@ -2408,9 +2622,7 @@ instance_count: {len(instances)}
         input("\nPress Enter to continue...")
     
     def _restore_from_explorer(self, instance_name: str, snapshots: list) -> None:
-        """Restore a snapshot to a new instance."""
-        print_header("Restore to New Instance")
-        
+        """Restore a snapshot to a new instance - uses unified restore method."""
         print("Select snapshot to restore:")
         for idx, (name, mode, parent, created, _) in enumerate(snapshots, 1):
             print(f"  {idx}) {name} ({mode}, {created})")
@@ -2425,43 +2637,8 @@ instance_count: {len(instances)}
         else:
             return
         
-        new_instance = get_input("New instance name", f"{instance_name}-restored")
-        
-        if confirm(f"Restore {instance_name}/{snapshot_name} as '{new_instance}'?", False):
-            try:
-                say("Restoring instance...")
-                
-                # Set up config for restore
-                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-                from lib.installer import common
-                
-                common.cfg.instance_name = new_instance
-                common.cfg.rclone_remote_name = "pcloud"
-                common.cfg.rclone_remote_path = f"backups/paperless/{instance_name}"
-                common.cfg.refresh_paths()
-                
-                # Set up environment for restore module
-                os.environ["INSTANCE_NAME"] = new_instance
-                os.environ["STACK_DIR"] = str(common.cfg.stack_dir)
-                os.environ["DATA_ROOT"] = str(common.cfg.data_root)
-                os.environ["RCLONE_REMOTE_PATH"] = f"backups/paperless/{instance_name}"
-                
-                # Call restore module
-                restore_module = Path("/usr/local/lib/paperless-bulletproof/lib/modules/restore.py")
-                subprocess.run([sys.executable, str(restore_module), snapshot_name], check=True)
-                
-                # Register instance
-                self.instance_manager.add_instance(
-                    new_instance,
-                    Path(common.cfg.stack_dir),
-                    Path(common.cfg.data_root)
-                )
-                
-                ok(f"Instance '{new_instance}' restored successfully!")
-            except Exception as e:
-                error(f"Restore failed: {e}")
-        
-        input("\nPress Enter to continue...")
+        # Use the unified restore method
+        self.restore_instance_from_backup(backup_instance=instance_name, snapshot=snapshot_name)
     
     def _delete_snapshot(self, instance_name: str, snapshots: list) -> None:
         """Delete a snapshot from backup server."""
