@@ -1,56 +1,72 @@
-# Paperless-NGX Bulletproof
+# 📄 Paperless-NGX Bulletproof
 
-One-command setup and management for Paperless-NGX with automated backups to pCloud.
+**A production-ready, multi-instance Paperless-NGX deployment system with automated backups, disaster recovery, and zero-downtime updates.**
 
-## Quick Start
+Perfect for managing multiple Paperless-NGX instances (personal, family, clients) from a single command with enterprise-grade reliability.
 
-**One command installs everything:**
+---
 
+## 🚀 Quick Start
+
+### One-Command Installation
+
+#### Stable Release (main branch)
 ```bash
-# From main branch (stable)
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py
+```
 
-# From dev branch (testing)
+#### Development Version (dev branch)
+```bash
 curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py > /tmp/paperless_install.py && sudo python3 /tmp/paperless_install.py --branch dev
 ```
 
-**What happens:**
-1. Installs base system (Docker, rclone)
-2. Connects to backup server (pCloud)
-3. Launches interactive manager
-4. From there: create instances, restore from backups, manage everything
+That's it! The installer will:
+- ✅ Install Docker & Docker Compose
+- ✅ Configure rclone with pCloud backup
+- ✅ Set up the management system
+- ✅ Launch the interactive manager
 
-After installation, manage with: `paperless`
+### After Installation
 
----
-
-## What You Get
-
-- **Multiple Instances** - Run separate Paperless-NGX for yourself, family, clients - all on one machine
-- **Paperless-NGX** with PostgreSQL, Redis, Gotenberg, Tika per instance
-- **Optional Traefik** with automatic HTTPS (Let's Encrypt) shared across instances
-- **Automated backups** to pCloud (full + incremental + optional archive)
-- **Easy restore** from any snapshot with automatic chain resolution
-- **Centralized management** - one TUI to rule them all
-- **Health monitoring** and container management per instance
-- **Interactive workflows** for all operations
-
-**Example multi-instance setup:**
-- `paperless-personal` → https://docs.yourdomain.com
-- `paperless-dad` → https://docs-dad.yourdomain.com  
-- `paperless-client1` → https://docs.client.com
-
-All managed from one command: `paperless`
+Simply run:
+```bash
+paperless
+```
 
 ---
 
-## Requirements
+## ✨ Features
 
-- Ubuntu 22.04 or 24.04
-- Root access (run with `sudo`)
-- pCloud account for backups
+### 🏢 Multi-Instance Management
+- **Isolated Instances**: Each with own database, media, and configuration
+- **Family & Client Support**: Run separate instances for different users/organizations
+- **Easy Switching**: Manage all instances from one unified interface
 
-That's it! The installer handles Docker, rclone, and everything else.
+### 💾 Enterprise-Grade Backups
+- **Automated Snapshots**: One-command backup of entire instance
+- **Docker Version Tracking**: Capture exact image versions for reproducible restores
+- **Point-in-Time Recovery**: Browse and restore from any previous snapshot
+- **System-Level Backup**: Disaster recovery for multi-instance configurations
+
+### 🔄 Zero-Downtime Updates
+- **Safe Update Workflow**: Automatic backup before upgrade
+- **Health Checks**: Verify services after update
+- **Rollback Ready**: Restore previous snapshot if needed
+
+### 🎨 Professional Interface
+- **Clean TUI**: Box-bordered menus with color coding
+- **Visual Hierarchy**: Important information prominently displayed
+- **Intuitive Navigation**: Numeric menu system (0=back, 1-9=options)
+
+---
+
+## 📋 Requirements
+
+- **OS**: Ubuntu 22.04 or 24.04 LTS
+- **RAM**: 4GB minimum (8GB+ recommended for multiple instances)
+- **Disk**: 20GB+ available space
+- **Access**: Root/sudo privileges for installation
+- **Backup**: pCloud account (free 10GB available)
 
 ---
 
@@ -266,41 +282,46 @@ paperless
 
 ---
 
-## File Structure
+## 📁 Project Structure
 
 ```
-/usr/local/bin/
-  └── paperless@ → /usr/local/lib/paperless-bulletproof/paperless.py
-
-/usr/local/lib/paperless-bulletproof/
-  ├── paperless.py           # Main entry point
-  ├── paperless_manager.py   # TUI manager
-  ├── installer/             # Installation modules
-  │   ├── common.py
-  │   ├── deps.py
-  │   ├── files.py
-  │   └── pcloud.py
-  └── utils/
-      └── selftest.py
-
-/etc/paperless-bulletproof/
-  └── instances.json         # Instance tracking
-
-/home/docker/paperless-setup/
-  ├── .env
-  ├── docker-compose.yml
-  ├── backup.py             # Backup script
-  ├── restore.py            # Restore script
-  └── backup.log
-
-/home/docker/paperless/
-  ├── data/
-  ├── media/
-  ├── export/
-  ├── consume/
-  ├── db/
-  └── tika-cache/
+paperless.py              # Single entry point (CLI)
+lib/                      # All Python modules
+├── manager.py           # Interactive TUI manager
+├── installer/           # Installation modules
+│   ├── common.py       # Configuration & helpers
+│   ├── deps.py         # System dependencies
+│   ├── files.py        # File generation
+│   └── pcloud.py       # Backup configuration
+├── modules/             # Core functionality
+│   ├── backup.py       # Snapshot creation
+│   └── restore.py      # Snapshot restoration
+└── utils/               # Utilities
+    └── selftest.py     # Health checks
+compose/                  # Docker Compose templates
+├── docker-compose-direct.yml
+└── docker-compose-traefik.yml
+presets/                  # Environment presets
+├── direct.env
+└── traefik.env
 ```
+
+---
+
+## 🛠️ Development
+
+### Repository
+```bash
+git clone https://github.com/obidose/obidose-paperless-ngx-bulletproof.git
+cd obidose-paperless-ngx-bulletproof
+
+# Test locally
+sudo python3 paperless.py --branch dev
+```
+
+### Branches
+- **main**: Stable, production-ready
+- **dev**: Latest features, active development
 
 ---
 
@@ -379,52 +400,27 @@ Your pCloud backups remain intact for future restoration.
 
 ---
 
-## Development
+## 🤝 Contributing
 
-### Project Structure
-
-```
-paperless.py              # Main entry (bootstraps, detects state)
-paperless_manager.py      # TUI manager (classes for UI)
-install.py                # Legacy compat (redirects to paperless.py)
-
-installer/
-  ├── common.py           # Shared utilities, config
-  ├── deps.py             # Install Docker, rclone
-  ├── files.py            # Generate compose/env files
-  └── pcloud.py           # pCloud configuration
-
-modules/
-  ├── backup.py           # Backup operations
-  └── restore.py          # Restore operations
-
-utils/
-  └── selftest.py         # Post-install validation
-
-presets/
-  ├── traefik.env         # Traefik preset
-  └── direct.env          # Direct HTTP preset
-
-compose/
-  ├── docker-compose-traefik.yml    # Template with Traefik
-  └── docker-compose-direct.yml     # Template direct HTTP
-```
-
-### Testing Dev Branch
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/dev/paperless.py \
-  | BP_BRANCH=dev sudo -E python3 - --branch dev
-```
-
-The `--branch dev` and `BP_BRANCH=dev` ensure everything pulls from dev branch.
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Test on fresh Ubuntu install
+4. Submit pull request
 
 ---
 
-## License
+## 📝 License
 
-MIT
+MIT License
 
-## Support
+---
 
-Issues and PRs welcome on GitHub: [obidose/obidose-paperless-ngx-bulletproof](https://github.com/obidose/obidose-paperless-ngx-bulletproof)
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/obidose/obidose-paperless-ngx-bulletproof/issues)
+- **Documentation**: This README and inline help (`paperless` → "About & Help")
+
+---
+
+**Made with ❤️ for reliable document management**

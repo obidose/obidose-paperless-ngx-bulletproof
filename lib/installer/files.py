@@ -2,9 +2,10 @@ from pathlib import Path
 import textwrap
 import subprocess
 import sys
+import shutil
 from .common import cfg, say, log, ok, warn, confirm, prompt
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def copy_helper_scripts() -> None:
@@ -13,7 +14,7 @@ def copy_helper_scripts() -> None:
     
     # Copy backup and restore scripts to instance directory
     for name in ("backup.py", "restore.py"):
-        src = BASE_DIR / "modules" / name
+        src = BASE_DIR / "lib" / "modules" / name
         dst = Path(cfg.stack_dir) / name
         if src.exists():
             dst.write_text(src.read_text())
@@ -25,31 +26,24 @@ def copy_helper_scripts() -> None:
     lib_dir = Path("/usr/local/lib/paperless-bulletproof")
     lib_dir.mkdir(parents=True, exist_ok=True)
     
-    # Install all necessary modules
-    for name in ("paperless.py", "paperless_manager.py"):
-        src = BASE_DIR / name
-        dst = lib_dir / name
-        if src.exists():
-            dst.write_text(src.read_text())
-            dst.chmod(0o755)
-        else:
-            warn(f"Missing module: {src}")
+    # Install main entry point
+    src = BASE_DIR / "paperless.py"
+    dst = lib_dir / "paperless.py"
+    if src.exists():
+        dst.write_text(src.read_text())
+        dst.chmod(0o755)
+    else:
+        warn(f"Missing module: {src}")
     
-    # Copy installer modules to lib
-    installer_dst = lib_dir / "installer"
-    installer_dst.mkdir(exist_ok=True)
-    for module in ["__init__.py", "common.py", "deps.py", "files.py", "pcloud.py"]:
-        src = BASE_DIR / "installer" / module
-        if src.exists():
-            (installer_dst / module).write_text(src.read_text())
-    
-    # Copy utils modules
-    utils_dst = lib_dir / "utils"
-    utils_dst.mkdir(exist_ok=True)
-    for module in ["__init__.py", "selftest.py"]:
-        src = BASE_DIR / "utils" / module
-        if src.exists():
-            (utils_dst / module).write_text(src.read_text())
+    # Copy entire lib folder structure
+    lib_src = BASE_DIR / "lib"
+    lib_dst = lib_dir / "lib"
+    if lib_src.exists():
+        if lib_dst.exists():
+            shutil.rmtree(lib_dst)
+        shutil.copytree(lib_src, lib_dst)
+    else:
+        warn(f"Missing lib folder: {lib_src}")
     
     # Create main symlink
     main_link = Path("/usr/local/bin/paperless")
@@ -85,7 +79,7 @@ def restore_existing_backup_if_present() -> bool:
         snap = snaps[-1]
     say(f"Restoring chain: {snap}")
     subprocess.run(
-        [sys.executable, str(BASE_DIR / "modules" / "restore.py"), snap],
+        [sys.executable, str(BASE_DIR / "lib" / "modules" / "restore.py"), snap],
         check=True,
     )
     return True

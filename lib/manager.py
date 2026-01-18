@@ -781,7 +781,7 @@ class PaperlessManager:
             
             # Run restore
             restore_script = Path(f"/tmp/restore_{new_name}.py")
-            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "modules" / "restore.py").read_text())
+            restore_script.write_text((Path("/usr/local/lib/paperless-bulletproof") / "lib" / "modules" / "restore.py").read_text())
             
             subprocess.run([sys.executable, str(restore_script), snapshot], check=True)
             
@@ -1791,7 +1791,7 @@ instance_count: {len(instances)}
                 os.environ["RCLONE_REMOTE_PATH"] = f"backups/paperless/{instance_name}"
                 
                 # Call restore module
-                restore_module = Path("/usr/local/lib/paperless-bulletproof/modules/restore.py")
+                restore_module = Path("/usr/local/lib/paperless-bulletproof/lib/modules/restore.py")
                 subprocess.run([sys.executable, str(restore_module), snapshot_name], check=True)
                 
                 # Register instance

@@ -61,12 +61,12 @@ def _bootstrap() -> None:
 
 # Try to import locally, bootstrap if needed
 try:
-    from paperless_manager import PaperlessManager
-    from installer import common, deps, files, pcloud
+    from lib.manager import PaperlessManager
+    from lib.installer import common, deps, files, pcloud
 except ModuleNotFoundError:
     _bootstrap()
-    from paperless_manager import PaperlessManager
-    from installer import common, deps, files, pcloud
+    from lib.manager import PaperlessManager
+    from lib.installer import common, deps, files, pcloud
 
 
 def main():
