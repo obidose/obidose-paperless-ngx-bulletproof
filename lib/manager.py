@@ -648,7 +648,7 @@ class PaperlessManager:
         try:
             # Import installer modules
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from installer import common, files
+            from lib.installer import common, files
             
             # Run the guided setup
             common.pick_and_merge_preset(
@@ -665,7 +665,7 @@ class PaperlessManager:
             
             # Run self-test
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from utils.selftest import run_stack_tests
+            from lib.utils.selftest import run_stack_tests
             if run_stack_tests(Path(common.cfg.compose_file), Path(common.cfg.env_file)):
                 common.ok("Self-test passed")
             else:
@@ -785,7 +785,7 @@ class PaperlessManager:
             
             # Set up config for restore
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-            from installer import common
+            from lib.installer import common
             
             # Use defaults but allow customization
             common.cfg.instance_name = new_name
@@ -1790,7 +1790,7 @@ instance_count: {len(instances)}
                 
                 # Set up config for restore
                 sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-                from installer import common
+                from lib.installer import common
                 
                 common.cfg.instance_name = new_instance
                 common.cfg.rclone_remote_name = "pcloud"
