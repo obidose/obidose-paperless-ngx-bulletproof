@@ -183,6 +183,14 @@ def main() -> None:
                     extract_tar(tarfile_path, DATA_ROOT)
                     ok(f"Restored {name} data")
             
+            # Restore syncthing-config if it exists in backup (consume folder sync config)
+            syncthing_tarfile = next(tmp.glob("syncthing-config.tar*"), None)
+            if syncthing_tarfile:
+                syncthing_config_dir = STACK_DIR / "syncthing-config"
+                syncthing_config_dir.mkdir(parents=True, exist_ok=True)
+                extract_tar(syncthing_tarfile, STACK_DIR)
+                ok("Restored syncthing-config")
+            
             # Handle docker-compose.yml restoration
             compose_snap = tmp / "compose.snapshot.yml"
             if compose_snap.exists():
@@ -196,10 +204,12 @@ def main() -> None:
                     ok("Restored docker-compose.yml from backup")
             first = False
         else:
-            for name in ["data", "media", "export"]:
+            for name in ["data", "media", "export", "syncthing-config"]:
                 tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
                 if tarfile_path:
-                    extract_tar(tarfile_path, DATA_ROOT)
+                    # For syncthing-config, extract to STACK_DIR; others to DATA_ROOT
+                    extract_dest = STACK_DIR if name == "syncthing-config" else DATA_ROOT
+                    extract_tar(tarfile_path, extract_dest)
         dump = next(tmp.glob("postgres.sql*"), None)
         if dump:
             final_dump = dump_dir / dump.name

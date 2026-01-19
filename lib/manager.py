@@ -2596,7 +2596,7 @@ class PaperlessManager:
             from lib.installer import common, files, traefik, cloudflared, tailscale
             
             # ─── Step 1: Instance Identity ────────────────────────────────────
-            print(colorize("Step 1 of 4: Instance Identity", Colors.BOLD))
+            print(colorize("Step 1 of 5: Instance Identity", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -2628,7 +2628,7 @@ class PaperlessManager:
             print()
             
             # ─── Step 2: Network Access ───────────────────────────────────────
-            print(colorize("Step 2 of 4: Network Access", Colors.BOLD))
+            print(colorize("Step 2 of 5: Network Access", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -2734,7 +2734,7 @@ class PaperlessManager:
             print()
             
             # ─── Step 3: Backup Configuration ─────────────────────────────────
-            print(colorize("Step 3 of 4: Backup Schedule", Colors.BOLD))
+            print(colorize("Step 3 of 5: Backup Schedule", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -2803,8 +2803,65 @@ class PaperlessManager:
                 common.cfg.cron_archive_time = ""
             print()
             
-            # ─── Step 4: Review & Create ──────────────────────────────────────
-            print(colorize("Step 4 of 4: Review & Create", Colors.BOLD))
+            # ─── Step 4: Consume Input Methods (Optional) ─────────────────────
+            print(colorize("Step 4 of 5: Consume Input Methods (Optional)", Colors.BOLD))
+            print(colorize("─" * 40, Colors.CYAN))
+            print()
+            
+            say("Configure how documents get into Paperless:")
+            say("You can enable these later from the instance menu.")
+            print()
+            
+            print(f"  {colorize('1)', Colors.BOLD)} {colorize('Syncthing', Colors.CYAN)} - Peer-to-peer sync from your devices")
+            print(f"       Best for: Mobile phones, personal computers")
+            print(f"  {colorize('2)', Colors.BOLD)} {colorize('Samba', Colors.CYAN)} - Network folder (Windows/Mac compatible)")
+            print(f"       Best for: Scanners, shared family access")
+            print(f"  {colorize('3)', Colors.BOLD)} {colorize('SFTP', Colors.CYAN)} - Secure file transfer protocol")
+            print(f"       Best for: Automated scripts, advanced users")
+            print(f"  {colorize('0)', Colors.BOLD)} Skip - Configure later from instance menu")
+            print()
+            
+            # Initialize all consume config to disabled by default
+            common.cfg.consume_syncthing_enabled = "false"
+            common.cfg.consume_samba_enabled = "false"
+            common.cfg.consume_sftp_enabled = "false"
+            
+            consume_choice = get_input("Enable any consume methods? [0-3, comma-separated]", "0")
+            
+            if consume_choice != "0" and consume_choice.strip():
+                consume_methods = [x.strip() for x in consume_choice.split(",")]
+                
+                if "1" in consume_methods:
+                    # Enable Syncthing config - container will be started on first use
+                    common.cfg.consume_syncthing_enabled = "true"
+                    common.cfg.consume_syncthing_web_ui_port = str(self._find_available_port(8384))
+                    common.cfg.consume_syncthing_sync_port = str(self._find_available_port(22000))
+                    common.cfg.consume_syncthing_folder_id = f"paperless-{instance_name}"
+                    common.cfg.consume_syncthing_folder_label = f"Paperless {instance_name}"
+                    ok("Syncthing will be enabled after instance creation")
+                
+                if "2" in consume_methods:
+                    # Enable Samba config
+                    from lib.installer.consume import generate_secure_password
+                    common.cfg.consume_samba_enabled = "true"
+                    common.cfg.consume_samba_share_name = f"paperless-{instance_name}"
+                    common.cfg.consume_samba_username = f"pl-{instance_name}"
+                    common.cfg.consume_samba_password = generate_secure_password()
+                    ok("Samba share will be enabled after instance creation")
+                
+                if "3" in consume_methods:
+                    # Enable SFTP config
+                    from lib.installer.consume import generate_secure_password
+                    common.cfg.consume_sftp_enabled = "true"
+                    common.cfg.consume_sftp_port = str(self._find_available_port(2222))
+                    common.cfg.consume_sftp_username = f"pl-{instance_name}"
+                    common.cfg.consume_sftp_password = generate_secure_password()
+                    ok("SFTP access will be enabled after instance creation")
+            
+            print()
+            
+            # ─── Step 5: Review & Create ──────────────────────────────────────
+            print(colorize("Step 5 of 5: Review & Create", Colors.BOLD))
             print(colorize("─" * 40, Colors.CYAN))
             print()
             
@@ -2894,6 +2951,73 @@ class PaperlessManager:
                 Path(common.cfg.data_root)
             )
             
+            # Start consume containers if enabled
+            consume_services_started = []
+            if common.cfg.consume_syncthing_enabled == "true":
+                say("Starting Syncthing container...")
+                try:
+                    from lib.installer.consume import start_syncthing_container, SyncthingConfig
+                    syncthing_config = SyncthingConfig(
+                        enabled=True,
+                        web_ui_port=int(common.cfg.consume_syncthing_web_ui_port),
+                        sync_port=int(common.cfg.consume_syncthing_sync_port),
+                        folder_id=common.cfg.consume_syncthing_folder_id,
+                        folder_label=common.cfg.consume_syncthing_folder_label
+                    )
+                    start_syncthing_container(
+                        instance_name=instance_name,
+                        config=syncthing_config,
+                        consume_path=Path(common.cfg.dir_consume),
+                        config_dir=Path(common.cfg.stack_dir) / "syncthing-config"
+                    )
+                    consume_services_started.append(f"Syncthing (UI: http://localhost:{common.cfg.consume_syncthing_web_ui_port})")
+                except Exception as e:
+                    warn(f"Failed to start Syncthing: {e}")
+            
+            if common.cfg.consume_samba_enabled == "true":
+                say("Setting up Samba share...")
+                try:
+                    from lib.installer.consume import (
+                        start_samba_container, add_samba_user, write_samba_share_config,
+                        reload_samba_config, is_samba_available, SambaConfig
+                    )
+                    samba_config = SambaConfig(
+                        enabled=True,
+                        share_name=common.cfg.consume_samba_share_name,
+                        username=common.cfg.consume_samba_username,
+                        password=common.cfg.consume_samba_password
+                    )
+                    if not is_samba_available():
+                        start_samba_container()
+                    add_samba_user(samba_config.username, samba_config.password)
+                    write_samba_share_config(instance_name, samba_config, Path(common.cfg.dir_consume))
+                    reload_samba_config()
+                    consume_services_started.append(f"Samba (\\\\<server>\\{common.cfg.consume_samba_share_name})")
+                except Exception as e:
+                    warn(f"Failed to set up Samba: {e}")
+            
+            if common.cfg.consume_sftp_enabled == "true":
+                say("Setting up SFTP access...")
+                try:
+                    from lib.installer.consume import (
+                        start_sftp_container, ConsumeConfig, SFTPConfig
+                    )
+                    sftp_config = SFTPConfig(
+                        enabled=True,
+                        username=common.cfg.consume_sftp_username,
+                        password=common.cfg.consume_sftp_password,
+                        port=int(common.cfg.consume_sftp_port)
+                    )
+                    # Create config for this instance
+                    consume_config = ConsumeConfig()
+                    consume_config.sftp = sftp_config
+                    instances_config = {instance_name: consume_config}
+                    data_roots = {instance_name: Path(common.cfg.data_root)}
+                    start_sftp_container(instances_config, data_roots, sftp_config.port)
+                    consume_services_started.append(f"SFTP (port {common.cfg.consume_sftp_port})")
+                except Exception as e:
+                    warn(f"Failed to set up SFTP: {e}")
+            
             # Success message
             print()
             print(draw_box_top(box_width))
@@ -2908,6 +3032,14 @@ class PaperlessManager:
             print(box_line(""))
             print(box_line(f" Username: {colorize(common.cfg.paperless_admin_user, Colors.BOLD)}"))
             print(box_line(f" Password: {colorize(common.cfg.paperless_admin_password, Colors.BOLD)}"))
+            
+            # Show consume services if any were started
+            if consume_services_started:
+                print(box_line(""))
+                print(box_line(f" {colorize('Consume Methods:', Colors.BOLD)}"))
+                for svc in consume_services_started:
+                    print(box_line(f"   • {svc}"))
+            
             print(draw_box_bottom(box_width))
             
         except KeyboardInterrupt:
@@ -2941,6 +3073,14 @@ class PaperlessManager:
                 for mode_label, url in access_urls:
                     print(box_line(f"   {mode_label}: {colorize(url, Colors.CYAN)}"))
             
+            # Show consume input methods status
+            consume_methods = self._get_consume_methods_status(instance)
+            if consume_methods:
+                print(box_line(f" Consume:"))
+                for method_name, is_enabled in consume_methods.items():
+                    icon = colorize("✓", Colors.GREEN) if is_enabled else colorize("○", Colors.YELLOW)
+                    print(box_line(f"   {icon} {method_name}"))
+            
             print(box_line(f" Stack:  {instance.stack_dir}"))
             print(draw_box_bottom(box_width))
             print()
@@ -2956,9 +3096,12 @@ class PaperlessManager:
                 ("5", "  • Restore from backup"),
                 ("6", "  • Container operations"),
                 ("", ""),
-                ("", colorize("Advanced:", Colors.BOLD)),
+                ("", colorize("Configuration:", Colors.BOLD)),
                 ("7", "  • Edit settings"),
-                ("8", "  • " + colorize("Delete instance", Colors.RED)),
+                ("8", "  • " + colorize("Consume input methods", Colors.CYAN) + " (Syncthing/Samba/SFTP)"),
+                ("", ""),
+                ("", colorize("Danger Zone:", Colors.RED)),
+                ("9", "  • " + colorize("Delete instance", Colors.RED)),
                 ("", ""),
                 ("0", colorize("◀ Back", Colors.CYAN))
             ]
@@ -2989,6 +3132,8 @@ class PaperlessManager:
             elif choice == "7":
                 self.edit_instance(instance)
             elif choice == "8":
+                self.consume_input_menu(instance)
+            elif choice == "9":
                 print()
                 warn(f"This will DELETE instance '{instance.name}' completely!")
                 print(f"  • Stack directory: {instance.stack_dir}")
@@ -3012,6 +3157,14 @@ class PaperlessManager:
                         break
             else:
                 warn("Invalid option")
+    
+    def _get_consume_methods_status(self, instance: Instance) -> dict[str, bool]:
+        """Get status of consume input methods for an instance."""
+        return {
+            "Syncthing": instance.get_env_value("CONSUME_SYNCTHING_ENABLED", "false").lower() == "true",
+            "Samba": instance.get_env_value("CONSUME_SAMBA_ENABLED", "false").lower() == "true",
+            "SFTP": instance.get_env_value("CONSUME_SFTP_ENABLED", "false").lower() == "true",
+        }
     
     def view_instance_details(self, instance: Instance) -> None:
         """View detailed information about an instance."""
@@ -3428,6 +3581,382 @@ class PaperlessManager:
                 self._edit_instance_backup_schedule(instance)
             else:
                 warn("Invalid option")
+    
+    def consume_input_menu(self, instance: Instance) -> None:
+        """Configure consume folder input methods (Syncthing, Samba, SFTP)."""
+        from lib.installer.consume import (
+            ConsumeConfig, SyncthingConfig, SambaConfig, SFTPConfig,
+            start_syncthing_container, stop_syncthing_container,
+            start_samba_container, remove_samba_user, add_samba_user, write_samba_share_config, reload_samba_config,
+            start_sftp_container, stop_sftp_container,
+            generate_syncthing_guide, generate_samba_guide, generate_sftp_guide,
+            load_consume_config, save_consume_config, generate_secure_password
+        )
+        
+        while True:
+            print_header(f"Consume Input Methods: {instance.name}")
+            
+            # Load current config from env file
+            config = load_consume_config(instance.env_file)
+            
+            box_line, box_width = create_box_helper(68)
+            print(draw_box_top(box_width))
+            print(box_line(f" Configure how documents get into your Paperless consume folder"))
+            print(box_line(f""))
+            print(box_line(f" Consume folder: {instance.data_root / 'consume'}"))
+            print(draw_box_divider(box_width))
+            
+            # Syncthing status
+            if config.syncthing.enabled:
+                syncthing_status = colorize("✓ ENABLED", Colors.GREEN)
+                syncthing_detail = f"UI: http://localhost:{config.syncthing.web_ui_port}"
+            else:
+                syncthing_status = colorize("○ Disabled", Colors.YELLOW)
+                syncthing_detail = "Secure peer-to-peer sync"
+            print(box_line(f" {colorize('Syncthing:', Colors.BOLD)} {syncthing_status}"))
+            print(box_line(f"   {syncthing_detail}"))
+            print(box_line(f""))
+            
+            # Samba status
+            if config.samba.enabled:
+                samba_status = colorize("✓ ENABLED", Colors.GREEN)
+                samba_detail = f"Share: //{self._get_local_ip()}/{config.samba.share_name}"
+            else:
+                samba_status = colorize("○ Disabled", Colors.YELLOW)
+                samba_detail = "Windows/macOS file shares"
+            print(box_line(f" {colorize('Samba:', Colors.BOLD)} {samba_status}"))
+            print(box_line(f"   {samba_detail}"))
+            print(box_line(f""))
+            
+            # SFTP status
+            if config.sftp.enabled:
+                sftp_status = colorize("✓ ENABLED", Colors.GREEN)
+                sftp_detail = f"sftp://{config.sftp.username}@{self._get_local_ip()}:{config.sftp.port}"
+            else:
+                sftp_status = colorize("○ Disabled", Colors.YELLOW)
+                sftp_detail = "Secure file transfer protocol"
+            print(box_line(f" {colorize('SFTP:', Colors.BOLD)} {sftp_status}"))
+            print(box_line(f"   {sftp_detail}"))
+            
+            print(draw_box_bottom(box_width))
+            print()
+            
+            options = [
+                ("1", f"{'Disable' if config.syncthing.enabled else 'Enable'} Syncthing"),
+                ("2", f"{'Disable' if config.samba.enabled else 'Enable'} Samba"),
+                ("3", f"{'Disable' if config.sftp.enabled else 'Enable'} SFTP"),
+                ("", ""),
+                ("4", "View setup guides / credentials"),
+                ("", ""),
+                ("0", colorize("◀ Back", Colors.CYAN))
+            ]
+            
+            for key, desc in options:
+                if key:
+                    print(f"  {colorize(key + ')', Colors.BOLD)} {desc}")
+                else:
+                    print(f"  {desc}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._toggle_syncthing(instance, config)
+            elif choice == "2":
+                self._toggle_samba(instance, config)
+            elif choice == "3":
+                self._toggle_sftp(instance, config)
+            elif choice == "4":
+                self._show_consume_setup_guides(instance, config)
+            else:
+                warn("Invalid option")
+    
+    def _toggle_syncthing(self, instance: Instance, config) -> None:
+        """Toggle Syncthing for an instance."""
+        from lib.installer.consume import (
+            start_syncthing_container, stop_syncthing_container, 
+            SyncthingConfig, save_consume_config, generate_folder_id
+        )
+        
+        if config.syncthing.enabled:
+            # Disable
+            print()
+            warn("This will stop and remove the Syncthing container for this instance.")
+            say("Any paired devices will need to be re-paired if you enable it again.")
+            print()
+            
+            if confirm("Disable Syncthing?", False):
+                try:
+                    stop_syncthing_container(instance.name)
+                    config.syncthing.enabled = False
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "false")
+                    ok("Syncthing disabled")
+                except Exception as e:
+                    error(f"Failed to disable Syncthing: {e}")
+        else:
+            # Enable
+            print()
+            say("Syncthing provides secure, encrypted peer-to-peer file synchronization.")
+            say("Perfect for syncing documents from your phone or computer.")
+            print()
+            
+            if confirm("Enable Syncthing?", True):
+                try:
+                    consume_dir = instance.data_root / "consume"
+                    syncthing_config_dir = instance.stack_dir / "syncthing-config"
+                    
+                    # Find available ports
+                    web_port = self._find_available_port(8384)
+                    sync_port = self._find_available_port(22000)
+                    folder_id = generate_folder_id()
+                    
+                    syncthing_config = SyncthingConfig(
+                        enabled=True,
+                        web_ui_port=web_port,
+                        sync_port=sync_port,
+                        folder_id=folder_id,
+                        folder_label=f"Paperless {instance.name}",
+                        device_id=""  # Will be populated after container starts
+                    )
+                    
+                    start_syncthing_container(
+                        instance_name=instance.name,
+                        config=syncthing_config,
+                        consume_path=consume_dir,
+                        config_dir=syncthing_config_dir
+                    )
+                    
+                    config.syncthing = syncthing_config
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "true")
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_WEB_UI_PORT", str(web_port))
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_SYNC_PORT", str(sync_port))
+                    
+                    ok(f"Syncthing enabled!")
+                    say(f"  Web UI: http://localhost:{web_port}")
+                    say("  Use 'View setup guides' to see pairing instructions")
+                except Exception as e:
+                    error(f"Failed to enable Syncthing: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _toggle_samba(self, instance: Instance, config) -> None:
+        """Toggle Samba share for an instance."""
+        from lib.installer.consume import (
+            start_samba_container, remove_samba_user, add_samba_user,
+            write_samba_share_config, reload_samba_config, is_samba_available,
+            SambaConfig, save_consume_config, generate_secure_password
+        )
+        
+        if config.samba.enabled:
+            # Disable
+            print()
+            warn("This will remove the Samba share for this instance.")
+            print()
+            
+            if confirm("Disable Samba share?", False):
+                try:
+                    remove_samba_user(config.samba.username)
+                    config.samba.enabled = False
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "false")
+                    ok("Samba share removed")
+                except Exception as e:
+                    error(f"Failed to disable Samba: {e}")
+        else:
+            # Enable
+            print()
+            say("Samba provides Windows/macOS compatible file sharing.")
+            say("Users can map the consume folder as a network drive.")
+            print()
+            
+            if confirm("Enable Samba share?", True):
+                try:
+                    consume_dir = instance.data_root / "consume"
+                    share_name = f"paperless-{instance.name}"
+                    username = f"pl-{instance.name}"
+                    password = generate_secure_password()
+                    
+                    samba_config = SambaConfig(
+                        enabled=True,
+                        share_name=share_name,
+                        username=username,
+                        password=password
+                    )
+                    
+                    # Ensure Samba container is running
+                    if not is_samba_available():
+                        start_samba_container()
+                    
+                    # Add user and share
+                    add_samba_user(username, password)
+                    write_samba_share_config(instance.name, samba_config, consume_dir)
+                    reload_samba_config()
+                    
+                    config.samba = samba_config
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "true")
+                    self._update_instance_env(instance, "CONSUME_SAMBA_SHARE_NAME", share_name)
+                    self._update_instance_env(instance, "CONSUME_SAMBA_USERNAME", username)
+                    self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", password)
+                    
+                    local_ip = self._get_local_ip()
+                    ok(f"Samba share enabled!")
+                    say(f"  Share: \\\\{local_ip}\\{share_name}")
+                    say(f"  Username: {username}")
+                    say(f"  Password: {password}")
+                    say("  Use 'View setup guides' for detailed instructions")
+                except Exception as e:
+                    error(f"Failed to enable Samba: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _toggle_sftp(self, instance: Instance, config) -> None:
+        """Toggle SFTP access for an instance."""
+        from lib.installer.consume import (
+            start_sftp_container, stop_sftp_container,
+            SFTPConfig, save_consume_config, generate_secure_password
+        )
+        
+        if config.sftp.enabled:
+            # Disable
+            print()
+            warn("This will remove SFTP access for this instance.")
+            print()
+            
+            if confirm("Disable SFTP access?", False):
+                try:
+                    # Note: For single-instance case, we just disable config
+                    # In multi-instance scenario, we'd rebuild the SFTP container
+                    config.sftp.enabled = False
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SFTP_ENABLED", "false")
+                    ok("SFTP access removed")
+                except Exception as e:
+                    error(f"Failed to disable SFTP: {e}")
+        else:
+            # Enable
+            print()
+            say("SFTP provides secure file transfer over SSH.")
+            say("Works with most file managers and SFTP clients.")
+            print()
+            
+            if confirm("Enable SFTP access?", True):
+                try:
+                    consume_dir = instance.data_root / "consume"
+                    username = f"pl-{instance.name}"
+                    password = generate_secure_password()
+                    
+                    # Find available port
+                    sftp_port = self._find_available_port(2222)
+                    
+                    sftp_config = SFTPConfig(
+                        enabled=True,
+                        username=username,
+                        password=password,
+                        port=sftp_port
+                    )
+                    
+                    # For simplified single-instance case, start container directly
+                    # Build instances_config and data_roots for this instance
+                    from lib.installer.consume import ConsumeConfig
+                    instances_config = {instance.name: config}
+                    instances_config[instance.name].sftp = sftp_config
+                    data_roots = {instance.name: instance.data_root}
+                    
+                    start_sftp_container(instances_config, data_roots, sftp_port)
+                    
+                    config.sftp = sftp_config
+                    save_consume_config(config, instance.env_file)
+                    self._update_instance_env(instance, "CONSUME_SFTP_ENABLED", "true")
+                    self._update_instance_env(instance, "CONSUME_SFTP_PORT", str(sftp_port))
+                    self._update_instance_env(instance, "CONSUME_SFTP_USERNAME", username)
+                    self._update_instance_env(instance, "CONSUME_SFTP_PASSWORD", password)
+                    
+                    local_ip = self._get_local_ip()
+                    ok(f"SFTP access enabled!")
+                    say(f"  Server: sftp://{local_ip}:{sftp_port}")
+                    say(f"  Username: {username}")
+                    say(f"  Password: {password}")
+                    say("  Use 'View setup guides' for detailed instructions")
+                except Exception as e:
+                    error(f"Failed to enable SFTP: {e}")
+        
+        input("\nPress Enter to continue...")
+        
+        input("\nPress Enter to continue...")
+    
+    def _show_consume_setup_guides(self, instance: Instance, config) -> None:
+        """Show setup guides for enabled consume methods."""
+        from lib.installer.consume import (
+            generate_syncthing_guide, generate_samba_guide, generate_sftp_guide
+        )
+        
+        print_header("Consume Setup Guides")
+        
+        local_ip = self._get_local_ip()
+        any_enabled = False
+        
+        if config.syncthing.enabled:
+            any_enabled = True
+            guide = generate_syncthing_guide(instance.name, config.syncthing, local_ip)
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SYNCTHING SETUP", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print(guide)
+            print()
+        
+        if config.samba.enabled:
+            any_enabled = True
+            guide = generate_samba_guide(instance.name, config.samba, local_ip)
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SAMBA SETUP", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print(guide)
+            print()
+        
+        if config.sftp.enabled:
+            any_enabled = True
+            guide = generate_sftp_guide(instance.name, config.sftp, local_ip)
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SFTP SETUP", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print(guide)
+            print()
+        
+        if not any_enabled:
+            say("No consume input methods are currently enabled.")
+            say("Enable Syncthing, Samba, or SFTP from the menu above.")
+        
+        input("\nPress Enter to continue...")
+    
+    def _get_local_ip(self) -> str:
+        """Get the local IP address of this machine."""
+        import socket
+        try:
+            # Connect to an external address to determine local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "localhost"
+    
+    def _find_available_port(self, start_port: int, max_tries: int = 100) -> int:
+        """Find an available port starting from start_port."""
+        import socket
+        for port in range(start_port, start_port + max_tries):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("", port))
+                    return port
+            except OSError:
+                continue
+        return start_port  # Fallback
     
     def _update_instance_env(self, instance: Instance, key: str, value: str) -> bool:
         """Update a single value in the instance's .env file."""

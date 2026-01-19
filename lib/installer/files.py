@@ -141,6 +141,28 @@ def write_env_file() -> None:
         # Retention (all backups for 30d, monthly archives for 6mo)
         RETENTION_DAYS={cfg.retention_days}
         RETENTION_MONTHLY_DAYS={cfg.retention_monthly_days}
+        
+        # Consume Input Methods
+        # Syncthing (peer-to-peer sync)
+        CONSUME_SYNCTHING_ENABLED={cfg.consume_syncthing_enabled}
+        CONSUME_SYNCTHING_FOLDER_ID={cfg.consume_syncthing_folder_id}
+        CONSUME_SYNCTHING_FOLDER_LABEL={cfg.consume_syncthing_folder_label}
+        CONSUME_SYNCTHING_DEVICE_ID={cfg.consume_syncthing_device_id}
+        CONSUME_SYNCTHING_API_KEY={cfg.consume_syncthing_api_key}
+        CONSUME_SYNCTHING_WEB_UI_PORT={cfg.consume_syncthing_web_ui_port}
+        CONSUME_SYNCTHING_SYNC_PORT={cfg.consume_syncthing_sync_port}
+        
+        # Samba (Tailscale + SMB)
+        CONSUME_SAMBA_ENABLED={cfg.consume_samba_enabled}
+        CONSUME_SAMBA_SHARE_NAME={cfg.consume_samba_share_name}
+        CONSUME_SAMBA_USERNAME={cfg.consume_samba_username}
+        CONSUME_SAMBA_PASSWORD={cfg.consume_samba_password}
+        
+        # SFTP (Tailscale + SSH)
+        CONSUME_SFTP_ENABLED={cfg.consume_sftp_enabled}
+        CONSUME_SFTP_USERNAME={cfg.consume_sftp_username}
+        CONSUME_SFTP_PASSWORD={cfg.consume_sftp_password}
+        CONSUME_SFTP_PORT={cfg.consume_sftp_port}
         """
     ).strip() + "\n"
     Path(cfg.env_file).write_text(content)

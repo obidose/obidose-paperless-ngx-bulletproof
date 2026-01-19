@@ -263,6 +263,28 @@ class Config:
     env_backup_mode: str = os.environ.get("ENV_BACKUP_MODE", "openssl")
     env_backup_passphrase_file: str = os.environ.get("ENV_BACKUP_PASSPHRASE_FILE", "/root/.paperless_env_pass")
     include_compose_in_backup: str = os.environ.get("INCLUDE_COMPOSE_IN_BACKUP", "yes")
+    
+    # Consume input methods configuration
+    # Syncthing (per-instance peer-to-peer sync)
+    consume_syncthing_enabled: str = os.environ.get("CONSUME_SYNCTHING_ENABLED", "false")
+    consume_syncthing_folder_id: str = os.environ.get("CONSUME_SYNCTHING_FOLDER_ID", "")
+    consume_syncthing_folder_label: str = os.environ.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
+    consume_syncthing_device_id: str = os.environ.get("CONSUME_SYNCTHING_DEVICE_ID", "")
+    consume_syncthing_api_key: str = os.environ.get("CONSUME_SYNCTHING_API_KEY", "")
+    consume_syncthing_web_ui_port: str = os.environ.get("CONSUME_SYNCTHING_WEB_UI_PORT", "8384")
+    consume_syncthing_sync_port: str = os.environ.get("CONSUME_SYNCTHING_SYNC_PORT", "22000")
+    
+    # Samba (Tailscale + SMB network shares)
+    consume_samba_enabled: str = os.environ.get("CONSUME_SAMBA_ENABLED", "false")
+    consume_samba_share_name: str = os.environ.get("CONSUME_SAMBA_SHARE_NAME", "")
+    consume_samba_username: str = os.environ.get("CONSUME_SAMBA_USERNAME", "")
+    consume_samba_password: str = os.environ.get("CONSUME_SAMBA_PASSWORD", "")
+    
+    # SFTP (Tailscale + SSH file transfer)
+    consume_sftp_enabled: str = os.environ.get("CONSUME_SFTP_ENABLED", "false")
+    consume_sftp_username: str = os.environ.get("CONSUME_SFTP_USERNAME", "")
+    consume_sftp_password: str = os.environ.get("CONSUME_SFTP_PASSWORD", "")
+    consume_sftp_port: str = os.environ.get("CONSUME_SFTP_PORT", "2222")
 
     def refresh_paths(self) -> None:
         self.dir_export = os.path.join(self.data_root, "export")
@@ -271,6 +293,7 @@ class Config:
         self.dir_consume = os.path.join(self.data_root, "consume")
         self.dir_db = os.path.join(self.data_root, "db")
         self.dir_tika_cache = os.path.join(self.data_root, "tika-cache")
+        self.dir_syncthing_config = os.path.join(self.data_root, "syncthing-config")
         self.compose_file = os.path.join(self.stack_dir, "docker-compose.yml")
         self.env_file = os.path.join(self.stack_dir, ".env")
 
@@ -285,6 +308,7 @@ def ensure_dir_tree(cfg: Config) -> None:
         cfg.dir_consume,
         cfg.dir_db,
         cfg.dir_tika_cache,
+        cfg.dir_syncthing_config,
     ]:
         Path(d).mkdir(parents=True, exist_ok=True)
 

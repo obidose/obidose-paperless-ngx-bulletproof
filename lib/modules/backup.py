@@ -44,6 +44,7 @@ DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
 DIR_EXPORT = DATA_ROOT / "export"
 DIR_MEDIA = DATA_ROOT / "media"
 DIR_DATA = DATA_ROOT / "data"
+DIR_SYNCTHING_CONFIG = STACK_DIR / "syncthing-config"  # Consume folder Syncthing config
 COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
 RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
 RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
@@ -248,6 +249,10 @@ def main() -> Path:
     tar_dir(DIR_MEDIA, "media", work, tar_mode)
     tar_dir(DIR_DATA, "data", work, tar_mode)
     tar_dir(DIR_EXPORT, "export", work, tar_mode)
+    
+    # Backup Syncthing config if it exists (for consume folder sync)
+    if DIR_SYNCTHING_CONFIG.exists():
+        tar_dir(DIR_SYNCTHING_CONFIG, "syncthing-config", work, tar_mode)
 
     if ENV_FILE.exists():
         (work / ".env").write_text(ENV_FILE.read_text())
