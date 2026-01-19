@@ -167,9 +167,9 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -
     common.ok(f"Cloudflare tunnel ready for {domain}")
     common.say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
     
-    if confirm("Start tunnel as systemd service?", True):
-        try:
-            service_content = f"""[Unit]
+    # Start tunnel as systemd service automatically
+    try:
+        service_content = f"""[Unit]
 Description=Cloudflare Tunnel for {instance_name}
 After=network.target
 
@@ -183,18 +183,16 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 """
-            service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
-            service_file.write_text(service_content)
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
-            subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
-            subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
-            common.ok("Tunnel service started")
-            return True
-        except Exception as e:
-            common.warn(f"Failed to create service: {e}")
-            return False
-    
-    return True
+        service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
+        service_file.write_text(service_content)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
+        subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
+        subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
+        common.ok("Tunnel service started")
+        return True
+    except Exception as e:
+        common.warn(f"Failed to create service: {e}")
+        return False
 
 
 def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: str, 
@@ -5403,7 +5401,7 @@ WantedBy=multi-user.target
             print(colorize("What is System Backup?", Colors.BOLD))
             print("  • Backs up metadata about ALL instances")
             print("  • Records which instances exist, their config, state")
-            print("  • Consume service configs (Syncthing/Samba/SFTP)")
+            print("  • System-level Samba/SFTP configs (Syncthing is per-instance)")
             print("  • Enables disaster recovery: restore entire multi-instance setup")
             print("  • Separate from individual instance data backups")
             print()
@@ -5834,7 +5832,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         print(box_line("   • Traefik configuration + SSL certificates"))
         print(box_line("   • Cloudflare tunnel configs and credentials"))
         print(box_line("   • Backup server (rclone) configuration"))
-        print(box_line("   • Consume service configs (Syncthing/Samba/SFTP)"))
+        print(box_line("   • Samba/SFTP configs (Syncthing is per-instance)"))
         print(draw_box_divider(box_width))
         print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale requires re-authentication"))
         print(draw_box_bottom(box_width))
@@ -5939,9 +5937,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     print(box_line(f"   ○ rclone: not configured"))
                 
                 if consume_info.get("enabled"):
-                    print(box_line(f"   ✓ Consume services (Samba/SFTP)"))
+                    print(box_line(f"   ✓ Samba/SFTP configs"))
                 else:
-                    print(box_line(f"   ○ Consume services: not configured"))
+                    print(box_line(f"   ○ Samba/SFTP: not configured"))
                 
                 if ts_info.get("enabled"):
                     print(box_line(f"   ⚠ Tailscale: requires re-auth"))
