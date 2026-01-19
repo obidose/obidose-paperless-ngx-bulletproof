@@ -305,6 +305,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             current_config = json.loads(response.read().decode())
         
         config_changed = False
+        gui_changed = False
         
         # 1. Set GUI to listen on all interfaces (for external access)
         if "gui" in current_config:
@@ -312,7 +313,8 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             if current_address.startswith("127.0.0.1"):
                 current_config["gui"]["address"] = "0.0.0.0:8384"
                 config_changed = True
-                say("Enabled Web UI external access")
+                gui_changed = True
+                say("Enabling Web UI external access...")
         
         # 2. Check if consume folder exists, create if not
         folder_exists = False
@@ -349,6 +351,22 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                 method="PUT"
             )
             urllib.request.urlopen(req, timeout=10)
+            
+            # GUI address changes require a restart to take effect
+            if gui_changed:
+                say("Restarting Syncthing to apply Web UI changes...")
+                try:
+                    req = urllib.request.Request(
+                        f"{api_base}/system/restart",
+                        headers=headers,
+                        method="POST"
+                    )
+                    urllib.request.urlopen(req, timeout=10)
+                    time.sleep(3)  # Wait for restart
+                    ok("Web UI now accessible externally")
+                except:
+                    warn("Could not restart - you may need to restart manually for Web UI access")
+            
             ok("Syncthing initialized successfully")
         
         return True
