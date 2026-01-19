@@ -3510,6 +3510,8 @@ class PaperlessManager:
                 self._view_logs(instance)
             elif choice == "6":
                 self._upgrade_containers(instance)
+            elif choice == "7":
+                self._offer_regenerate_compose(instance)
             else:
                 warn("Invalid option")
     
@@ -4793,6 +4795,23 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "yes")
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")  # Mutually exclusive
                 self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
+                
+                # Stop and remove any existing Cloudflare tunnel service
+                service_name = f"cloudflared-{instance.name}"
+                try:
+                    result = subprocess.run(["systemctl", "is-active", service_name], check=False, capture_output=True)
+                    if result.returncode == 0:  # Service is running
+                        say(f"Stopping Cloudflare tunnel service...")
+                        subprocess.run(["systemctl", "stop", service_name], check=False, capture_output=True)
+                        subprocess.run(["systemctl", "disable", service_name], check=False, capture_output=True)
+                        service_file = Path(f"/etc/systemd/system/{service_name}.service")
+                        if service_file.exists():
+                            service_file.unlink()
+                        subprocess.run(["systemctl", "daemon-reload"], check=False, capture_output=True)
+                        ok("Cloudflare tunnel service removed")
+                except:
+                    pass
+                
                 ok(f"Traefik enabled for https://{domain}")
                 warn("You must regenerate docker-compose.yml and recreate containers")
                 self._offer_regenerate_compose(instance)
