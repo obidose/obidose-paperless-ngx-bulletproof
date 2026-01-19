@@ -464,5 +464,4 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 - [GitHub Issues](https://github.com/obidose/obidose-paperless-ngx-bulletproof/issues)
 - [Paperless-NGX Project](https://github.com/paperless-ngx/paperless-ngx)
-- In-app help via `paperless` → "About & Help"
 
