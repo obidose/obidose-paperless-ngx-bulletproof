@@ -255,6 +255,35 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
+def fix_syncthing_gui_address(config_dir: Path) -> bool:
+    """
+    Fix Syncthing GUI to listen on all interfaces by modifying config.xml directly.
+    
+    This is more reliable than the API approach because it modifies the file
+    on disk, ensuring the change persists across restarts.
+    """
+    config_file = config_dir / "config.xml"
+    if not config_file.exists():
+        return False
+    
+    try:
+        content = config_file.read_text()
+        
+        # Replace 127.0.0.1:8384 with 0.0.0.0:8384 in the GUI address
+        if '127.0.0.1:8384' in content:
+            content = content.replace('127.0.0.1:8384', '0.0.0.0:8384')
+            config_file.write_text(content)
+            return True
+        elif '0.0.0.0:8384' in content:
+            # Already configured correctly
+            return False
+        
+        return False
+    except Exception as e:
+        warn(f"Could not fix GUI address: {e}")
+        return False
+
+
 def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                          config_dir: Path) -> bool:
     """
@@ -269,6 +298,9 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
     import time
     import urllib.request
     import urllib.error
+    
+    # First, fix the GUI address directly in config.xml (more reliable)
+    gui_was_fixed = fix_syncthing_gui_address(config_dir)
     
     api_base = f"http://localhost:{config.web_ui_port}/rest"
     
@@ -305,18 +337,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             current_config = json.loads(response.read().decode())
         
         config_changed = False
-        gui_changed = False
-        
-        # 1. Set GUI to listen on all interfaces (for external access)
-        if "gui" in current_config:
-            current_address = current_config["gui"].get("address", "127.0.0.1:8384")
-            if current_address.startswith("127.0.0.1"):
-                current_config["gui"]["address"] = "0.0.0.0:8384"
-                config_changed = True
-                gui_changed = True
-                say("Enabling Web UI external access...")
-        
-        # 2. Check if consume folder exists, create if not
+        # 1. Check if consume folder exists, create if not
         folder_exists = False
         for folder in current_config.get("folders", []):
             if folder.get("id") == config.folder_id:
@@ -341,7 +362,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             config_changed = True
             say(f"Created shared folder: {config.folder_label}")
         
-        # Push updated config if changed
+        # Push updated config if changed (folder creation via API)
         if config_changed:
             config_data = json.dumps(current_config).encode()
             req = urllib.request.Request(
@@ -351,21 +372,14 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                 method="PUT"
             )
             urllib.request.urlopen(req, timeout=10)
-            
-            # GUI address changes require a restart to take effect
-            if gui_changed:
-                say("Restarting Syncthing to apply Web UI changes...")
-                try:
-                    req = urllib.request.Request(
-                        f"{api_base}/system/restart",
-                        headers=headers,
-                        method="POST"
-                    )
-                    urllib.request.urlopen(req, timeout=10)
-                    time.sleep(3)  # Wait for restart
-                    ok("Web UI now accessible externally")
-                except:
-                    warn("Could not restart - you may need to restart manually for Web UI access")
+            ok("Syncthing folder configured")
+        
+        # If we fixed the GUI address in config.xml, restart to apply
+        if gui_was_fixed:
+            say("Restarting Syncthing to enable external Web UI access...")
+            restart_syncthing_container(instance_name)
+            time.sleep(3)
+            ok("Web UI now accessible externally")
             
             ok("Syncthing initialized successfully")
         

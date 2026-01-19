@@ -68,7 +68,7 @@ def die(msg: str, code: int = 1) -> None:
 
 import re as _re
 
-def create_box_helper(width: int = 58):
+def create_box_helper(width: int = 80):
     """Create a box line helper with specified inner width."""
     def box_line(content: str) -> str:
         """Create a properly padded box line."""
@@ -81,22 +81,22 @@ def create_box_helper(width: int = 58):
     return box_line, width
 
 
-def draw_box_top(width: int = 58) -> str:
+def draw_box_top(width: int = 80) -> str:
     """Draw box top border."""
     return colorize("╭" + "─" * width + "╮", Colors.CYAN)
 
 
-def draw_box_bottom(width: int = 58) -> str:
+def draw_box_bottom(width: int = 80) -> str:
     """Draw box bottom border."""
     return colorize("╰" + "─" * width + "╯", Colors.CYAN)
 
 
-def draw_box_divider(width: int = 58) -> str:
+def draw_box_divider(width: int = 80) -> str:
     """Draw box horizontal divider."""
     return colorize("├" + "─" * width + "┤", Colors.CYAN)
 
 
-def draw_section_header(title: str, width: int = 58) -> str:
+def draw_section_header(title: str, width: int = 80) -> str:
     """Draw a section header within content area."""
     padding = width - len(title) - 2
     left_pad = padding // 2
@@ -1270,7 +1270,7 @@ class PaperlessManager:
         stopped_count = len(instances) - running_count
         
         # System overview box - use centralized helper
-        box_line, box_width = create_box_helper(58)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         
@@ -1432,7 +1432,7 @@ class PaperlessManager:
         while True:
             print_header("Backup Server Configuration")
             
-            box_line, box_width = create_box_helper(60)
+            box_line, box_width = create_box_helper(80)
             
             # Check current status
             current_remote = None
@@ -1647,7 +1647,7 @@ class PaperlessManager:
     def _setup_pcloud(self) -> None:
         """Guided pCloud setup."""
         print()
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('pCloud Setup', Colors.BOLD)}"))
@@ -1709,7 +1709,7 @@ class PaperlessManager:
     def _setup_google_drive(self) -> None:
         """Guided Google Drive setup."""
         print()
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Google Drive Setup', Colors.BOLD)}"))
@@ -1765,7 +1765,7 @@ class PaperlessManager:
     def _setup_dropbox(self) -> None:
         """Guided Dropbox setup."""
         print()
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Dropbox Setup', Colors.BOLD)}"))
@@ -1821,7 +1821,7 @@ class PaperlessManager:
     def _setup_other_provider(self) -> None:
         """Advanced setup for other rclone providers."""
         print()
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Advanced Provider Setup', Colors.BOLD)}"))
@@ -2023,7 +2023,7 @@ class PaperlessManager:
         """Add new instance submenu with modern styling."""
         print_header("Add New Instance")
         
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(" Choose how to create your new instance:"))
@@ -2078,7 +2078,7 @@ class PaperlessManager:
         remote_name = "pcloud"  # TODO: make configurable
         remote_base = f"{remote_name}:backups/paperless"
         
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         
         try:
             # ─── Step 1: Select Backup Source ─────────────────────────────────
@@ -2566,7 +2566,7 @@ class PaperlessManager:
         net_status = check_networking_dependencies()
         
         # Display welcome box with system status
-        box_line, box_width = create_box_helper(60)
+        box_line, box_width = create_box_helper(80)
         print(draw_box_top(box_width))
         print(box_line(" Welcome to the Paperless-NGX instance creator!"))
         print(box_line(""))
@@ -3061,7 +3061,7 @@ class PaperlessManager:
             domain = instance.get_env_value("DOMAIN", "localhost")
             access_urls = instance.get_access_urls()
             
-            box_line, box_width = create_box_helper(60)
+            box_line, box_width = create_box_helper(80)
             
             print(draw_box_top(box_width))
             print(box_line(f" Status: {status}"))
@@ -3496,7 +3496,7 @@ class PaperlessManager:
             print_header(f"Edit: {instance.name}")
             
             # Show current settings
-            box_line, box_width = create_box_helper(62)
+            box_line, box_width = create_box_helper(80)
             print(draw_box_top(box_width))
             print(box_line(f" Status: {'Running' if instance.is_running else 'Stopped'}"))
             print(box_line(f""))
@@ -3709,7 +3709,7 @@ class PaperlessManager:
             # Device ID
             device_id = config.syncthing.device_id or get_syncthing_device_id(instance.name)
             if device_id:
-                print(box_line(f" Device ID:  {device_id[:20]}...{device_id[-7:]}"))
+                print(box_line(f" Device ID:  {device_id}"))
             else:
                 print(box_line(f" Device ID:  {colorize('Not available', Colors.RED)}"))
             
@@ -3781,14 +3781,11 @@ class PaperlessManager:
                 print(f"  {colorize('2)', Colors.BOLD)} Remove a device")
             print()
             
-            print(colorize("  ── Help ──", Colors.CYAN))
+            print(colorize("  ── Help & Troubleshooting ──", Colors.CYAN))
             print(f"  {colorize('3)', Colors.BOLD)} View setup guide")
-            print()
-            
-            print(colorize("  ── Troubleshooting ──", Colors.CYAN))
             print(f"  {colorize('4)', Colors.BOLD)} View full logs")
-            print(f"  {colorize('5)', Colors.BOLD)} Restart Syncthing")
-            print(f"  {colorize('6)', Colors.BOLD)} Re-initialize (fix folder/Web UI)")
+            print(f"  {colorize('5)', Colors.BOLD)} Restart / Fix Web UI")
+            print(f"  {colorize('6)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
             print()
             
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
@@ -3810,9 +3807,9 @@ class PaperlessManager:
             elif choice == "4":
                 self._view_syncthing_logs(instance, config)
             elif choice == "5":
-                self._restart_syncthing(instance, config)
+                self._restart_and_fix_syncthing(instance, config)
             elif choice == "6":
-                self._reinitialize_syncthing(instance, config)
+                self._factory_reset_syncthing(instance, config)
             else:
                 warn("Invalid option")
     
@@ -3929,10 +3926,19 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
-    def _restart_syncthing(self, instance: Instance, config) -> None:
-        """Restart Syncthing container."""
-        from lib.installer.consume import restart_syncthing_container, get_syncthing_status, get_syncthing_device_id
+    def _restart_and_fix_syncthing(self, instance: Instance, config) -> None:
+        """Restart Syncthing and fix Web UI access."""
+        from lib.installer.consume import (
+            restart_syncthing_container, get_syncthing_status, get_syncthing_device_id,
+            fix_syncthing_gui_address
+        )
         import time
+        
+        config_dir = instance.stack_dir / "syncthing-config"
+        
+        # Fix GUI address in config file first
+        if fix_syncthing_gui_address(config_dir):
+            say("Fixed Web UI to be externally accessible")
         
         say("Restarting Syncthing...")
         restart_syncthing_container(instance.name)
@@ -3946,79 +3952,72 @@ class PaperlessManager:
             time.sleep(2)
             device_id = get_syncthing_device_id(instance.name)
             if device_id:
-                ok(f"Device ID: {device_id}")
+                say(f"Device ID: {device_id}")
                 self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
+            ok(f"Web UI: http://{self._get_local_ip()}:{config.syncthing.web_ui_port}")
         else:
             error(f"Syncthing failed to start: {status['status']}")
         
         input("\nPress Enter to continue...")
     
-    def _reinitialize_syncthing(self, instance: Instance, config) -> None:
-        """Re-initialize Syncthing (fix folder sharing and Web UI access)."""
-        from lib.installer.consume import initialize_syncthing, restart_syncthing_container
+    def _factory_reset_syncthing(self, instance: Instance, config) -> None:
+        """Factory reset Syncthing - delete all config and start fresh."""
+        from lib.installer.consume import (
+            stop_syncthing_container, start_syncthing_container, 
+            SyncthingConfig, generate_folder_id, save_consume_config
+        )
         import shutil
         
         print()
-        print(f"  {colorize('1)', Colors.BOLD)} Re-initialize (fix folder/Web UI settings)")
-        print(f"  {colorize('2)', Colors.BOLD)} Full reset (delete all config, start fresh)")
-        print(f"  {colorize('0)', Colors.BOLD)} Cancel")
+        warn("This will delete ALL Syncthing configuration including:")
+        print("  • All paired devices")
+        print("  • Sync history")
+        print("  • Your Device ID will change")
+        print()
+        print("You'll need to re-pair all client devices after reset.")
         print()
         
-        choice = get_input("Select option", "0")
+        if not confirm("Factory reset Syncthing?", False):
+            return
         
-        if choice == "1":
-            config_dir = instance.stack_dir / "syncthing-config"
-            say("Re-initializing Syncthing...")
-            
-            if initialize_syncthing(instance.name, config.syncthing, config_dir):
-                ok("Syncthing re-initialized successfully")
-                say("The consume folder should now be shared with connected devices")
-                say("Web UI should now be accessible externally")
-            else:
-                error("Re-initialization failed - check logs for details")
+        say("Stopping Syncthing...")
+        stop_syncthing_container(instance.name)
         
-        elif choice == "2":
-            if confirm("This will delete ALL Syncthing config including paired devices. Continue?", False):
-                from lib.installer.consume import stop_syncthing_container, start_syncthing_container, SyncthingConfig, generate_folder_id
-                
-                say("Stopping Syncthing...")
-                stop_syncthing_container(instance.name)
-                
-                # Delete config directory
-                config_dir = instance.stack_dir / "syncthing-config"
-                if config_dir.exists():
-                    shutil.rmtree(config_dir)
-                    say("Config directory deleted")
-                
-                # Generate fresh config
-                consume_dir = instance.data_root / "consume"
-                web_port = config.syncthing.web_ui_port
-                sync_port = config.syncthing.sync_port
-                folder_id = generate_folder_id()
-                
-                syncthing_config = SyncthingConfig(
-                    enabled=True,
-                    web_ui_port=web_port,
-                    sync_port=sync_port,
-                    folder_id=folder_id,
-                    folder_label=f"Paperless {instance.name}",
-                    device_id=""  # Will be populated after container starts
-                )
-                
-                say("Starting fresh Syncthing...")
-                if start_syncthing_container(
-                    instance_name=instance.name,
-                    config=syncthing_config,
-                    consume_path=consume_dir,
-                    config_dir=config_dir
-                ):
-                    config.syncthing = syncthing_config
-                    from lib.installer.consume import save_consume_config
-                    save_consume_config(config, instance.env_file)
-                    ok("Syncthing reset complete with fresh configuration")
-                    say(f"New Device ID: {config.syncthing.device_id}")
-                else:
-                    error("Failed to restart Syncthing")
+        # Delete config directory
+        config_dir = instance.stack_dir / "syncthing-config"
+        if config_dir.exists():
+            shutil.rmtree(config_dir)
+            say("Config directory deleted")
+        
+        # Generate fresh config
+        consume_dir = instance.data_root / "consume"
+        web_port = config.syncthing.web_ui_port
+        sync_port = config.syncthing.sync_port
+        folder_id = generate_folder_id()
+        
+        syncthing_config = SyncthingConfig(
+            enabled=True,
+            web_ui_port=web_port,
+            sync_port=sync_port,
+            folder_id=folder_id,
+            folder_label=f"Paperless {instance.name}",
+            device_id=""  # Will be populated after container starts
+        )
+        
+        say("Starting fresh Syncthing...")
+        if start_syncthing_container(
+            instance_name=instance.name,
+            config=syncthing_config,
+            consume_path=consume_dir,
+            config_dir=config_dir
+        ):
+            config.syncthing = syncthing_config
+            save_consume_config(config, instance.env_file)
+            ok("Syncthing factory reset complete")
+            say(f"New Device ID: {config.syncthing.device_id}")
+            say("You'll need to re-pair your devices with the new Device ID")
+        else:
+            error("Failed to restart Syncthing")
         
         input("\nPress Enter to continue...")
     
@@ -4090,31 +4089,18 @@ class PaperlessManager:
         if config.syncthing.enabled:
             # Disable
             print()
-            warn("This will stop and remove the Syncthing container for this instance.")
-            print()
-            print(f"  {colorize('1)', Colors.BOLD)} Keep config (can re-enable with same devices)")
-            print(f"  {colorize('2)', Colors.BOLD)} Delete config (fresh start if re-enabled)")
-            print(f"  {colorize('0)', Colors.BOLD)} Cancel")
+            warn("This will stop the Syncthing container.")
+            say("Your configuration and paired devices will be kept for when you re-enable.")
             print()
             
-            choice = get_input("Select option", "0")
-            
-            if choice in ["1", "2"]:
+            if confirm("Disable Syncthing?", False):
                 try:
                     stop_syncthing_container(instance.name)
-                    
-                    if choice == "2":
-                        # Delete config directory for fresh start
-                        import shutil
-                        config_dir = instance.stack_dir / "syncthing-config"
-                        if config_dir.exists():
-                            shutil.rmtree(config_dir)
-                            say("Config directory deleted")
-                    
                     config.syncthing.enabled = False
                     save_consume_config(config, instance.env_file)
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "false")
                     ok("Syncthing disabled")
+                    say("Config preserved - re-enable to resume with same devices")
                 except Exception as e:
                     error(f"Failed to disable Syncthing: {e}")
         else:
@@ -4624,7 +4610,7 @@ class PaperlessManager:
         arch_human, arch_cron = fmt_cron_parts(cron_archive)
         
         # Show current settings as a table
-        box_line, box_width = create_box_helper(62)
+        box_line, box_width = create_box_helper(80)
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Current Backup Schedule:', Colors.BOLD)}"))
         print(box_line(f""))
@@ -4988,7 +4974,7 @@ WantedBy=multi-user.target
                 system_backups = []
             
             # System overview box
-            box_line, box_width = create_box_helper(58)
+            box_line, box_width = create_box_helper(80)
             
             print(draw_box_top(box_width))
             print(box_line(f" Current System: {len(instances)} instance(s) configured"))
@@ -5267,7 +5253,7 @@ rclone_config: {network_info['rclone']['enabled']}
             ok(f"System backup created: {backup_name}")
             print()
             
-            box_line, box_width = create_box_helper(60)
+            box_line, box_width = create_box_helper(80)
             print(draw_box_top(box_width))
             print(box_line(f" {colorize('Backup Contents:', Colors.BOLD)}"))
             print(box_line(""))
@@ -5387,7 +5373,7 @@ rclone_config: {network_info['rclone']['enabled']}
         """Restore system from backup including network configuration."""
         print_header("Restore System from Backup")
         
-        box_line, box_width = create_box_helper(65)
+        box_line, box_width = create_box_helper(80)
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('System Restore - Disaster Recovery', Colors.BOLD)}"))
         print(draw_box_divider(box_width))
@@ -5928,7 +5914,7 @@ rclone_config: {network_info['rclone']['enabled']}
         
         print_header(f"Snapshot: {name}")
         
-        box_line, box_width = create_box_helper(82)
+        box_line, box_width = create_box_helper(80)
         
         print(draw_box_top(box_width))
         print(box_line(f" Instance:  {colorize(instance_name, Colors.BOLD)}"))
@@ -6031,7 +6017,7 @@ rclone_config: {network_info['rclone']['enabled']}
             return
         
         # Show retention policy summary
-        box_line, box_width = create_box_helper(62)
+        box_line, box_width = create_box_helper(80)
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Retention Cleanup', Colors.BOLD)}"))
         print(box_line(f""))
