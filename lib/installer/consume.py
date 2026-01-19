@@ -621,6 +621,7 @@ def write_syncthing_compose_snippet(instance_name: str, config: SyncthingConfig,
     environment:
       - PUID=1000
       - PGID=1000
+      - STGUIADDRESS=0.0.0.0:8384
     volumes:
       - {config_dir}:/var/syncthing/config
       - {consume_path}:/var/syncthing/data/consume
@@ -678,6 +679,7 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
             "--hostname", container_name,
             "-e", "PUID=1000",
             "-e", "PGID=1000",
+            "-e", "STGUIADDRESS=0.0.0.0:8384",
             "-v", f"{config_dir}:/var/syncthing/config",
             "-v", f"{consume_path}:/var/syncthing/data/consume",
             "-p", f"{config.web_ui_port}:8384",
