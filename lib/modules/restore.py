@@ -251,6 +251,7 @@ def main() -> None:
                     device_id=consume_config.syncthing.device_id,
                     api_key=consume_config.syncthing.api_key,
                     sync_port=consume_config.syncthing.sync_port,
+                    gui_port=consume_config.syncthing.gui_port,
                 )
                 
                 if start_syncthing_container(INSTANCE_NAME, config, consume_path, syncthing_config_dir):

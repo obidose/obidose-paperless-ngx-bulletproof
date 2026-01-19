@@ -35,6 +35,7 @@ class SyncthingConfig:
     device_id: str = ""
     api_key: str = ""
     sync_port: int = 22000
+    gui_port: int = 8384
     
     def to_dict(self) -> dict:
         return {
@@ -44,6 +45,7 @@ class SyncthingConfig:
             "device_id": self.device_id,
             "api_key": self.api_key,
             "sync_port": self.sync_port,
+            "gui_port": self.gui_port,
         }
     
     @classmethod
@@ -316,15 +318,19 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
-def get_syncthing_api_base(config_dir: Optional[Path] = None) -> str:
+def get_syncthing_api_base(config_dir: Optional[Path] = None, gui_port: int = 8384) -> str:
     """
     Get the correct Syncthing API base URL.
     
     Syncthing may be bound to either localhost (no Tailscale) or Tailscale IP.
     This function determines which address actually works by:
     1. Reading the configured address from config.xml
-    2. Testing if that address responds
-    3. Falling back to alternatives if not
+    2. Trying the specified gui_port on current Tailscale IP
+    3. Falling back to localhost
+    
+    Args:
+        config_dir: Path to Syncthing config directory (to read config.xml)
+        gui_port: The GUI port for this instance (default 8384, but per-instance)
     
     This handles all edge cases like Tailscale being installed/uninstalled
     after Syncthing was already configured.
@@ -349,16 +355,16 @@ def get_syncthing_api_base(config_dir: Optional[Path] = None) -> str:
             except:
                 pass
     
-    # Priority 2: Current Tailscale IP (if available)
+    # Priority 2: Current Tailscale IP with specified port
     from .tailscale import get_ip as get_tailscale_ip
     tailscale_ip = get_tailscale_ip()
     if tailscale_ip:
-        ts_url = f"http://{tailscale_ip}:8384/rest"
+        ts_url = f"http://{tailscale_ip}:{gui_port}/rest"
         if ts_url not in addresses_to_try:
             addresses_to_try.append(ts_url)
     
-    # Priority 3: Localhost fallback (always try this)
-    localhost_url = "http://127.0.0.1:8384/rest"
+    # Priority 3: Localhost fallback with specified port
+    localhost_url = f"http://127.0.0.1:{gui_port}/rest"
     if localhost_url not in addresses_to_try:
         addresses_to_try.append(localhost_url)
     
@@ -738,10 +744,13 @@ def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
 
 
 def create_syncthing_config(instance_name: str, consume_path: Path, 
-                            config_dir: Path, sync_port: Optional[int] = None) -> SyncthingConfig:
+                            config_dir: Path, sync_port: Optional[int] = None,
+                            gui_port: Optional[int] = None) -> SyncthingConfig:
     """Create a new Syncthing configuration for an instance."""
     if sync_port is None:
         sync_port = get_next_available_port(22000)
+    if gui_port is None:
+        gui_port = get_next_available_port(8384)
     
     return SyncthingConfig(
         enabled=True,
@@ -750,6 +759,7 @@ def create_syncthing_config(instance_name: str, consume_path: Path,
         device_id="",  # Will be set after container starts
         api_key=generate_secure_password(32),
         sync_port=sync_port,
+        gui_port=gui_port,
     )
 
 
@@ -816,14 +826,17 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
         from .tailscale import get_ip as get_tailscale_ip
         tailscale_ip = get_tailscale_ip()
         
+        # Use per-instance GUI port (default 8384, but each instance gets its own)
+        gui_port = config.gui_port if config.gui_port else 8384
+        
         # Bind Web UI to Tailscale IP only (secure) or localhost (no external access)
         # NEVER bind to 0.0.0.0 - that would expose HTTP to the world
         if tailscale_ip:
-            gui_addr = f"{tailscale_ip}:8384"
-            say(f"Web UI will be available via Tailscale at http://{tailscale_ip}:8384")
+            gui_addr = f"{tailscale_ip}:{gui_port}"
+            say(f"Web UI will be available via Tailscale at http://{tailscale_ip}:{gui_port}")
         else:
-            gui_addr = "127.0.0.1:8384"
-            say("Web UI bound to localhost only (no Tailscale detected)")
+            gui_addr = f"127.0.0.1:{gui_port}"
+            say(f"Web UI bound to localhost only at port {gui_port} (no Tailscale detected)")
         
         docker_cmd = [
             "docker", "run", "-d",
@@ -1375,6 +1388,7 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.syncthing.device_id = env_vars.get("CONSUME_SYNCTHING_DEVICE_ID", "")
     config.syncthing.api_key = env_vars.get("CONSUME_SYNCTHING_API_KEY", "")
     config.syncthing.sync_port = int(env_vars.get("CONSUME_SYNCTHING_SYNC_PORT", "22000"))
+    config.syncthing.gui_port = int(env_vars.get("CONSUME_SYNCTHING_GUI_PORT", "8384"))
     
     # Samba
     config.samba.enabled = env_vars.get("CONSUME_SAMBA_ENABLED", "").lower() == "true"
@@ -1407,6 +1421,7 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
         "CONSUME_SYNCTHING_DEVICE_ID": config.syncthing.device_id,
         "CONSUME_SYNCTHING_API_KEY": config.syncthing.api_key,
         "CONSUME_SYNCTHING_SYNC_PORT": str(config.syncthing.sync_port),
+        "CONSUME_SYNCTHING_GUI_PORT": str(config.syncthing.gui_port),
         # Samba
         "CONSUME_SAMBA_ENABLED": str(config.samba.enabled).lower(),
         "CONSUME_SAMBA_SHARE_NAME": config.samba.share_name,

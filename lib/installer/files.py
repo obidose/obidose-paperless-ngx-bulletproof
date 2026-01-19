@@ -153,6 +153,7 @@ def write_env_file() -> None:
         CONSUME_SYNCTHING_DEVICE_ID={cfg.consume_syncthing_device_id}
         CONSUME_SYNCTHING_API_KEY={cfg.consume_syncthing_api_key}
         CONSUME_SYNCTHING_SYNC_PORT={cfg.consume_syncthing_sync_port}
+        CONSUME_SYNCTHING_GUI_PORT={cfg.consume_syncthing_gui_port}
         
         # Samba (Tailscale + SMB)
         CONSUME_SAMBA_ENABLED={cfg.consume_samba_enabled}

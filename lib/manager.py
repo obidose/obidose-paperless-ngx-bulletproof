@@ -2895,6 +2895,7 @@ class PaperlessManager:
                     # Enable Syncthing config - container will be started on first use
                     common.cfg.consume_syncthing_enabled = "true"
                     common.cfg.consume_syncthing_sync_port = str(self._find_available_port(22000))
+                    common.cfg.consume_syncthing_gui_port = str(self._find_available_port(8384))
                     common.cfg.consume_syncthing_folder_id = f"paperless-{instance_name}"
                     common.cfg.consume_syncthing_folder_label = f"Paperless {instance_name}"
                     ok("Syncthing will be enabled after instance creation")
@@ -3033,6 +3034,7 @@ class PaperlessManager:
                     syncthing_config = SyncthingConfig(
                         enabled=True,
                         sync_port=int(common.cfg.consume_syncthing_sync_port),
+                        gui_port=int(common.cfg.consume_syncthing_gui_port),
                         folder_id=common.cfg.consume_syncthing_folder_id,
                         folder_label=common.cfg.consume_syncthing_folder_label
                     )
@@ -4285,11 +4287,13 @@ class PaperlessManager:
         # Generate fresh config
         consume_dir = instance.data_root / "consume"
         sync_port = config.syncthing.sync_port
+        gui_port = config.syncthing.gui_port if config.syncthing.gui_port else 8384
         folder_id = generate_folder_id()
         
         syncthing_config = SyncthingConfig(
             enabled=True,
             sync_port=sync_port,
+            gui_port=gui_port,
             folder_id=folder_id,
             folder_label=f"Paperless {instance.name}",
             device_id=""  # Will be populated after container starts
@@ -4464,13 +4468,15 @@ class PaperlessManager:
                     consume_dir = instance.data_root / "consume"
                     syncthing_config_dir = instance.stack_dir / "syncthing-config"
                     
-                    # Find available sync port
+                    # Find available sync port and gui port
                     sync_port = self._find_available_port(22000)
+                    gui_port = self._find_available_port(8384)
                     folder_id = generate_folder_id()
                     
                     syncthing_config = SyncthingConfig(
                         enabled=True,
                         sync_port=sync_port,
+                        gui_port=gui_port,
                         folder_id=folder_id,
                         folder_label=f"Paperless {instance.name}",
                         device_id=""  # Will be populated after container starts
@@ -4487,6 +4493,7 @@ class PaperlessManager:
                     save_consume_config(config, instance.env_file)
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "true")
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_SYNC_PORT", str(sync_port))
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_GUI_PORT", str(gui_port))
                     
                     ok("Syncthing enabled!")
                     say("  Use 'View setup guides' to see pairing instructions")
