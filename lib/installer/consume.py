@@ -480,6 +480,23 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
     config_dir.mkdir(parents=True, exist_ok=True)
     consume_path.mkdir(parents=True, exist_ok=True)
     
+    # CRITICAL: Set directory ownership to match container's PUID/PGID (1000:1000)
+    # The Syncthing container runs as UID 1000 and needs write access
+    try:
+        subprocess.run(
+            ["chown", "-R", "1000:1000", str(config_dir)],
+            capture_output=True,
+            check=True
+        )
+        subprocess.run(
+            ["chown", "-R", "1000:1000", str(consume_path)],
+            capture_output=True,
+            check=True
+        )
+    except subprocess.CalledProcessError as e:
+        warn(f"Could not set directory ownership (may need sudo): {e}")
+        # Continue anyway - container might still work if run as root
+    
     container_name = f"syncthing-{instance_name}"
     
     # Stop existing container if running
