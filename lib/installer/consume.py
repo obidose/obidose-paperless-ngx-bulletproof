@@ -263,11 +263,12 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
     on disk, ensuring the change persists across restarts.
     """
     import time
+    import re
     
     config_file = config_dir / "config.xml"
     
     # Wait for config file to exist (Syncthing generates it on first start)
-    for attempt in range(30):
+    for _ in range(30):
         if config_file.exists():
             break
         time.sleep(1)
@@ -278,34 +279,38 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
     
     try:
         content = config_file.read_text()
+        desired = "0.0.0.0:8384"
+        changed = False
         
-        # Debug: show what address is in the file
-        import re
-        addr_match = re.search(r'<address>([^<]+)</address>', content)
-        if addr_match:
-            current_addr = addr_match.group(1)
-            say(f"Current GUI address in config: {current_addr}")
+        # Update GUI listen address inside <gui> block
+        gui_addr_pattern = re.compile(r"(<gui[^>]*>.*?<address>)([^<]*)(</address>)", re.S)
+        match = gui_addr_pattern.search(content)
+        if match:
+            current_addr = match.group(2).strip()
+            if current_addr != desired:
+                content = gui_addr_pattern.sub(r"\1" + desired + r"\3", content, count=1)
+                changed = True
+        else:
+            warn("GUI address tag not found in config.xml")
         
-        # Check various patterns that mean "localhost only"
-        # Syncthing can use 127.0.0.1:8384, [::1]:8384, or localhost:8384
-        localhost_patterns = ['127.0.0.1:8384', '[::1]:8384', 'localhost:8384']
-        all_interfaces = '0.0.0.0:8384'
+        # Ensure host check is disabled for external access
+        if "<insecureSkipHostcheck>true</insecureSkipHostcheck>" not in content:
+            gui_block_pattern = re.compile(r"(<gui[^>]*>)(.*?)(</gui>)", re.S)
+            gui_match = gui_block_pattern.search(content)
+            if gui_match:
+                gui_inner = gui_match.group(2)
+                if "<insecureSkipHostcheck>" in gui_inner:
+                    gui_inner = re.sub(r"<insecureSkipHostcheck>.*?</insecureSkipHostcheck>",
+                                       "<insecureSkipHostcheck>true</insecureSkipHostcheck>",
+                                       gui_inner)
+                else:
+                    gui_inner = gui_inner + "\n    <insecureSkipHostcheck>true</insecureSkipHostcheck>"
+                content = gui_block_pattern.sub(r"\1" + gui_inner + r"\3", content, count=1)
+                changed = True
         
-        for pattern in localhost_patterns:
-            if pattern in content:
-                content = content.replace(pattern, all_interfaces)
-                config_file.write_text(content)
-                say(f"Fixed GUI address: {pattern} -> {all_interfaces}")
-                return True
-        
-        # Check if already configured for all interfaces
-        if all_interfaces in content or '[::]' in content:
-            say("GUI already configured for external access")
-            return False
-        
-        warn(f"Could not find GUI address pattern in config.xml")
-        return False
-        
+        if changed:
+            config_file.write_text(content)
+        return changed
     except Exception as e:
         warn(f"Could not fix GUI address: {e}")
         return False
