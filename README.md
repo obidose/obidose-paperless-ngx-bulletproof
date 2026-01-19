@@ -1,8 +1,8 @@
-# Paperless-NGX Bulletproof
+# Paperless-NGX Bulletproof (now ACTUALLY working!)
 
-A deployment and instance management system for Paperless-NGX with automated backups and disaster recovery.
+A deployment and instance management system for Paperless-NGX with, automated backups, and simple disaster recovery.
 
-Manages multiple Paperless-NGX instances from a single command-line interface.
+Designed for managing multiple Paperless-NGX instances (personal, family, whatever) from a single command.
 
 ---
 
@@ -46,20 +46,21 @@ Two backup types:
 - Docker image version tracking for reproducible restores
 - Point-in-time recovery from any snapshot
 
-**Whole system backup** - Complete disaster recovery:
-- All instance data and configurations
+**Whole system backup** - Metadata and system state:
+- Captures overall system configuration and all registered instances
+- Triggers full backup of all instances when created
+- Primary purpose: preserve system metadata (instance list, configurations, settings)
+- On restore: recreates system structure and restores each instance from its LATEST available backup (not the backup from system backup time)
 - System-level restoration on fresh hardware
-- Reinstall using the same installation command, then restore from pCloud
-- No manual configuration needed - all settings preserved in backup manifests
 
-Each snapshot includes:
+Each instance snapshot includes:
 - PostgreSQL database dump
 - Incremental tarballs (media, data, export)
 - Environment and compose configuration
 - Docker image versions
 - Manifest with metadata and checksums
 
-This allows full recovery on new hardware: install Docker and rclone, run the installer with your pCloud credentials, and restore from backup.
+This allows full disaster recovery on new hardware: install the system, provide pCloud credentials, restore from system backup to recreate all instances with their latest data.
 
 ### Safe Updates
 - Automatic backup before upgrade
@@ -75,11 +76,11 @@ This allows full recovery on new hardware: install Docker and rclone, run the in
 
 ## Requirements
 
-- Ubuntu 24.04 LTS (tested on 24.04, may work on other distros)
+- Ubuntu 24.04 LTS (may well work on other distros but tested on 24.04)
 - 4GB RAM minimum (8GB+ for multiple instances)
 - 20GB+ disk space
 - Root/sudo access
-- pCloud account for backups (other rclone providers like Dropbox and Google Drive are untested)
+- pCloud account for backups (will probably work with other Rclone providers, have also added some options for dropbox and google drive, but all untested)
 
 ---
 
@@ -198,10 +199,13 @@ To recover on fresh hardware after complete system failure:
    ```bash
    paperless
    ```
-5. Select "Restore from backup" and choose your snapshot
-6. The system will download and restore all instances with their configurations
+5. Select "Restore from backup" and choose your system backup snapshot
+6. The system will:
+   - Download system metadata (instance list, configurations, settings)
+   - Restore each instance from its LATEST available backup in pCloud
+   - Recreate all instances with their most recent data
 
-All settings (domains, environment variables, cron schedules, Docker images) are preserved in the backup manifests. No manual reconfiguration needed.
+System backup preserves metadata. Instance data comes from the most recent instance backups, not from the backup created at system backup time.
 
 ---
 
