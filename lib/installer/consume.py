@@ -937,10 +937,10 @@ def get_syncthing_status(instance_name: str) -> dict:
                 # Calculate uptime if running
                 if status == "running" and parts[3]:
                     try:
-                        from datetime import datetime
+                        from datetime import datetime, timezone
                         started = parts[3].split(".")[0].replace("T", " ")
                         start_time = datetime.fromisoformat(started.replace("Z", ""))
-                        uptime = datetime.utcnow() - start_time
+                        uptime = datetime.now(timezone.utc) - start_time
                         if uptime.total_seconds() < 60:
                             result["uptime"] = f"{int(uptime.total_seconds())}s"
                         elif uptime.total_seconds() < 3600:

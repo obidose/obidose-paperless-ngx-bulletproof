@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -377,7 +377,7 @@ class InstanceManager:
         self.load_instances()
     
     def load_instances(self) -> None:
-        """Load instances from config file."""
+        """Load instances from config file, validating they actually exist on disk."""
         if not self.config_file.exists():
             # Try to auto-discover default instance
             default_env = Path("/home/docker/paperless-setup/.env")
@@ -391,14 +391,33 @@ class InstanceManager:
         
         try:
             data = json.loads(self.config_file.read_text())
+            orphaned = []
+            
             for name, config in data.items():
+                stack_dir = Path(config["stack_dir"])
+                data_root = Path(config["data_root"])
+                env_file = Path(config["env_file"])
+                
+                # Validate instance actually exists on disk
+                # At minimum, the .env file should exist
+                if not env_file.exists() and not stack_dir.exists():
+                    orphaned.append(name)
+                    continue
+                
                 self._instances[name] = Instance(
                     name=name,
-                    stack_dir=Path(config["stack_dir"]),
-                    data_root=Path(config["data_root"]),
-                    env_file=Path(config["env_file"]),
+                    stack_dir=stack_dir,
+                    data_root=data_root,
+                    env_file=env_file,
                     compose_file=Path(config["compose_file"])
                 )
+            
+            # Clean up orphaned entries
+            if orphaned:
+                for name in orphaned:
+                    del data[name]
+                self.config_file.write_text(json.dumps(data, indent=2))
+                
         except Exception as e:
             warn(f"Failed to load instances config: {e}")
     
@@ -2273,6 +2292,18 @@ class PaperlessManager:
             original_data_root = backup_env.get("DATA_ROOT", f"/home/docker/{original_name}")
             original_stack_dir = backup_env.get("STACK_DIR", f"/home/docker/{original_name}-setup")
             path_conflict = Path(original_data_root).exists() or Path(original_stack_dir).exists()
+            
+            # Check for "ghost" registry entries - registered but files don't exist
+            ghost_entry = name_conflict and not path_conflict
+            if ghost_entry:
+                # Instance is registered but files don't exist - offer to remove
+                warn(f"Instance '{original_name}' is registered but has no files on disk")
+                if confirm(f"Remove orphaned registry entry for '{original_name}'?", True):
+                    self.instance_manager.remove_instance(original_name)
+                    self.instance_manager.load_instances()
+                    existing_instances = [i.name for i in self.instance_manager.list_instances()]
+                    name_conflict = False
+                    ok(f"Removed orphaned entry for '{original_name}'")
             
             # Show backup configuration with conflict warnings
             print()
@@ -5344,6 +5375,7 @@ WantedBy=multi-user.target
             print(colorize("What is System Backup?", Colors.BOLD))
             print("  • Backs up metadata about ALL instances")
             print("  • Records which instances exist, their config, state")
+            print("  • Consume service configs (Syncthing/Samba/SFTP)")
             print("  • Enables disaster recovery: restore entire multi-instance setup")
             print("  • Separate from individual instance data backups")
             print()
@@ -5579,7 +5611,7 @@ WantedBy=multi-user.target
             
             # ─── Backup Instance Information ──────────────────────────────────
             system_info = {
-                "backup_date": datetime.utcnow().isoformat(),
+                "backup_date": datetime.now(timezone.utc).isoformat(),
                 "backup_name": backup_name,
                 "backup_version": "2.1",  # Version 2.1 adds consume config
                 "instance_count": len(instances),
@@ -5621,7 +5653,7 @@ WantedBy=multi-user.target
             # Create manifest
             manifest = f"""system_backup: true
 backup_version: "2.1"
-backup_date: {datetime.utcnow().isoformat()}
+backup_date: {datetime.now(timezone.utc).isoformat()}
 instance_count: {len(instances)}
 network_config: true
 traefik_enabled: {network_info['traefik']['enabled']}
@@ -5774,6 +5806,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         print(box_line("   • Traefik configuration + SSL certificates"))
         print(box_line("   • Cloudflare tunnel configs and credentials"))
         print(box_line("   • Backup server (rclone) configuration"))
+        print(box_line("   • Consume service configs (Syncthing/Samba/SFTP)"))
         print(draw_box_divider(box_width))
         print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale requires re-authentication"))
         print(draw_box_bottom(box_width))
@@ -6065,38 +6098,176 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 
                 ok("Consume folder services configuration restored")
             
-            # ─── Restore Instance Registry ────────────────────────────────────
+            # ─── Restore Each Instance from Latest Backup ─────────────────────
+            # NOTE: We DON'T restore the registry from backup!
+            # Instead, each instance registers itself after successful restoration.
+            # This prevents "ghost" entries where registry has instances but files don't exist.
             print()
-            say("Restoring Instance Registry...")
+            say("Restoring instance data from latest backups...")
+            print()
             
-            if "instances_registry" in system_info:
-                self.instance_manager.config_file.parent.mkdir(parents=True, exist_ok=True)
-                self.instance_manager.config_file.write_text(
-                    json.dumps(system_info["instances_registry"], indent=2)
-                )
-                self.instance_manager.load_instances()
-                ok(f"Restored {len(system_info['instances'])} instance(s) to registry")
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import common, files
+            
+            instances_to_restore = system_info.get("instances", {})
+            restored_count = 0
+            failed_instances = []
+            
+            for inst_name, inst_data in instances_to_restore.items():
+                print(f"\n{colorize('─' * 60, Colors.CYAN)}")
+                say(f"Restoring instance: {colorize(inst_name, Colors.BOLD)}")
+                
+                try:
+                    # Get instance paths from backup info
+                    stack_dir = Path(inst_data.get("stack_dir", f"/home/docker/{inst_name}-setup"))
+                    data_root = Path(inst_data.get("data_root", f"/home/docker/{inst_name}"))
+                    
+                    # Get latest backup for this instance
+                    remote_base = f"pcloud:backups/paperless/{inst_name}"
+                    result = subprocess.run(
+                        ["rclone", "lsd", remote_base],
+                        capture_output=True, text=True, check=False
+                    )
+                    
+                    if result.returncode != 0 or not result.stdout.strip():
+                        warn(f"  No backups found for {inst_name}")
+                        failed_instances.append((inst_name, "No backups found"))
+                        continue
+                    
+                    snapshots = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()])
+                    if not snapshots:
+                        warn(f"  No snapshots found for {inst_name}")
+                        failed_instances.append((inst_name, "No snapshots found"))
+                        continue
+                    
+                    latest_snapshot = snapshots[-1]
+                    say(f"  Using latest backup: {latest_snapshot}")
+                    
+                    # Download the .env from the backup to get original settings
+                    env_result = subprocess.run(
+                        ["rclone", "cat", f"{remote_base}/{latest_snapshot}/.env"],
+                        capture_output=True, text=True, check=False
+                    )
+                    
+                    backup_env = {}
+                    if env_result.returncode == 0 and env_result.stdout.strip():
+                        for line in env_result.stdout.splitlines():
+                            line = line.strip()
+                            if line and not line.startswith("#") and "=" in line:
+                                k, v = line.split("=", 1)
+                                backup_env[k.strip()] = v.strip()
+                    
+                    # Configure instance settings from backup
+                    common.cfg.instance_name = inst_name
+                    common.cfg.data_root = str(data_root)
+                    common.cfg.stack_dir = str(stack_dir)
+                    common.cfg.rclone_remote_name = "pcloud"
+                    common.cfg.rclone_remote_path = f"backups/paperless/{inst_name}"
+                    common.cfg.refresh_paths()
+                    
+                    # Load all settings from backup
+                    common.cfg.tz = backup_env.get("TZ", common.cfg.tz)
+                    common.cfg.puid = backup_env.get("PUID", common.cfg.puid)
+                    common.cfg.pgid = backup_env.get("PGID", common.cfg.pgid)
+                    common.cfg.paperless_admin_user = backup_env.get("PAPERLESS_ADMIN_USER", "admin")
+                    common.cfg.paperless_admin_password = backup_env.get("PAPERLESS_ADMIN_PASSWORD", "admin")
+                    common.cfg.postgres_db = backup_env.get("POSTGRES_DB", "paperless")
+                    common.cfg.postgres_user = backup_env.get("POSTGRES_USER", "paperless")
+                    common.cfg.postgres_password = backup_env.get("POSTGRES_PASSWORD", "paperless")
+                    common.cfg.http_port = backup_env.get("HTTP_PORT", "8000")
+                    common.cfg.domain = backup_env.get("DOMAIN", "")
+                    common.cfg.enable_traefik = backup_env.get("ENABLE_TRAEFIK", "no")
+                    common.cfg.enable_cloudflared = backup_env.get("ENABLE_CLOUDFLARED", "no")
+                    common.cfg.enable_tailscale = backup_env.get("ENABLE_TAILSCALE", "no")
+                    common.cfg.retention_days = backup_env.get("RETENTION_DAYS", "30")
+                    common.cfg.retention_monthly_days = backup_env.get("RETENTION_MONTHLY_DAYS", "180")
+                    common.cfg.cron_incr_time = backup_env.get("CRON_INCR_TIME", "0 */6 * * *")
+                    common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
+                    common.cfg.cron_archive_time = backup_env.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
+                    common.cfg.refresh_paths()
+                    
+                    # Create directories
+                    say(f"  Creating directories...")
+                    common.ensure_dir_tree(common.cfg)
+                    
+                    # Write config files
+                    say(f"  Writing configuration...")
+                    files.write_env_file()
+                    files.write_compose_file()
+                    files.copy_helper_scripts()
+                    
+                    # Run the actual restore
+                    say(f"  Restoring data...")
+                    success = run_restore_with_env(
+                        snapshot=latest_snapshot,
+                        instance_name=inst_name,
+                        env_file=Path(common.cfg.env_file),
+                        compose_file=Path(common.cfg.compose_file),
+                        stack_dir=stack_dir,
+                        data_root=data_root,
+                        rclone_remote_name="pcloud",
+                        rclone_remote_path=f"backups/paperless/{inst_name}",
+                        merge_config=False  # Use the backup's original config
+                    )
+                    
+                    if not success:
+                        raise Exception("Restore operation failed")
+                    
+                    # Install backup cron
+                    files.install_cron_backup()
+                    
+                    # Set up Cloudflare tunnel if it was enabled
+                    if common.cfg.enable_cloudflared == "yes" and cf_info.get("enabled"):
+                        say(f"  Setting up Cloudflare tunnel...")
+                        setup_cloudflare_tunnel(inst_name, common.cfg.domain)
+                    
+                    # Register the instance in the registry
+                    self.instance_manager.add_instance(inst_name, stack_dir, data_root)
+                    
+                    # Set up Tailscale serve if it was enabled (after Tailscale reconnection)
+                    # This will be handled after Tailscale reconnects
+                    
+                    ok(f"  Instance '{inst_name}' restored successfully")
+                    restored_count += 1
+                    
+                except Exception as e:
+                    error(f"  Failed to restore {inst_name}: {e}")
+                    failed_instances.append((inst_name, str(e)))
+            
+            # Reload instances after restoration
+            self.instance_manager.load_instances()
             
             # ─── Summary & IP Change Guidance ─────────────────────────────────
+            print()
+            print(f"\n{colorize('─' * 60, Colors.CYAN)}")
             print()
             print(draw_box_top(box_width))
             print(box_line(f" {colorize('✓ System Restore Complete', Colors.GREEN)}"))
             print(draw_box_divider(box_width))
             
-            # Basic next steps
-            print(box_line(f" {colorize('Essential Next Steps:', Colors.BOLD)}"))
+            # Instance restoration summary
+            print(box_line(f" {colorize('Instance Restoration:', Colors.BOLD)}"))
+            print(box_line(f"   ✓ {restored_count} instance(s) restored successfully"))
+            if failed_instances:
+                print(box_line(f"   ✗ {len(failed_instances)} instance(s) failed:"))
+                for name, reason in failed_instances:
+                    print(box_line(f"     • {name}: {reason}"))
             print(box_line(""))
-            print(box_line("   1. Restore each instance's data:"))
-            print(box_line("      → Manage Instances → [instance] → Restore from backup"))
-            print(box_line(""))
-            print(box_line("   2. Start instances after data is restored"))
-            print(box_line("      → Syncthing auto-restarts with instance data"))
+            
+            # Next steps - only if there were failures or additional config needed
+            if failed_instances:
+                print(box_line(f" {colorize('For failed instances:', Colors.YELLOW)}"))
+                print(box_line("   → Manage Instances → [instance] → Restore from backup"))
+                print(box_line(""))
+            
+            print(box_line(f" {colorize('To start your instances:', Colors.BOLD)}"))
+            print(box_line("   → Manage Instances → [instance] → Container operations → Start"))
             
             # Consume services note
             if consume_info.get("enabled"):
                 print(box_line(""))
-                print(box_line("   3. Restart shared consume services (if used):"))
-                print(box_line("      → Samba/SFTP: re-enable from Consume menu"))
+                print(box_line(f" {colorize('Consume folder services:', Colors.BOLD)}"))
+                print(box_line("   → Re-enable Samba/SFTP from instance Consume menu"))
             
             print(draw_box_divider(box_width))
             
