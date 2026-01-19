@@ -262,8 +262,18 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
     This is more reliable than the API approach because it modifies the file
     on disk, ensuring the change persists across restarts.
     """
+    import time
+    
     config_file = config_dir / "config.xml"
+    
+    # Wait for config file to exist (Syncthing generates it on first start)
+    for attempt in range(30):
+        if config_file.exists():
+            break
+        time.sleep(1)
+    
     if not config_file.exists():
+        warn(f"Config file not found: {config_file}")
         return False
     
     try:
@@ -273,9 +283,13 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
         if '127.0.0.1:8384' in content:
             content = content.replace('127.0.0.1:8384', '0.0.0.0:8384')
             config_file.write_text(content)
+            say(f"Fixed GUI address in {config_file}")
             return True
         elif '0.0.0.0:8384' in content:
             # Already configured correctly
+            return False
+        else:
+            warn(f"Could not find GUI address pattern in config.xml")
             return False
         
         return False
@@ -380,8 +394,6 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             restart_syncthing_container(instance_name)
             time.sleep(3)
             ok("Web UI now accessible externally")
-            
-            ok("Syncthing initialized successfully")
         
         return True
         
@@ -825,7 +837,7 @@ def get_syncthing_logs(instance_name: str, lines: int = 50) -> str:
 
 
 def restart_syncthing_container(instance_name: str) -> bool:
-    """Restart Syncthing container."""
+    """Restart Syncthing container (keeps existing settings)."""
     container_name = f"syncthing-{instance_name}"
     try:
         result = subprocess.run(
@@ -842,44 +854,6 @@ def restart_syncthing_container(instance_name: str) -> bool:
             return False
     except Exception as e:
         error(f"Failed to restart: {e}")
-        return False
-
-
-def recreate_syncthing_container(instance_name: str, config: SyncthingConfig,
-                                  consume_path: Path, config_dir: Path) -> bool:
-    """Recreate Syncthing container with updated settings (including STGUIADDRESS)."""
-    container_name = f"syncthing-{instance_name}"
-    
-    # Stop and remove existing container
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        capture_output=True,
-        check=False
-    )
-    
-    try:
-        # Create new container with STGUIADDRESS for external access
-        result = subprocess.run([
-            "docker", "run", "-d",
-            "--name", container_name,
-            "--hostname", container_name,
-            "-e", "PUID=1000",
-            "-e", "PGID=1000",
-            "-e", "STGUIADDRESS=0.0.0.0:8384",
-            "-v", f"{config_dir}:/var/syncthing/config",
-            "-v", f"{consume_path}:/var/syncthing/data/consume",
-            "-p", f"{config.web_ui_port}:8384",
-            "-p", f"{config.sync_port}:22000/tcp",
-            "-p", f"{config.sync_port}:22000/udp",
-            "-p", f"{config.sync_port + 27}:21027/udp",
-            "--restart", "unless-stopped",
-            "syncthing/syncthing:latest"
-        ], capture_output=True, text=True, check=True)
-        
-        ok(f"Syncthing container recreated: {container_name}")
-        return True
-    except subprocess.CalledProcessError as e:
-        error(f"Failed to recreate container: {e.stderr}")
         return False
 
 

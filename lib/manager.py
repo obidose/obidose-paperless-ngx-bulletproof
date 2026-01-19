@@ -3951,27 +3951,29 @@ class PaperlessManager:
     def _recreate_syncthing(self, instance: Instance, config) -> None:
         """Recreate Syncthing container (fixes Web UI access issues)."""
         from lib.installer.consume import (
-            recreate_syncthing_container, get_syncthing_status, get_syncthing_device_id
+            stop_syncthing_container, start_syncthing_container, 
+            get_syncthing_status, get_syncthing_device_id
         )
         import time
         
         config_dir = instance.stack_dir / "syncthing-config"
         consume_path = instance.data_root / "consume"
         
-        say("Recreating Syncthing container with external Web UI access...")
-        recreate_syncthing_container(instance.name, config.syncthing, consume_path, config_dir)
+        say("Stopping Syncthing...")
+        stop_syncthing_container(instance.name)
         
-        say("Waiting for container to start...")
-        time.sleep(5)
+        say("Starting Syncthing (will fix Web UI access)...")
+        start_syncthing_container(instance.name, config.syncthing, consume_path, config_dir)
+        
+        say("Waiting for initialization...")
+        time.sleep(3)
         
         status = get_syncthing_status(instance.name)
         if status["running"]:
-            ok("Syncthing is now running")
-            time.sleep(2)
+            ok("Syncthing recreated successfully")
             device_id = get_syncthing_device_id(instance.name)
             if device_id:
                 say(f"Device ID: {device_id}")
-                self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
             ok(f"Web UI: http://{self._get_local_ip()}:{config.syncthing.web_ui_port}")
         else:
             error(f"Syncthing failed to start: {status['status']}")
