@@ -110,7 +110,7 @@ def get_tunnel_for_instance(instance_name: str) -> dict | None:
     return None
 
 
-def create_tunnel(instance_name: str, domain: str) -> bool:
+def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> bool:
     """Create a Cloudflare tunnel for an instance."""
     tunnel_name = f"paperless-{instance_name}"
     
@@ -142,7 +142,7 @@ credentials-file: /root/.cloudflared/{tunnel_id}.json
 
 ingress:
   - hostname: {domain}
-    service: http://localhost:8000
+    service: http://localhost:{port}
   - service: http_status:404
 """
         config_file.write_text(config_content)

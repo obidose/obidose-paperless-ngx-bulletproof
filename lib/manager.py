@@ -149,7 +149,7 @@ def check_networking_dependencies() -> dict[str, bool]:
     }
 
 
-def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
+def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -> bool:
     """Set up Cloudflare tunnel for an instance. Returns success status."""
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import cloudflared, common
@@ -160,7 +160,7 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
     print()
     common.say("Setting up Cloudflare Tunnel...")
     
-    if not cloudflared.create_tunnel(instance_name, domain):
+    if not cloudflared.create_tunnel(instance_name, domain, port):
         common.warn("Failed to create Cloudflare tunnel")
         return False
     
@@ -199,7 +199,7 @@ WantedBy=multi-user.target
 
 def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: str, 
                            stack_dir: Path, data_root: Path, enable_cloudflared: str, 
-                           domain: str) -> None:
+                           domain: str, port: int = 8000) -> None:
     """Finalize instance setup - register and set up optional services."""
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import common, files
@@ -209,7 +209,7 @@ def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: 
     
     # Set up Cloudflare tunnel if enabled
     if enable_cloudflared == "yes":
-        setup_cloudflare_tunnel(instance_name, domain)
+        setup_cloudflare_tunnel(instance_name, domain, port)
     
     # Register instance
     instance_manager.add_instance(instance_name, stack_dir, data_root)
@@ -2576,7 +2576,8 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel if enabled
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                setup_cloudflare_tunnel(new_name, common.cfg.domain)
+                port = int(common.cfg.http_port)
+                setup_cloudflare_tunnel(new_name, common.cfg.domain, port)
             
             # Register instance
             self.instance_manager.add_instance(
@@ -3015,7 +3016,8 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel if enabled
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain)
+                port = int(common.cfg.http_port)
+                setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain, port)
             
             # Register instance
             self.instance_manager.add_instance(
@@ -4838,9 +4840,12 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "no")  # Mutually exclusive
                 self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
                 
+                # Get the instance port
+                port = int(instance.get_env_value("HTTP_PORT", "8000"))
+                
                 # Create tunnel
                 say("Creating Cloudflare tunnel...")
-                if create_tunnel(instance.name, domain):
+                if create_tunnel(instance.name, domain, port):
                     # Create and start systemd service
                     self._create_cloudflare_service(instance.name)
                     ok(f"Cloudflare Tunnel enabled for https://{domain}")
@@ -5972,8 +5977,13 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     shutil.copy2(traefik_backup / "acme.json", traefik_dest / "acme.json")
                     (traefik_dest / "acme.json").chmod(0o600)
                 
-                # Start Traefik if not running (use same method as setup_system_traefik)
-                if not traefik.is_traefik_running():
+                # Start or restart Traefik to pick up restored config
+                if traefik.is_traefik_running():
+                    # Restart to pick up restored config/certs
+                    say("Restarting Traefik with restored certificates...")
+                    subprocess.run(["docker", "restart", "traefik-system"], check=False, capture_output=True)
+                    ok("Traefik restarted with restored SSL certificates")
+                else:
                     say("Starting Traefik with restored certificates...")
                     # Ensure traefik network exists
                     traefik.ensure_traefik_network()
@@ -6002,8 +6012,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                             ok("Traefik reinstalled (will regenerate SSL certs)")
                         else:
                             warn("Failed to start Traefik")
-                else:
-                    ok("Traefik already running")
             elif traefik_info.get("enabled") and not traefik_backup.exists():
                 # Legacy backup - just install Traefik
                 if not traefik.is_traefik_running():
@@ -6019,44 +6027,24 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             if cf_backup.exists() and cf_info.get("enabled"):
                 say("Restoring Cloudflare Tunnel configuration...")
                 
-                # Restore ~/.cloudflared/ (credentials and cert)
+                # Restore ~/.cloudflared/ - but ONLY cert.pem (authentication)
+                # Tunnel credentials will be created fresh during instance restore
+                # (old tunnels are invalid after nuke, need new ones)
                 home_backup = cf_backup / "home"
                 if home_backup.exists():
                     cloudflared_home = Path.home() / ".cloudflared"
                     cloudflared_home.mkdir(parents=True, exist_ok=True)
                     
-                    for file in home_backup.iterdir():
-                        shutil.copy2(file, cloudflared_home / file.name)
-                    ok("Cloudflare credentials restored")
+                    # Only restore cert.pem - this is the Cloudflare auth, not tunnel-specific
+                    cert_pem = home_backup / "cert.pem"
+                    if cert_pem.exists():
+                        shutil.copy2(cert_pem, cloudflared_home / "cert.pem")
+                    ok("Cloudflare authentication restored")
                 
-                # Restore /etc/cloudflared/ configs
-                etc_backup = cf_backup / "etc"
-                if etc_backup.exists():
-                    cloudflared_etc = Path("/etc/cloudflared")
-                    cloudflared_etc.mkdir(parents=True, exist_ok=True)
-                    
-                    for file in etc_backup.iterdir():
-                        shutil.copy2(file, cloudflared_etc / file.name)
-                    ok(f"Cloudflare tunnel configs restored")
-                
-                # Restore systemd services
-                services_backup = cf_backup / "services"
-                if services_backup.exists():
-                    for service_file in services_backup.iterdir():
-                        shutil.copy2(service_file, Path("/etc/systemd/system") / service_file.name)
-                    
-                    # Reload and start services
-                    subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
-                    
-                    # Start each tunnel service
-                    for service_file in services_backup.iterdir():
-                        service_name = service_file.name
-                        subprocess.run(
-                            ["systemctl", "enable", "--now", service_name],
-                            capture_output=True,
-                            check=False
-                        )
-                    ok("Cloudflare tunnel services started")
+                # DON'T restore old tunnel configs or services
+                # Instance restore will create fresh tunnels with new credentials
+                # Old tunnels/configs are invalid after system nuke
+                say("Cloudflare tunnels will be recreated during instance restore")
             
             # Restore Consume Folder Services Configuration (Samba/SFTP)
             consume_backup = work / "consume"
@@ -6122,15 +6110,21 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     stack_dir = Path(inst_data.get("stack_dir", f"/home/docker/{inst_name}-setup"))
                     data_root = Path(inst_data.get("data_root", f"/home/docker/{inst_name}"))
                     
+                    # Get the rclone remote path from saved env vars, or use default
+                    env_vars = inst_data.get("env_vars", {})
+                    rclone_path = env_vars.get("RCLONE_REMOTE_PATH", f"backups/paperless/{inst_name}")
+                    if not rclone_path:
+                        rclone_path = f"backups/paperless/{inst_name}"
+                    remote_base = f"pcloud:{rclone_path}"
+                    
                     # Get latest backup for this instance
-                    remote_base = f"pcloud:backups/paperless/{inst_name}"
                     result = subprocess.run(
                         ["rclone", "lsd", remote_base],
                         capture_output=True, text=True, check=False
                     )
                     
                     if result.returncode != 0 or not result.stdout.strip():
-                        warn(f"  No backups found for {inst_name}")
+                        warn(f"  No backups found for {inst_name} at {remote_base}")
                         failed_instances.append((inst_name, "No backups found"))
                         continue
                     
@@ -6142,6 +6136,16 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     
                     latest_snapshot = snapshots[-1]
                     say(f"  Using latest backup: {latest_snapshot}")
+                    
+                    # Validate backup actually has required files
+                    validation_result = subprocess.run(
+                        ["rclone", "lsf", f"{remote_base}/{latest_snapshot}"],
+                        capture_output=True, text=True, check=False
+                    )
+                    if validation_result.returncode != 0 or ".env" not in validation_result.stdout:
+                        warn(f"  Backup {latest_snapshot} appears incomplete or corrupted")
+                        failed_instances.append((inst_name, f"Backup {latest_snapshot} incomplete"))
+                        continue
                     
                     # Download the .env from the backup to get original settings
                     env_result = subprocess.run(
@@ -6206,7 +6210,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         stack_dir=stack_dir,
                         data_root=data_root,
                         rclone_remote_name="pcloud",
-                        rclone_remote_path=f"backups/paperless/{inst_name}",
+                        rclone_remote_path=rclone_path,  # Use the saved path, not hardcoded
                         merge_config=False  # Use the backup's original config
                     )
                     
@@ -6219,7 +6223,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     # Set up Cloudflare tunnel if it was enabled
                     if common.cfg.enable_cloudflared == "yes" and cf_info.get("enabled"):
                         say(f"  Setting up Cloudflare tunnel...")
-                        setup_cloudflare_tunnel(inst_name, common.cfg.domain)
+                        port = int(common.cfg.http_port)
+                        setup_cloudflare_tunnel(inst_name, common.cfg.domain, port)
                     
                     # Register the instance in the registry
                     self.instance_manager.add_instance(inst_name, stack_dir, data_root)
