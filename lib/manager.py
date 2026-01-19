@@ -3485,6 +3485,7 @@ class PaperlessManager:
                 ("4", "View status"),
                 ("5", "View logs"),
                 ("6", "Upgrade containers"),
+                ("7", "Regenerate docker-compose.yml"),
                 ("0", "Back")
             ]
             print_menu(options)
@@ -4775,7 +4776,8 @@ class PaperlessManager:
                 port = instance.get_env_value("HTTP_PORT", "8000")
                 self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
                 ok("Traefik disabled - instance will use direct HTTP")
-                warn("Restart containers and regenerate docker-compose.yml")
+                # Regenerate compose file to remove Traefik labels
+                self._offer_regenerate_compose(instance)
         else:
             # Enable Traefik
             from lib.installer.traefik import is_traefik_running
@@ -4849,6 +4851,8 @@ class PaperlessManager:
                     # Create and start systemd service
                     self._create_cloudflare_service(instance.name)
                     ok(f"Cloudflare Tunnel enabled for https://{domain}")
+                    # Regenerate compose file to remove Traefik labels (if switching from Traefik)
+                    self._offer_regenerate_compose(instance)
                 else:
                     warn("Tunnel creation failed - you may need to set it up manually")
         
