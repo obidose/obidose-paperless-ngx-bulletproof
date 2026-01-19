@@ -3892,7 +3892,8 @@ class PaperlessManager:
     def _show_consume_setup_guides(self, instance: Instance, config) -> None:
         """Show setup guides for enabled consume methods."""
         from lib.installer.consume import (
-            generate_syncthing_guide, generate_samba_guide, generate_sftp_guide
+            generate_syncthing_guide, generate_samba_guide, generate_sftp_guide,
+            get_syncthing_device_id
         )
         
         print_header("Consume Setup Guides")
@@ -3902,6 +3903,16 @@ class PaperlessManager:
         
         if config.syncthing.enabled:
             any_enabled = True
+            
+            # Try to refresh device ID if not set yet
+            if not config.syncthing.device_id or config.syncthing.device_id == "Starting up...":
+                say("Checking Syncthing status...")
+                device_id = get_syncthing_device_id(instance.name)
+                if device_id:
+                    config.syncthing.device_id = device_id
+                    # Update env file with new device ID
+                    self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
+            
             guide = generate_syncthing_guide(instance.name, config.syncthing, local_ip)
             print(colorize("═" * 60, Colors.CYAN))
             print(colorize(" SYNCTHING SETUP", Colors.BOLD))

@@ -214,6 +214,175 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
+def configure_syncthing_auto_accept(instance_name: str, config: SyncthingConfig, 
+                                     config_dir: Path) -> bool:
+    """
+    Configure Syncthing to auto-accept new devices and share the consume folder.
+    
+    This enables the "reversed" workflow where users add the server from their
+    local Syncthing rather than needing access to the server's Web UI.
+    """
+    import time
+    import urllib.request
+    import urllib.error
+    
+    container_name = f"syncthing-{instance_name}"
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    
+    # Wait for API to be available
+    api_key = None
+    for attempt in range(30):
+        api_key = get_syncthing_api_key(config_dir)
+        if api_key:
+            break
+        time.sleep(1)
+    
+    if not api_key:
+        warn("Could not get Syncthing API key - auto-accept not configured")
+        return False
+    
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Wait for API to be ready
+        for attempt in range(30):
+            try:
+                req = urllib.request.Request(f"{api_base}/system/status", headers=headers)
+                urllib.request.urlopen(req, timeout=5)
+                break
+            except:
+                time.sleep(1)
+        
+        # Get current config
+        req = urllib.request.Request(f"{api_base}/config", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            current_config = json.loads(response.read().decode())
+        
+        # Enable auto-accept for new devices (they'll be added automatically)
+        # Set defaults for new devices to auto-accept and share the consume folder
+        if "defaults" not in current_config:
+            current_config["defaults"] = {}
+        if "device" not in current_config["defaults"]:
+            current_config["defaults"]["device"] = {}
+        
+        # Auto-accept new devices
+        current_config["defaults"]["device"]["autoAcceptFolders"] = True
+        current_config["defaults"]["device"]["untrusted"] = False
+        
+        # Ensure the consume folder exists in config and is set to share with new devices
+        folder_exists = False
+        for folder in current_config.get("folders", []):
+            if folder.get("id") == config.folder_id:
+                folder_exists = True
+                # Ensure folder is shared with all devices
+                break
+        
+        if not folder_exists:
+            # Add the consume folder
+            current_config.setdefault("folders", []).append({
+                "id": config.folder_id,
+                "label": config.folder_label,
+                "path": "/var/syncthing/data/consume",
+                "type": "sendreceive",
+                "devices": [{"deviceID": config.device_id}] if config.device_id else [],
+                "rescanIntervalS": 60,
+                "fsWatcherEnabled": True,
+                "fsWatcherDelayS": 10,
+                "autoNormalize": True,
+            })
+        
+        # Set GUI to allow remote access (for Tailscale users who can reach it)
+        if "gui" in current_config:
+            current_config["gui"]["address"] = "0.0.0.0:8384"
+        
+        # Push updated config
+        config_data = json.dumps(current_config).encode()
+        req = urllib.request.Request(
+            f"{api_base}/config", 
+            data=config_data, 
+            headers=headers,
+            method="PUT"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        
+        ok("Syncthing configured for auto-accept")
+        return True
+        
+    except Exception as e:
+        warn(f"Could not configure Syncthing auto-accept: {e}")
+        return False
+
+
+def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
+                            config_dir: Path, remote_device_id: str, 
+                            device_name: str = "User Device") -> bool:
+    """
+    Add a remote device to Syncthing and share the consume folder with it.
+    
+    This can be used if auto-accept doesn't work or for manual setup.
+    """
+    import urllib.request
+    
+    api_key = get_syncthing_api_key(config_dir)
+    if not api_key:
+        error("Could not get Syncthing API key")
+        return False
+    
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Get current config
+        req = urllib.request.Request(f"{api_base}/config", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            current_config = json.loads(response.read().decode())
+        
+        # Add device if not exists
+        device_exists = any(
+            d.get("deviceID") == remote_device_id 
+            for d in current_config.get("devices", [])
+        )
+        
+        if not device_exists:
+            current_config.setdefault("devices", []).append({
+                "deviceID": remote_device_id,
+                "name": device_name,
+                "addresses": ["dynamic"],
+                "autoAcceptFolders": True,
+            })
+        
+        # Share consume folder with device
+        for folder in current_config.get("folders", []):
+            if folder.get("id") == config.folder_id:
+                folder_devices = folder.setdefault("devices", [])
+                if not any(d.get("deviceID") == remote_device_id for d in folder_devices):
+                    folder_devices.append({"deviceID": remote_device_id})
+                break
+        
+        # Push updated config
+        config_data = json.dumps(current_config).encode()
+        req = urllib.request.Request(
+            f"{api_base}/config",
+            data=config_data,
+            headers=headers,
+            method="PUT"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        
+        ok(f"Added device '{device_name}' to Syncthing")
+        return True
+        
+    except Exception as e:
+        error(f"Failed to add device to Syncthing: {e}")
+        return False
+
+
 def create_syncthing_config(instance_name: str, consume_path: Path, 
                             config_dir: Path, ports: Optional[tuple[int, int]] = None) -> SyncthingConfig:
     """Create a new Syncthing configuration for an instance."""
@@ -307,6 +476,9 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
             if device_id:
                 config.device_id = device_id
                 ok(f"Syncthing device ID: {device_id}")
+                
+                # Configure auto-accept for incoming connections
+                configure_syncthing_auto_accept(instance_name, config, config_dir)
                 return True
         
         warn("Syncthing started but could not retrieve device ID")
@@ -774,57 +946,95 @@ def generate_syncthing_guide(instance_name: str, config: SyncthingConfig,
     """Generate setup guide for Syncthing."""
     host = tailscale_ip or "your-server-ip"
     
+    # Format device ID for display (or show waiting message)
+    if config.device_id and config.device_id != "Starting up...":
+        device_id_display = config.device_id
+        device_id_status = "✓ Ready"
+    else:
+        device_id_display = "(Server starting up - run guide again in 30 seconds)"
+        device_id_status = "⏳ Starting..."
+    
     return f"""
 ╭──────────────────────────────────────────────────────────────╮
-│                  Syncthing Setup Guide                       │
+│                  SYNCTHING SETUP GUIDE                       │
 │                  Instance: {instance_name:<30}│
 ╰──────────────────────────────────────────────────────────────╯
 
-1️⃣  INSTALL SYNCTHING ON YOUR DEVICE
-   Download from: https://syncthing.net/downloads/
-   
-   • Windows: Download and run the installer
-   • Mac: Download the DMG or use: brew install syncthing
-   • Linux: sudo apt install syncthing
-   • Android/iOS: Search "Syncthing" in app store
+┌─────────────────────────────────────────────────────────────┐
+│  📋 SERVER DEVICE ID (copy this):                           │
+│                                                             │
+│  {device_id_display:<55} │
+│                                                             │
+│  Status: {device_id_status:<50}│
+└─────────────────────────────────────────────────────────────┘
 
-2️⃣  GET YOUR DEVICE ID
-   Open Syncthing on your device, go to:
-   Actions → Show ID
-   
-   Copy your device ID (looks like: XXXXXXX-XXXXXXX-XXXXXXX-...)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-3️⃣  ADD YOUR DEVICE TO THIS SERVER
-   Open Syncthing Web UI:
-   http://{host}:{config.web_ui_port}
-   
-   • Click "Add Remote Device"
-   • Paste your device ID
-   • Give it a name (e.g., "My Laptop")
-   • Click Save
+1️⃣  INSTALL SYNCTHING ON YOUR COMPUTER/PHONE
+    ─────────────────────────────────────────
+    Download from: https://syncthing.net/downloads/
+    
+    • Windows: Download and run the installer
+    • Mac: brew install syncthing  (or download DMG)
+    • Linux: sudo apt install syncthing
+    • Android/iOS: Search "Syncthing" in your app store
+    
+    Then open Syncthing on your device (usually http://localhost:8384)
 
-4️⃣  SHARE THE CONSUME FOLDER
-   On the server Syncthing UI:
-   • Click on the "{config.folder_label}" folder
-   • Edit → Sharing tab
-   • Check your device
-   • Save
+2️⃣  ADD THE PAPERLESS SERVER TO YOUR SYNCTHING
+    ───────────────────────────────────────────
+    On YOUR computer/phone's Syncthing:
+    
+    • Click "+ Add Remote Device"
+    • Paste the SERVER DEVICE ID shown above
+    • Name it: "Paperless Server" (or anything you like)
+    • Click Save
 
-5️⃣  ACCEPT ON YOUR DEVICE
-   Your Syncthing will show a notification
-   • Accept the new folder share
-   • Choose where to save files locally
+3️⃣  WAIT FOR THE SERVER TO ACCEPT
+    ──────────────────────────────
+    The Paperless server will automatically accept your connection.
+    You should see "Paperless Server" appear as connected (green).
+    
+    ⏱️  This may take 30-60 seconds.
 
-✅ DONE!
-   Files in your local folder will sync to Paperless automatically.
+4️⃣  ACCEPT THE SHARED FOLDER
+    ─────────────────────────
+    Once connected, your Syncthing will show a notification:
+    
+    "Paperless Server wants to share folder '{config.folder_label}'"
+    
+    • Click "Add" to accept
+    • Choose where to save files on YOUR device
+      (e.g., ~/Documents/Paperless-Inbox)
+    • Click Save
 
-═══════════════════════════════════════════════════════════════
-Server Device ID: {config.device_id or 'Starting up...'}
-Folder ID: {config.folder_id}
-Folder Label: {config.folder_label}
-Web UI Port: {config.web_ui_port}
-Sync Port: {config.sync_port}
-═══════════════════════════════════════════════════════════════
+5️⃣  START SYNCING!
+    ───────────────
+    • Drop PDF/documents into your local folder
+    • They'll automatically sync to Paperless
+    • Paperless will process and delete the originals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 CONNECTION DETAILS
+────────────────────
+Server Device ID: {device_id_display}
+Folder ID:        {config.folder_id}
+Folder Name:      {config.folder_label}
+Sync Port:        {config.sync_port} (TCP/UDP)
+
+💡 TIPS
+───────
+• Make sure port {config.sync_port} is open on the server firewall
+• First sync may take a moment to establish
+• Files are encrypted during transfer
+• No account or cloud service needed!
+
+🔧 TROUBLESHOOTING
+──────────────────
+• "Device ID not found": Wait 30 sec and view guide again
+• "Connection refused": Check firewall allows port {config.sync_port}
+• "Disconnected": Both devices must be online simultaneously
 """
 
 
@@ -835,51 +1045,66 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
     
     return f"""
 ╭──────────────────────────────────────────────────────────────╮
-│                  Samba (SMB) Setup Guide                     │
+│                  SAMBA (SMB) SETUP GUIDE                     │
 │                  Instance: {instance_name:<30}│
 ╰──────────────────────────────────────────────────────────────╯
 
-CONNECT TO NETWORK FOLDER
+┌─────────────────────────────────────────────────────────────┐
+│  📋 CREDENTIALS (save these):                               │
+│                                                             │
+│  Server:   {host:<47} │
+│  Share:    {config.share_name:<47} │
+│  Username: {config.username:<47} │
+│  Password: {config.password:<47} │
+└─────────────────────────────────────────────────────────────┘
 
-🪟 WINDOWS:
-   1. Open File Explorer
-   2. In the address bar, type:
-      \\\\{host}\\{config.share_name}
-   3. Enter credentials when prompted:
-      Username: {config.username}
-      Password: {config.password}
-   4. Check "Remember my credentials"
-   
-   To map as a drive letter:
-   1. Right-click "This PC" → Map network drive
-   2. Choose a drive letter
-   3. Enter: \\\\{host}\\{config.share_name}
-   4. Check "Connect using different credentials"
-   5. Enter the credentials above
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🍎 MAC:
-   1. Open Finder
-   2. Press Cmd+K or Go → Connect to Server
-   3. Enter:
-      smb://{host}/{config.share_name}
-   4. Enter credentials when prompted
+🪟 WINDOWS - Connect from File Explorer
+    ────────────────────────────────────
+    1. Open File Explorer
+    2. Click in the address bar and type:
+       \\\\{host}\\{config.share_name}
+    3. Press Enter
+    4. When prompted for credentials:
+       • Username: {config.username}
+       • Password: {config.password}
+    5. Check "Remember my credentials"
+    
+    💡 To add as a permanent drive letter:
+       • Right-click "This PC" → "Map network drive"
+       • Choose a letter (e.g., P: for Paperless)
+       • Enter: \\\\{host}\\{config.share_name}
+       • Check "Connect using different credentials"
 
-🐧 LINUX:
-   GUI: Open Files → Other Locations → Connect to Server
-        Enter: smb://{host}/{config.share_name}
-   
-   Terminal mount:
-        sudo mount -t cifs //{host}/{config.share_name} /mnt/paperless \\
-          -o username={config.username},password={config.password}
+🍎 MAC - Connect from Finder
+    ─────────────────────────
+    1. Open Finder
+    2. Press Cmd+K (or menu: Go → Connect to Server)
+    3. Enter: smb://{host}/{config.share_name}
+    4. Click Connect
+    5. Enter credentials when prompted
+
+🐧 LINUX - Connect via File Manager
+    ─────────────────────────────────
+    GUI:  Files → Other Locations → "Connect to Server"
+          Enter: smb://{host}/{config.share_name}
+    
+    Terminal:
+          sudo mount -t cifs //{host}/{config.share_name} /mnt/paperless \\
+            -o username={config.username},password={config.password}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ✅ DONE!
-   Drag and drop PDFs into the folder to import into Paperless.
+    Drag and drop PDF/documents into the network folder.
+    Paperless will automatically process them.
 
-═══════════════════════════════════════════════════════════════
-Share Path: \\\\{host}\\{config.share_name}
-Username: {config.username}
-Password: {config.password}
-═══════════════════════════════════════════════════════════════
+🔧 TROUBLESHOOTING
+──────────────────
+• "Network path not found": Check server IP and firewall (port 445)
+• "Access denied": Double-check username and password
+• Slow connection: Samba works best on local/Tailscale networks
 """
 
 
@@ -890,47 +1115,69 @@ def generate_sftp_guide(instance_name: str, config: SFTPConfig,
     
     return f"""
 ╭──────────────────────────────────────────────────────────────╮
-│                    SFTP Setup Guide                          │
+│                     SFTP SETUP GUIDE                         │
 │                  Instance: {instance_name:<30}│
 ╰──────────────────────────────────────────────────────────────╯
 
-CONNECT VIA SFTP
+┌─────────────────────────────────────────────────────────────┐
+│  📋 CREDENTIALS (save these):                               │
+│                                                             │
+│  Host:     {host:<47} │
+│  Port:     {config.port:<47} │
+│  Username: {config.username:<47} │
+│  Password: {config.password:<47} │
+└─────────────────────────────────────────────────────────────┘
 
-💻 COMMAND LINE (Linux/Mac):
-   sftp -P {config.port} {config.username}@{host}
-   Password: {config.password}
-   
-   Then navigate and upload:
-   cd consume
-   put document.pdf
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🪟 WINDOWS (WinSCP or FileZilla):
-   1. Download WinSCP: https://winscp.net/
-   2. New Site:
-      Protocol: SFTP
-      Host: {host}
-      Port: {config.port}
-      Username: {config.username}
-      Password: {config.password}
-   3. Navigate to /consume folder
-   4. Drag files to upload
+🪟 WINDOWS - Using WinSCP or FileZilla
+    ────────────────────────────────────
+    1. Download WinSCP: https://winscp.net/
+       (or FileZilla: https://filezilla-project.org/)
+    
+    2. Create a new connection:
+       • Protocol: SFTP
+       • Host: {host}
+       • Port: {config.port}
+       • Username: {config.username}
+       • Password: {config.password}
+    
+    3. Connect, then navigate to the /consume folder
+    4. Drag and drop files to upload
 
-📱 MOBILE:
-   Use any SFTP client app (e.g., Termius, FE File Explorer)
-   Host: {host}
-   Port: {config.port}
-   Username: {config.username}
-   Password: {config.password}
+🍎 MAC / 🐧 LINUX - Command Line
+    ─────────────────────────────
+    Connect:
+        sftp -P {config.port} {config.username}@{host}
+    
+    Enter password when prompted: {config.password}
+    
+    Upload files:
+        cd consume
+        put document.pdf
+        put *.pdf              # upload all PDFs in current folder
+
+📱 MOBILE - Any SFTP App
+    ─────────────────────
+    Recommended apps: Termius, FE File Explorer, Solid Explorer
+    
+    • Host: {host}
+    • Port: {config.port}
+    • Username: {config.username}
+    • Password: {config.password}
+    • Navigate to /consume and upload files
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ✅ DONE!
-   Upload files to the consume folder to import into Paperless.
+    Upload PDF/documents to the consume folder.
+    Paperless will automatically process them.
 
-═══════════════════════════════════════════════════════════════
-Host: {host}
-Port: {config.port}
-Username: {config.username}
-Password: {config.password}
-═══════════════════════════════════════════════════════════════
+🔧 TROUBLESHOOTING
+──────────────────
+• "Connection refused": Check firewall allows port {config.port}
+• "Permission denied": Verify username and password
+• "Host key verification": Accept the server's fingerprint on first connect
 """
 
 
