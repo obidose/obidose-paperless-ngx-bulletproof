@@ -13,9 +13,12 @@ def copy_helper_scripts() -> None:
     log("Installing Paperless-NGX Bulletproof")
     
     # Copy backup and restore scripts to instance directory
+    stack_dir = Path(cfg.stack_dir)
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    
     for name in ("backup.py", "restore.py"):
         src = BASE_DIR / "lib" / "modules" / name
-        dst = Path(cfg.stack_dir) / name
+        dst = stack_dir / name
         if src.exists():
             dst.write_text(src.read_text())
             dst.chmod(0o755)
