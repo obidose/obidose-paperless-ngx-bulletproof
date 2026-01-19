@@ -38,10 +38,29 @@ paperless
 - Independent backup and restore per instance
 
 ### Backup System
+
+Two backup types:
+
+**Instance backups** - Per-instance snapshots:
 - Full and incremental snapshots uploaded to pCloud
 - Docker image version tracking for reproducible restores
 - Point-in-time recovery from any snapshot
-- System-level backup for disaster recovery
+
+**Whole system backup** - Metadata and system state:
+- Captures overall system configuration and all registered instances
+- Triggers full backup of all instances when created
+- Primary purpose: preserve system metadata (instance list, configurations, settings)
+- On restore: recreates system structure and restores each instance from its LATEST available backup (not the backup from system backup time)
+- System-level restoration on fresh hardware
+
+Each instance snapshot includes:
+- PostgreSQL database dump
+- Incremental tarballs (media, data, export)
+- Environment and compose configuration
+- Docker image versions
+- Manifest with metadata and checksums
+
+This allows full disaster recovery on new hardware: install the system, provide pCloud credentials, restore from system backup to recreate all instances with their latest data.
 
 ### Safe Updates
 - Automatic backup before upgrade
@@ -141,13 +160,6 @@ Configured during installation:
 
 Backups go to: `pcloud:backups/paperless/{instance_name}/`
 
-Each snapshot includes:
-- PostgreSQL database dump
-- Incremental tarballs (media, data, export)
-- Environment and compose configuration
-- Docker image versions
-- Manifest with metadata and checksums
-
 ### Manual Backup
 
 ```bash
@@ -172,6 +184,28 @@ Restore process:
 4. Restores database
 5. Restarts containers
 6. Runs health check
+
+### Disaster Recovery
+
+To recover on fresh hardware after complete system failure:
+
+1. Install Ubuntu 24.04 LTS on new machine
+2. Run the installer with your pCloud credentials:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/obidose/obidose-paperless-ngx-bulletproof/main/paperless.py | sudo python3
+   ```
+3. During installation, provide the same pCloud OAuth token
+4. After installation completes, launch the manager:
+   ```bash
+   paperless
+   ```
+5. Select "Restore from backup" and choose your system backup snapshot
+6. The system will:
+   - Download system metadata (instance list, configurations, settings)
+   - Restore each instance from its LATEST available backup in pCloud
+   - Recreate all instances with their most recent data
+
+System backup preserves metadata. Instance data comes from the most recent instance backups, not from the backup created at system backup time.
 
 ---
 
@@ -352,7 +386,7 @@ pCloud backups remain intact.
 
 ## License
 
-MIT License
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
