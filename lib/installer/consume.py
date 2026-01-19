@@ -34,6 +34,8 @@ class SyncthingConfig:
     folder_label: str = ""
     device_id: str = ""
     api_key: str = ""
+    gui_username: str = ""
+    gui_password: str = ""
     web_ui_port: int = 8384
     sync_port: int = 22000
     
@@ -44,6 +46,8 @@ class SyncthingConfig:
             "folder_label": self.folder_label,
             "device_id": self.device_id,
             "api_key": self.api_key,
+            "gui_username": self.gui_username,
+            "gui_password": self.gui_password,
             "web_ui_port": self.web_ui_port,
             "sync_port": self.sync_port,
         }
@@ -331,7 +335,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
     import urllib.request
     import urllib.error
     
-    # First, fix the GUI address directly in config.xml (more reliable)
+    # First, try to fix the GUI address directly in config.xml
     gui_was_fixed = fix_syncthing_gui_address(config_dir)
     
     api_base = f"http://localhost:{config.web_ui_port}/rest"
@@ -369,6 +373,22 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             current_config = json.loads(response.read().decode())
         
         config_changed = False
+        gui_changed = False
+        desired_gui_addr = "0.0.0.0:8384"
+        gui_config = current_config.get("gui", {})
+        if gui_config.get("address") != desired_gui_addr:
+            gui_config["address"] = desired_gui_addr
+            gui_changed = True
+        if gui_config.get("insecureSkipHostcheck") is not True:
+            gui_config["insecureSkipHostcheck"] = True
+            gui_changed = True
+        if config.gui_username and gui_config.get("user") != config.gui_username:
+            gui_config["user"] = config.gui_username
+            gui_changed = True
+        if config.gui_password and gui_config.get("password") != config.gui_password:
+            gui_config["password"] = config.gui_password
+            gui_changed = True
+        current_config["gui"] = gui_config
         # 1. Check if consume folder exists, create if not
         folder_exists = False
         for folder in current_config.get("folders", []):
@@ -394,8 +414,8 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             config_changed = True
             say(f"Created shared folder: {config.folder_label}")
         
-        # Push updated config if changed (folder creation via API)
-        if config_changed:
+        # Push updated config if changed (folder creation + GUI settings)
+        if config_changed or gui_changed:
             config_data = json.dumps(current_config).encode()
             req = urllib.request.Request(
                 f"{api_base}/config",
@@ -404,10 +424,13 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                 method="PUT"
             )
             urllib.request.urlopen(req, timeout=10)
-            ok("Syncthing folder configured")
+            if config_changed:
+                ok("Syncthing folder configured")
+            if gui_changed:
+                ok("Syncthing GUI configured for external access")
         
-        # If we fixed the GUI address in config.xml, restart to apply
-        if gui_was_fixed:
+        # If we changed GUI settings, restart to apply
+        if gui_was_fixed or gui_changed:
             say("Restarting Syncthing to enable external Web UI access...")
             restart_syncthing_container(instance_name)
             time.sleep(3)
@@ -633,6 +656,8 @@ def create_syncthing_config(instance_name: str, consume_path: Path,
         folder_label=f"{instance_name} Consume",
         device_id="",  # Will be set after container starts
         api_key=generate_secure_password(32),
+        gui_username=f"paperless-{instance_name}",
+        gui_password=generate_secure_password(20),
         web_ui_port=web_ui_port,
         sync_port=sync_port,
     )
@@ -1213,6 +1238,8 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.syncthing.folder_label = env_vars.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
     config.syncthing.device_id = env_vars.get("CONSUME_SYNCTHING_DEVICE_ID", "")
     config.syncthing.api_key = env_vars.get("CONSUME_SYNCTHING_API_KEY", "")
+    config.syncthing.gui_username = env_vars.get("CONSUME_SYNCTHING_GUI_USER", "")
+    config.syncthing.gui_password = env_vars.get("CONSUME_SYNCTHING_GUI_PASSWORD", "")
     config.syncthing.web_ui_port = int(env_vars.get("CONSUME_SYNCTHING_WEB_UI_PORT", "8384"))
     config.syncthing.sync_port = int(env_vars.get("CONSUME_SYNCTHING_SYNC_PORT", "22000"))
     
@@ -1227,6 +1254,18 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.sftp.username = env_vars.get("CONSUME_SFTP_USERNAME", "")
     config.sftp.password = env_vars.get("CONSUME_SFTP_PASSWORD", "")
     config.sftp.port = int(env_vars.get("CONSUME_SFTP_PORT", "2222"))
+    
+    # Ensure GUI credentials exist for Syncthing if enabled
+    if config.syncthing.enabled:
+        updated = False
+        if not config.syncthing.gui_username:
+            config.syncthing.gui_username = "paperless"
+            updated = True
+        if not config.syncthing.gui_password:
+            config.syncthing.gui_password = generate_secure_password(20)
+            updated = True
+        if updated:
+            save_consume_config(config, instance_env_file)
     
     return config
 
@@ -1246,6 +1285,8 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
         "CONSUME_SYNCTHING_FOLDER_LABEL": config.syncthing.folder_label,
         "CONSUME_SYNCTHING_DEVICE_ID": config.syncthing.device_id,
         "CONSUME_SYNCTHING_API_KEY": config.syncthing.api_key,
+        "CONSUME_SYNCTHING_GUI_USER": config.syncthing.gui_username,
+        "CONSUME_SYNCTHING_GUI_PASSWORD": config.syncthing.gui_password,
         "CONSUME_SYNCTHING_WEB_UI_PORT": str(config.syncthing.web_ui_port),
         "CONSUME_SYNCTHING_SYNC_PORT": str(config.syncthing.sync_port),
         # Samba
@@ -1331,6 +1372,13 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
     ────────────────────
     In YOUR Syncthing: Actions → Show ID
     Copy your Device ID (looks like: XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-...)
+
+WEB UI ACCESS (OPTIONAL)
+    ─────────────────────
+    URL: http://{host}:{config.web_ui_port}
+    Username: {config.gui_username or "paperless"}
+    Password: {config.gui_password or "(set on first run)"}
+    Firewall: Allow TCP {config.web_ui_port} if you want external access
 
 3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
     ─────────────────────────────────────────────────────────

@@ -3715,6 +3715,9 @@ class PaperlessManager:
             
             # Ports
             print(box_line(f" Web UI:     http://{local_ip}:{config.syncthing.web_ui_port}"))
+            if config.syncthing.gui_username:
+                print(box_line(f" Web UI Auth: {config.syncthing.gui_username} (see setup guide for password)"))
+            print(box_line(f" Firewall:   Allow TCP {config.syncthing.web_ui_port} for Web UI"))
             print(box_line(f" Sync Port:  {config.syncthing.sync_port} (TCP/UDP)"))
             
             print(draw_box_divider(box_width))
