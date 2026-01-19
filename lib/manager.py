@@ -4164,6 +4164,61 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
+    def _recreate_all_syncthing_containers(self, reason: str) -> None:
+        """Recreate all Syncthing containers to pick up new network bindings.
+        
+        Called automatically when Tailscale connects/disconnects to ensure
+        Syncthing GUI binds to the correct interface.
+        """
+        from lib.installer.consume import (
+            stop_syncthing_container, start_syncthing_container,
+            load_consume_config, get_syncthing_status
+        )
+        from lib.installer.tailscale import get_ip as get_tailscale_ip
+        import time
+        
+        # Find all instances with Syncthing enabled
+        instances = self.instance_manager.list_instances()
+        syncthing_instances = []
+        
+        for inst in instances:
+            config = load_consume_config(inst.env_file)
+            if config.syncthing.enabled:
+                syncthing_instances.append((inst, config))
+        
+        if not syncthing_instances:
+            return
+        
+        say(f"Recreating Syncthing containers ({reason})...")
+        ts_ip = get_tailscale_ip()
+        
+        for inst, config in syncthing_instances:
+            config_dir = inst.stack_dir / "syncthing-config"
+            consume_path = inst.data_root / "consume"
+            
+            say(f"  Recreating syncthing-{inst.name}...")
+            stop_syncthing_container(inst.name)
+            start_syncthing_container(inst.name, config.syncthing, consume_path, config_dir)
+        
+        # Brief wait for containers to stabilize
+        time.sleep(2)
+        
+        # Report status
+        all_ok = True
+        for inst, _ in syncthing_instances:
+            status = get_syncthing_status(inst.name)
+            if status["running"]:
+                if ts_ip:
+                    ok(f"  {inst.name}: bound to Tailscale ({ts_ip}:8384)")
+                else:
+                    ok(f"  {inst.name}: bound to localhost")
+            else:
+                error(f"  {inst.name}: failed to start")
+                all_ok = False
+        
+        if all_ok:
+            ok(f"All Syncthing containers recreated")
+    
     def _factory_reset_syncthing(self, instance: Instance, config) -> None:
         """Factory reset Syncthing - delete all config and start fresh."""
         from lib.installer.consume import (
@@ -6955,6 +7010,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 elif not connected:
                     if tailscale.connect():
                         ok("Connected to Tailscale!")
+                        # Recreate Syncthing containers to bind to Tailscale IP
+                        self._recreate_all_syncthing_containers("Tailscale connected")
                     else:
                         error("Connection failed")
                 else:
@@ -6997,6 +7054,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             elif choice == "5" and connected:
                 if tailscale.disconnect():
                     ok("Disconnected from Tailscale")
+                    # Recreate Syncthing containers to bind to localhost
+                    self._recreate_all_syncthing_containers("Tailscale disconnected")
                 input("\nPress Enter to continue...")
     
     def _tailscale_serve_menu(self, tailscale) -> None:

@@ -316,6 +316,65 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
+def get_syncthing_api_base(config_dir: Optional[Path] = None) -> str:
+    """
+    Get the correct Syncthing API base URL.
+    
+    Syncthing may be bound to either localhost (no Tailscale) or Tailscale IP.
+    This function determines which address actually works by:
+    1. Reading the configured address from config.xml
+    2. Testing if that address responds
+    3. Falling back to alternatives if not
+    
+    This handles all edge cases like Tailscale being installed/uninstalled
+    after Syncthing was already configured.
+    """
+    import re
+    import urllib.request
+    import urllib.error
+    
+    addresses_to_try = []
+    
+    # Priority 1: Check what's actually in config.xml
+    if config_dir:
+        config_file = config_dir / "config.xml"
+        if config_file.exists():
+            try:
+                content = config_file.read_text()
+                match = re.search(r'<address>([^<]+)</address>', content)
+                if match:
+                    gui_addr = match.group(1).strip()
+                    if gui_addr and ':' in gui_addr:
+                        addresses_to_try.append(f"http://{gui_addr}/rest")
+            except:
+                pass
+    
+    # Priority 2: Current Tailscale IP (if available)
+    from .tailscale import get_ip as get_tailscale_ip
+    tailscale_ip = get_tailscale_ip()
+    if tailscale_ip:
+        ts_url = f"http://{tailscale_ip}:8384/rest"
+        if ts_url not in addresses_to_try:
+            addresses_to_try.append(ts_url)
+    
+    # Priority 3: Localhost fallback (always try this)
+    localhost_url = "http://127.0.0.1:8384/rest"
+    if localhost_url not in addresses_to_try:
+        addresses_to_try.append(localhost_url)
+    
+    # Test each address to find one that works
+    for url in addresses_to_try:
+        try:
+            req = urllib.request.Request(f"{url}/system/ping", method="GET")
+            urllib.request.urlopen(req, timeout=2)
+            return url  # This one works!
+        except:
+            continue
+    
+    # None responded - return the first one (will fail but with appropriate error)
+    return addresses_to_try[0] if addresses_to_try else localhost_url
+
+
 def fix_syncthing_gui_address(config_dir: Path) -> str:
     """
     Fix Syncthing GUI to listen on Tailscale interface only (secure).
@@ -400,7 +459,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
     # Fix the GUI address in config.xml (binds to Tailscale IP for secure access)
     fix_syncthing_gui_address(config_dir)
     
-    api_base = "http://localhost:8384/rest"
+    api_base = get_syncthing_api_base(config_dir)
     
     # Wait for API to be available and get API key
     api_key = None
@@ -496,7 +555,7 @@ def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = "http://localhost:8384/rest"
+    api_base = get_syncthing_api_base(config_dir)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -563,7 +622,7 @@ def get_pending_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = "http://localhost:8384/rest"
+    api_base = get_syncthing_api_base(config_dir)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -604,7 +663,7 @@ def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = "http://localhost:8384/rest"
+    api_base = get_syncthing_api_base(config_dir)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -655,7 +714,7 @@ def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = "http://localhost:8384/rest"
+    api_base = get_syncthing_api_base(config_dir)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
