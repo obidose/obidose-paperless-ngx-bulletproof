@@ -34,6 +34,7 @@ class SyncthingConfig:
     folder_label: str = ""
     device_id: str = ""
     api_key: str = ""
+    gui_enabled: bool = False
     gui_username: str = ""
     gui_password: str = ""
     web_ui_port: int = 8384
@@ -46,6 +47,7 @@ class SyncthingConfig:
             "folder_label": self.folder_label,
             "device_id": self.device_id,
             "api_key": self.api_key,
+            "gui_enabled": self.gui_enabled,
             "gui_username": self.gui_username,
             "gui_password": self.gui_password,
             "web_ui_port": self.web_ui_port,
@@ -259,7 +261,7 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
-def fix_syncthing_gui_address(config_dir: Path) -> bool:
+def fix_syncthing_gui_address(config_dir: Path, gui_enabled: bool) -> bool:
     """
     Fix Syncthing GUI to listen on all interfaces by modifying config.xml directly.
     
@@ -283,7 +285,7 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
     
     try:
         content = config_file.read_text()
-        desired = "0.0.0.0:8384"
+        desired = "0.0.0.0:8384" if gui_enabled else "127.0.0.1:8384"
         changed = False
         
         # Update GUI listen address inside <gui> block
@@ -297,18 +299,19 @@ def fix_syncthing_gui_address(config_dir: Path) -> bool:
         else:
             warn("GUI address tag not found in config.xml")
         
-        # Ensure host check is disabled for external access
-        if "<insecureSkipHostcheck>true</insecureSkipHostcheck>" not in content:
+        # Ensure host check aligns with GUI mode
+        desired_hostcheck = "true" if gui_enabled else "false"
+        if f"<insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>" not in content:
             gui_block_pattern = re.compile(r"(<gui[^>]*>)(.*?)(</gui>)", re.S)
             gui_match = gui_block_pattern.search(content)
             if gui_match:
                 gui_inner = gui_match.group(2)
                 if "<insecureSkipHostcheck>" in gui_inner:
                     gui_inner = re.sub(r"<insecureSkipHostcheck>.*?</insecureSkipHostcheck>",
-                                       "<insecureSkipHostcheck>true</insecureSkipHostcheck>",
+                                       f"<insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>",
                                        gui_inner)
                 else:
-                    gui_inner = gui_inner + "\n    <insecureSkipHostcheck>true</insecureSkipHostcheck>"
+                    gui_inner = gui_inner + f"\n    <insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>"
                 content = gui_block_pattern.sub(r"\1" + gui_inner + r"\3", content, count=1)
                 changed = True
         
@@ -336,7 +339,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
     import urllib.error
     
     # First, try to fix the GUI address directly in config.xml
-    gui_was_fixed = fix_syncthing_gui_address(config_dir)
+    gui_was_fixed = fix_syncthing_gui_address(config_dir, config.gui_enabled)
     
     api_base = f"http://localhost:{config.web_ui_port}/rest"
     
@@ -374,20 +377,35 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
         
         config_changed = False
         gui_changed = False
-        desired_gui_addr = "0.0.0.0:8384"
         gui_config = current_config.get("gui", {})
-        if gui_config.get("address") != desired_gui_addr:
-            gui_config["address"] = desired_gui_addr
-            gui_changed = True
-        if gui_config.get("insecureSkipHostcheck") is not True:
-            gui_config["insecureSkipHostcheck"] = True
-            gui_changed = True
-        if config.gui_username and gui_config.get("user") != config.gui_username:
-            gui_config["user"] = config.gui_username
-            gui_changed = True
-        if config.gui_password and gui_config.get("password") != config.gui_password:
-            gui_config["password"] = config.gui_password
-            gui_changed = True
+        if config.gui_enabled:
+            desired_gui_addr = "0.0.0.0:8384"
+            if gui_config.get("address") != desired_gui_addr:
+                gui_config["address"] = desired_gui_addr
+                gui_changed = True
+            if gui_config.get("insecureSkipHostcheck") is not True:
+                gui_config["insecureSkipHostcheck"] = True
+                gui_changed = True
+            if config.gui_username and gui_config.get("user") != config.gui_username:
+                gui_config["user"] = config.gui_username
+                gui_changed = True
+            if config.gui_password and gui_config.get("password") != config.gui_password:
+                gui_config["password"] = config.gui_password
+                gui_changed = True
+        else:
+            desired_gui_addr = "127.0.0.1:8384"
+            if gui_config.get("address") != desired_gui_addr:
+                gui_config["address"] = desired_gui_addr
+                gui_changed = True
+            if gui_config.get("insecureSkipHostcheck") is not False:
+                gui_config["insecureSkipHostcheck"] = False
+                gui_changed = True
+            if gui_config.get("user"):
+                gui_config["user"] = ""
+                gui_changed = True
+            if gui_config.get("password"):
+                gui_config["password"] = ""
+                gui_changed = True
         current_config["gui"] = gui_config
         # 1. Check if consume folder exists, create if not
         folder_exists = False
@@ -656,8 +674,9 @@ def create_syncthing_config(instance_name: str, consume_path: Path,
         folder_label=f"{instance_name} Consume",
         device_id="",  # Will be set after container starts
         api_key=generate_secure_password(32),
-        gui_username=f"paperless-{instance_name}",
-        gui_password=generate_secure_password(20),
+        gui_enabled=False,
+        gui_username="",
+        gui_password="",
         web_ui_port=web_ui_port,
         sync_port=sync_port,
     )
@@ -1238,6 +1257,7 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.syncthing.folder_label = env_vars.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
     config.syncthing.device_id = env_vars.get("CONSUME_SYNCTHING_DEVICE_ID", "")
     config.syncthing.api_key = env_vars.get("CONSUME_SYNCTHING_API_KEY", "")
+    config.syncthing.gui_enabled = env_vars.get("CONSUME_SYNCTHING_GUI_ENABLED", "").lower() == "true"
     config.syncthing.gui_username = env_vars.get("CONSUME_SYNCTHING_GUI_USER", "")
     config.syncthing.gui_password = env_vars.get("CONSUME_SYNCTHING_GUI_PASSWORD", "")
     config.syncthing.web_ui_port = int(env_vars.get("CONSUME_SYNCTHING_WEB_UI_PORT", "8384"))
@@ -1255,8 +1275,8 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.sftp.password = env_vars.get("CONSUME_SFTP_PASSWORD", "")
     config.sftp.port = int(env_vars.get("CONSUME_SFTP_PORT", "2222"))
     
-    # Ensure GUI credentials exist for Syncthing if enabled
-    if config.syncthing.enabled:
+    # Ensure GUI credentials exist only if GUI is enabled
+    if config.syncthing.enabled and config.syncthing.gui_enabled:
         updated = False
         if not config.syncthing.gui_username:
             config.syncthing.gui_username = "paperless"
@@ -1285,6 +1305,7 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
         "CONSUME_SYNCTHING_FOLDER_LABEL": config.syncthing.folder_label,
         "CONSUME_SYNCTHING_DEVICE_ID": config.syncthing.device_id,
         "CONSUME_SYNCTHING_API_KEY": config.syncthing.api_key,
+        "CONSUME_SYNCTHING_GUI_ENABLED": str(config.syncthing.gui_enabled).lower(),
         "CONSUME_SYNCTHING_GUI_USER": config.syncthing.gui_username,
         "CONSUME_SYNCTHING_GUI_PASSWORD": config.syncthing.gui_password,
         "CONSUME_SYNCTHING_WEB_UI_PORT": str(config.syncthing.web_ui_port),
@@ -1375,10 +1396,11 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
 
 WEB UI ACCESS (OPTIONAL)
     ─────────────────────
-    URL: http://{host}:{config.web_ui_port}
-    Username: {config.gui_username or "paperless"}
-    Password: {config.gui_password or "(set on first run)"}
-    Firewall: Allow TCP {config.web_ui_port} if you want external access
+    Status: {"ENABLED" if config.gui_enabled else "DISABLED (local only)"}
+    {f"URL: http://{host}:{config.web_ui_port}" if config.gui_enabled else ""}
+    {f"Username: {config.gui_username}" if config.gui_enabled else ""}
+    {f"Password: {config.gui_password}" if config.gui_enabled else ""}
+    {f"Firewall: Allow TCP {config.web_ui_port} for external access" if config.gui_enabled else ""}
 
 3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
     ─────────────────────────────────────────────────────────

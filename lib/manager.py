@@ -3714,10 +3714,13 @@ class PaperlessManager:
                 print(box_line(f" Device ID:  {colorize('Not available', Colors.RED)}"))
             
             # Ports
-            print(box_line(f" Web UI:     http://{local_ip}:{config.syncthing.web_ui_port}"))
-            if config.syncthing.gui_username:
-                print(box_line(f" Web UI Auth: {config.syncthing.gui_username} (see setup guide for password)"))
-            print(box_line(f" Firewall:   Allow TCP {config.syncthing.web_ui_port} for Web UI"))
+            if config.syncthing.gui_enabled:
+                print(box_line(f" Web UI:     http://{local_ip}:{config.syncthing.web_ui_port}"))
+                if config.syncthing.gui_username:
+                    print(box_line(f" Web UI Auth: {config.syncthing.gui_username} (see setup guide for password)"))
+                print(box_line(f" Firewall:   Allow TCP {config.syncthing.web_ui_port} for Web UI"))
+            else:
+                print(box_line(" Web UI:     Disabled (local only)"))
             print(box_line(f" Sync Port:  {config.syncthing.sync_port} (TCP/UDP)"))
             
             print(draw_box_divider(box_width))
@@ -3787,9 +3790,13 @@ class PaperlessManager:
             print(colorize("  ── Help & Troubleshooting ──", Colors.CYAN))
             print(f"  {colorize('3)', Colors.BOLD)} View setup guide")
             print(f"  {colorize('4)', Colors.BOLD)} View full logs")
-            print(f"  {colorize('5)', Colors.BOLD)} Restart container")
-            print(f"  {colorize('6)', Colors.BOLD)} Recreate container (fixes Web UI access)")
-            print(f"  {colorize('7)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
+            if config.syncthing.gui_enabled:
+                print(f"  {colorize('5)', Colors.BOLD)} Disable Web UI (external)")
+            else:
+                print(f"  {colorize('5)', Colors.BOLD)} Enable Web UI (external)")
+            print(f"  {colorize('6)', Colors.BOLD)} Restart container")
+            print(f"  {colorize('7)', Colors.BOLD)} Recreate container (apply Web UI settings)")
+            print(f"  {colorize('8)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
             print()
             
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
@@ -3811,10 +3818,15 @@ class PaperlessManager:
             elif choice == "4":
                 self._view_syncthing_logs(instance, config)
             elif choice == "5":
-                self._restart_syncthing(instance, config)
+                if config.syncthing.gui_enabled:
+                    self._disable_syncthing_webui(instance, config)
+                else:
+                    self._enable_syncthing_webui(instance, config)
             elif choice == "6":
-                self._recreate_syncthing(instance, config)
+                self._restart_syncthing(instance, config)
             elif choice == "7":
+                self._recreate_syncthing(instance, config)
+            elif choice == "8":
                 self._factory_reset_syncthing(instance, config)
             else:
                 warn("Invalid option")
@@ -3930,6 +3942,39 @@ class PaperlessManager:
                 else:
                     print(line)
         
+        input("\nPress Enter to continue...")
+
+    def _enable_syncthing_webui(self, instance: Instance, config) -> None:
+        """Enable external Syncthing Web UI with credentials."""
+        from lib.installer.consume import initialize_syncthing, save_consume_config, generate_secure_password
+        print()
+        warn("Enabling the Web UI exposes Syncthing on an HTTP port.")
+        warn("Only do this if you trust the network and open the firewall carefully.")
+        print()
+        if not confirm("Enable Syncthing Web UI (external)?", False):
+            return
+        config.syncthing.gui_enabled = True
+        if not config.syncthing.gui_username:
+            config.syncthing.gui_username = "paperless"
+        if not config.syncthing.gui_password:
+            config.syncthing.gui_password = generate_secure_password(20)
+        save_consume_config(config, instance.env_file)
+        initialize_syncthing(instance.name, config.syncthing, instance.stack_dir / "syncthing-config")
+        ok("Web UI enabled.")
+        say(f"Username: {config.syncthing.gui_username}")
+        say(f"Password: {config.syncthing.gui_password}")
+        input("\nPress Enter to continue...")
+
+    def _disable_syncthing_webui(self, instance: Instance, config) -> None:
+        """Disable external Syncthing Web UI."""
+        from lib.installer.consume import initialize_syncthing, save_consume_config
+        print()
+        if not confirm("Disable Syncthing Web UI (external)?", False):
+            return
+        config.syncthing.gui_enabled = False
+        save_consume_config(config, instance.env_file)
+        initialize_syncthing(instance.name, config.syncthing, instance.stack_dir / "syncthing-config")
+        ok("Web UI disabled (local only).")
         input("\nPress Enter to continue...")
     
     def _restart_syncthing(self, instance: Instance, config) -> None:
