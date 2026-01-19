@@ -255,6 +255,109 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
+def initialize_syncthing(instance_name: str, config: SyncthingConfig,
+                         config_dir: Path) -> bool:
+    """
+    Initialize Syncthing with the consume folder and proper settings.
+    
+    This should be called after the container starts. It:
+    1. Sets the GUI to listen on 0.0.0.0:8384 (accessible externally)
+    2. Creates the consume folder in Syncthing's config
+    
+    Without this, Syncthing won't have a folder to share with connected devices.
+    """
+    import time
+    import urllib.request
+    import urllib.error
+    
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    
+    # Wait for API to be available and get API key
+    api_key = None
+    for attempt in range(30):
+        api_key = get_syncthing_api_key(config_dir)
+        if api_key:
+            break
+        time.sleep(1)
+    
+    if not api_key:
+        warn("Could not get Syncthing API key - initialization skipped")
+        return False
+    
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Wait for API to be ready
+        for attempt in range(30):
+            try:
+                req = urllib.request.Request(f"{api_base}/system/status", headers=headers)
+                urllib.request.urlopen(req, timeout=5)
+                break
+            except:
+                time.sleep(1)
+        
+        # Get current config
+        req = urllib.request.Request(f"{api_base}/config", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            current_config = json.loads(response.read().decode())
+        
+        config_changed = False
+        
+        # 1. Set GUI to listen on all interfaces (for external access)
+        if "gui" in current_config:
+            current_address = current_config["gui"].get("address", "127.0.0.1:8384")
+            if current_address.startswith("127.0.0.1"):
+                current_config["gui"]["address"] = "0.0.0.0:8384"
+                config_changed = True
+                say("Enabled Web UI external access")
+        
+        # 2. Check if consume folder exists, create if not
+        folder_exists = False
+        for folder in current_config.get("folders", []):
+            if folder.get("id") == config.folder_id:
+                folder_exists = True
+                break
+        
+        if not folder_exists:
+            # Create the consume folder
+            current_config.setdefault("folders", []).append({
+                "id": config.folder_id,
+                "label": config.folder_label,
+                "path": "/var/syncthing/data/consume",
+                "type": "sendreceive",
+                "devices": [{"deviceID": config.device_id}] if config.device_id else [],
+                "rescanIntervalS": 60,
+                "fsWatcherEnabled": True,
+                "fsWatcherDelayS": 10,
+                "autoNormalize": True,
+                "ignorePerms": False,
+                "ignoreDelete": False,
+            })
+            config_changed = True
+            say(f"Created shared folder: {config.folder_label}")
+        
+        # Push updated config if changed
+        if config_changed:
+            config_data = json.dumps(current_config).encode()
+            req = urllib.request.Request(
+                f"{api_base}/config",
+                data=config_data,
+                headers=headers,
+                method="PUT"
+            )
+            urllib.request.urlopen(req, timeout=10)
+            ok("Syncthing initialized successfully")
+        
+        return True
+        
+    except Exception as e:
+        warn(f"Could not initialize Syncthing: {e}")
+        return False
+
+
 def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
                             config_dir: Path, remote_device_id: str, 
                             device_name: str = "User Device") -> bool:
@@ -541,6 +644,9 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
             if device_id:
                 config.device_id = device_id
                 ok(f"Syncthing device ID: {device_id}")
+                
+                # Initialize Syncthing with consume folder and Web UI access
+                initialize_syncthing(instance_name, config, config_dir)
                 return True
         
         # Container is running but we can't get device ID
