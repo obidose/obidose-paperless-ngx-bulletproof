@@ -3711,13 +3711,15 @@ class PaperlessManager:
             else:
                 print(box_line(f" Device ID:  {colorize('Not available', Colors.RED)}"))
             
-            # Web UI access info - Tailscale only for security
-            from lib.installer.tailscale import get_ip as get_tailscale_ip
+            # Web UI access info
+            from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
             ts_ip = get_tailscale_ip()
             if ts_ip:
-                print(box_line(f" Web UI:     http://{ts_ip}:8384 (Tailscale only)"))
+                print(box_line(f" Web UI:     http://{ts_ip}:8384 (Tailscale)"))
+            elif is_tailscale_installed():
+                print(box_line(f" Web UI:     {colorize('Tailscale not connected', Colors.YELLOW)}"))
             else:
-                print(box_line(f" Web UI:     {colorize('Local only (no Tailscale)', Colors.YELLOW)}"))
+                print(box_line(f" Web UI:     localhost only (install Tailscale for remote access)"))
             print(box_line(f" Sync Port:  {config.syncthing.sync_port} (TCP/UDP)"))
             
             print(draw_box_divider(box_width))

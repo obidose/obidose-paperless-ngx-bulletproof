@@ -1287,6 +1287,20 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
 
 # ─── Setup Guides Generation ─────────────────────────────────────────────────
 
+def _get_webui_access_text(tailscale_ip: Optional[str]) -> str:
+    """Generate Web UI access text based on Tailscale availability."""
+    if tailscale_ip:
+        return f"""URL: http://{tailscale_ip}:8384 (via Tailscale)
+    The Web UI is accessible to devices on your Tailscale network.
+    No authentication needed - Tailscale provides the security."""
+    else:
+        return """URL: http://localhost:8384 (local access only)
+    Without Tailscale, Web UI is bound to localhost for security.
+    To access remotely, use SSH port forwarding:
+      ssh -L 8384:localhost:8384 user@server
+    Then open http://localhost:8384 in your browser."""
+
+
 def generate_syncthing_guide(instance_name: str, config: SyncthingConfig,
                               tailscale_ip: Optional[str] = None) -> str:
     """Generate setup guide for Syncthing."""
@@ -1329,11 +1343,9 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
     In YOUR Syncthing: Actions → Show ID
     Copy your Device ID (looks like: XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-...)
 
-WEB UI ACCESS (TAILSCALE ONLY)
-    ────────────────────────────
-    The Web UI is only accessible via Tailscale for security (no HTTP to public internet).
-    {f"URL: http://{host}:8384" if tailscale_ip else "Not available (Tailscale not connected)"}
-    Note: No authentication is set by default. The Tailscale network provides security.
+WEB UI ACCESS
+    ─────────────
+    {_get_webui_access_text(tailscale_ip)}
 
 3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
     ─────────────────────────────────────────────────────────
@@ -1365,13 +1377,17 @@ WEB UI ACCESS (TAILSCALE ONLY)
 Server Device ID: {device_id_display}
 Folder Name:      {config.folder_label}
 Sync Port:        {config.sync_port} (TCP/UDP)
-Web UI:           {f"http://{host}:8384" if tailscale_ip else "localhost:8384 only"}
+Web UI:           {f"http://{host}:8384 (Tailscale)" if tailscale_ip else "localhost:8384 (SSH tunnel)"}
 
 🔒 SECURITY NOTE
 ────────────────
 Both sides must explicitly add each other - this prevents unauthorized access.
 Only share Device IDs with people you trust to upload documents.
-"""
+{'' if tailscale_ip else '''
+💡 Want remote Web UI access? Install Tailscale!
+   Run the installer again and select the Tailscale option.
+   Or use SSH: ssh -L 8384:localhost:8384 user@your-server
+'''}"""
 
 
 def generate_samba_guide(instance_name: str, config: SambaConfig,
