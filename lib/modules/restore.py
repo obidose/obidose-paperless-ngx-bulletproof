@@ -261,8 +261,44 @@ def main() -> None:
             warn(f"Could not restart Syncthing: {e}")
 
 
+def _refresh_globals_from_env():
+    """Re-read global configuration from environment variables.
+    
+    This must be called when using restore_snapshot() programmatically
+    because Python caches module globals at import time. Without this,
+    restoring multiple instances in sequence would use the first instance's
+    paths for all subsequent instances.
+    """
+    global INSTANCE_NAME, PROJECT_NAME, STACK_DIR, DATA_ROOT, COMPOSE_FILE
+    global RCLONE_REMOTE_NAME, RCLONE_REMOTE_PATH, POSTGRES_DB, POSTGRES_USER, REMOTE, ENV_FILE
+    
+    ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
+    
+    # Load env file if it exists to get additional settings
+    if ENV_FILE.exists():
+        load_env_to_environ(ENV_FILE)
+    
+    INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
+    PROJECT_NAME = f"paperless-{INSTANCE_NAME}"
+    STACK_DIR = Path(os.environ.get("STACK_DIR", f"/home/docker/{INSTANCE_NAME}-setup"))
+    DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
+    COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
+    RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+    RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
+    POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
+    POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
+    REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+
+
 def restore_snapshot(snapshot_name: str) -> None:
-    """Entry point for restoring a specific snapshot."""
+    """Entry point for restoring a specific snapshot.
+    
+    Note: This refreshes all globals from environment before running,
+    making it safe to call multiple times for different instances.
+    """
+    # Re-read globals from environment (critical for multi-instance restore!)
+    _refresh_globals_from_env()
+    
     sys.argv = ["restore.py", snapshot_name]
     main()
 
