@@ -250,10 +250,15 @@ class Config:
 
     rclone_remote_name: str = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
     rclone_remote_path: str = os.environ.get("RCLONE_REMOTE_PATH", "backups/paperless/paperless")
-    retention_days: str = os.environ.get("RETENTION_DAYS", "30")
+    
+    # Backup schedule (incremental 6h, full weekly, archive monthly)
+    cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 */6 * * *")
     cron_full_time: str = os.environ.get("CRON_FULL_TIME", "30 3 * * 0")
-    cron_incr_time: str = os.environ.get("CRON_INCR_TIME", "0 0 * * *")
-    cron_archive_time: str = os.environ.get("CRON_ARCHIVE_TIME", "")
+    cron_archive_time: str = os.environ.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
+    
+    # Retention policy (keep all for 30 days, monthly archives for 6 months)
+    retention_days: str = os.environ.get("RETENTION_DAYS", "30")
+    retention_monthly_days: str = os.environ.get("RETENTION_MONTHLY_DAYS", "180")
 
     env_backup_mode: str = os.environ.get("ENV_BACKUP_MODE", "openssl")
     env_backup_passphrase_file: str = os.environ.get("ENV_BACKUP_PASSPHRASE_FILE", "/root/.paperless_env_pass")

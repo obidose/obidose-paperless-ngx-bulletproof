@@ -132,10 +132,15 @@ def write_env_file() -> None:
 
         RCLONE_REMOTE_NAME={cfg.rclone_remote_name}
         RCLONE_REMOTE_PATH={cfg.rclone_remote_path}
-        RETENTION_DAYS={cfg.retention_days}
-        CRON_FULL_TIME={cfg.cron_full_time}
+        
+        # Backup schedule (incr 6h, full weekly, archive monthly)
         CRON_INCR_TIME={cfg.cron_incr_time}
+        CRON_FULL_TIME={cfg.cron_full_time}
         CRON_ARCHIVE_TIME={cfg.cron_archive_time}
+        
+        # Retention (all backups for 30d, monthly archives for 6mo)
+        RETENTION_DAYS={cfg.retention_days}
+        RETENTION_MONTHLY_DAYS={cfg.retention_monthly_days}
         """
     ).strip() + "\n"
     Path(cfg.env_file).write_text(content)
@@ -312,8 +317,18 @@ def bring_up_stack() -> None:
 
 
 def install_cron_backup() -> None:
+    """
+    Install backup cron jobs for an instance.
+    
+    Default schedule:
+    - Incremental: every 6 hours
+    - Full: weekly (Sunday 3:30 AM)
+    - Archive: monthly (1st of month 4:00 AM)
+    
+    Retention cleanup runs automatically after each backup.
+    """
     log(
-        f"Installing backup cron (full: {cfg.cron_full_time}, incr: {cfg.cron_incr_time}, archive: {cfg.cron_archive_time or 'disabled'})"
+        f"Installing backup cron (incr: {cfg.cron_incr_time}, full: {cfg.cron_full_time}, archive: {cfg.cron_archive_time or 'disabled'})"
     )
     crontab = Path("/etc/crontab")
     lines = [
@@ -321,18 +336,28 @@ def install_cron_backup() -> None:
         for l in (crontab.read_text().splitlines() if crontab.exists() else [])
         if f"{cfg.stack_dir}/backup.py" not in l
     ]
-    full_line = (
-        f"{cfg.cron_full_time} root {cfg.stack_dir}/backup.py full >> {cfg.stack_dir}/backup.log 2>&1"
-    )
-    incr_line = (
-        f"{cfg.cron_incr_time} root {cfg.stack_dir}/backup.py incr >> {cfg.stack_dir}/backup.log 2>&1"
-    )
-    lines.extend([full_line, incr_line])
+    
+    # Incremental backup (most frequent - every 6 hours by default)
+    if cfg.cron_incr_time:
+        incr_line = (
+            f"{cfg.cron_incr_time} root {cfg.stack_dir}/backup.py incr >> {cfg.stack_dir}/backup.log 2>&1"
+        )
+        lines.append(incr_line)
+    
+    # Full backup (weekly by default)
+    if cfg.cron_full_time:
+        full_line = (
+            f"{cfg.cron_full_time} root {cfg.stack_dir}/backup.py full >> {cfg.stack_dir}/backup.log 2>&1"
+        )
+        lines.append(full_line)
+    
+    # Archive backup (monthly by default - long-term retention)
     if cfg.cron_archive_time:
         archive_line = (
             f"{cfg.cron_archive_time} root {cfg.stack_dir}/backup.py archive >> {cfg.stack_dir}/backup.log 2>&1"
         )
         lines.append(archive_line)
+    
     crontab.write_text("\n".join(lines) + "\n")
     subprocess.run(["systemctl", "restart", "cron"], check=True)
 

@@ -52,7 +52,12 @@ RCLONE_ARCHIVE_PATH = os.environ.get(
 )
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
+
+# Backup retention configuration (smart tiered retention)
+# Keep ALL snapshots (incr/full/archive) for RETENTION_DAYS (default 30)
+# After that, only monthly archives are kept for RETENTION_MONTHLY_DAYS (default 180)
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
+RETENTION_MONTHLY_DAYS = int(os.environ.get("RETENTION_MONTHLY_DAYS", "180"))
 
 REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
@@ -287,26 +292,126 @@ def main() -> Path:
         check=True,
     )
 
-    if mode != "archive" and RETENTION_DAYS > 0:
-        subprocess.run(
-            [
-                "rclone",
-                "delete",
-                REMOTE,
-                "--min-age",
-                f"{RETENTION_DAYS}d",
-                "--fast-list",
-            ],
-            check=False,
-        )
-        subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
+    # Run retention cleanup after backup
+    if RETENTION_DAYS > 0:
+        run_retention_cleanup()
 
     ok("Backup completed")
     return work
 
 
+def list_archive_snapshots() -> list[str]:
+    """List available archive snapshots on remote."""
+    result = subprocess.run(
+        ["rclone", "lsd", ARCHIVE_REMOTE],
+        capture_output=True, text=True, check=False
+    )
+    snapshots = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split()
+        if parts:
+            snapshots.append(parts[-1].rstrip("/"))
+    return sorted(snapshots)
+
+
+def parse_snapshot_date(snap_name: str) -> datetime | None:
+    """Parse snapshot name (YYYY-MM-DD_HH-MM-SS) to datetime."""
+    try:
+        return datetime.strptime(snap_name[:19], "%Y-%m-%d_%H-%M-%S")
+    except (ValueError, IndexError):
+        return None
+
+
+def is_first_of_month(snap_name: str) -> bool:
+    """Check if snapshot was taken on the 1st of the month."""
+    dt = parse_snapshot_date(snap_name)
+    return dt is not None and dt.day == 1
+
+
+def run_retention_cleanup() -> None:
+    """
+    Smart tiered retention cleanup:
+    - Keep ALL snapshots (standard + archive) for RETENTION_DAYS
+    - After RETENTION_DAYS, delete non-archive snapshots
+    - Keep monthly archives (1st of month) for RETENTION_MONTHLY_DAYS
+    - Delete archives older than RETENTION_MONTHLY_DAYS
+    """
+    say("Running retention cleanup...")
+    now = datetime.now()
+    
+    # 1. Clean up standard backups older than RETENTION_DAYS
+    if RETENTION_DAYS > 0:
+        say(f"  Cleaning standard backups older than {RETENTION_DAYS} days...")
+        subprocess.run(
+            [
+                "rclone", "delete", REMOTE,
+                "--min-age", f"{RETENTION_DAYS}d",
+                "--fast-list",
+            ],
+            check=False,
+        )
+        subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
+    
+    # 2. Clean up archive backups with tiered retention
+    if RETENTION_MONTHLY_DAYS > 0:
+        archives = list_archive_snapshots()
+        deleted_count = 0
+        kept_monthly = []
+        
+        for snap in archives:
+            snap_date = parse_snapshot_date(snap)
+            if snap_date is None:
+                continue
+            
+            age_days = (now - snap_date).days
+            
+            # Within RETENTION_DAYS: keep all archives
+            if age_days <= RETENTION_DAYS:
+                continue
+            
+            # Between RETENTION_DAYS and RETENTION_MONTHLY_DAYS: keep only 1st-of-month
+            if age_days <= RETENTION_MONTHLY_DAYS:
+                if is_first_of_month(snap):
+                    kept_monthly.append(snap)
+                    continue
+                else:
+                    # Delete non-monthly archives older than retention period
+                    say(f"  Removing archive {snap} (not monthly, {age_days}d old)...")
+                    subprocess.run(
+                        ["rclone", "purge", f"{ARCHIVE_REMOTE}/{snap}"],
+                        check=False, capture_output=True
+                    )
+                    deleted_count += 1
+            else:
+                # Older than RETENTION_MONTHLY_DAYS: delete even monthly archives
+                say(f"  Removing archive {snap} ({age_days}d old, exceeds {RETENTION_MONTHLY_DAYS}d)...")
+                subprocess.run(
+                    ["rclone", "purge", f"{ARCHIVE_REMOTE}/{snap}"],
+                    check=False, capture_output=True
+                )
+                deleted_count += 1
+        
+        if deleted_count > 0:
+            ok(f"  Removed {deleted_count} old archive(s)")
+        if kept_monthly:
+            say(f"  Kept {len(kept_monthly)} monthly archive(s)")
+    
+    subprocess.run(["rclone", "rmdirs", ARCHIVE_REMOTE, "--leave-root"], check=False)
+    ok("Retention cleanup complete")
+
+
+def cleanup_main() -> None:
+    """Standalone cleanup entry point (can be called via cron or manually)."""
+    run_retention_cleanup()
+
+
 if __name__ == "__main__":
     import shutil
+
+    # Support cleanup mode
+    if len(sys.argv) > 1 and sys.argv[1] == "cleanup":
+        cleanup_main()
+        sys.exit(0)
 
     work = None
     try:

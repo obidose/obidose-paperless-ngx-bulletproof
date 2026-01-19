@@ -2334,7 +2334,10 @@ class PaperlessManager:
             common.cfg.postgres_db = backup_env.get("POSTGRES_DB", common.cfg.postgres_db)
             common.cfg.postgres_user = backup_env.get("POSTGRES_USER", common.cfg.postgres_user)
             common.cfg.postgres_password = backup_env.get("POSTGRES_PASSWORD", common.cfg.postgres_password)
+            
+            # Backup and retention settings
             common.cfg.retention_days = backup_env.get("RETENTION_DAYS", common.cfg.retention_days)
+            common.cfg.retention_monthly_days = backup_env.get("RETENTION_MONTHLY_DAYS", common.cfg.retention_monthly_days)
             
             print()
             say(f"Instance '{colorize(new_name, Colors.BOLD)}' paths:")
@@ -2432,8 +2435,9 @@ class PaperlessManager:
                 common.cfg.enable_tailscale = "no"
             
             # Backup schedule - use original or defaults
-            common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
             common.cfg.cron_incr_time = backup_env.get("CRON_INCR_TIME", "0 */6 * * *")
+            common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
+            common.cfg.cron_archive_time = backup_env.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
             common.cfg.refresh_paths()
             print()
             
@@ -2737,28 +2741,65 @@ class PaperlessManager:
                 say("Backup server is configured. Set your backup schedule:")
                 print()
                 
-                print(f"  {colorize('1)', Colors.BOLD)} Weekly full + 6-hourly incremental {colorize('(recommended)', Colors.GREEN)}")
-                print(f"  {colorize('2)', Colors.BOLD)} Weekly full + daily incremental")
-                print(f"  {colorize('3)', Colors.BOLD)} Custom schedule")
+                print(colorize("  Backup Frequency:", Colors.BOLD))
+                print(f"  {colorize('1)', Colors.BOLD)} Recommended: 6-hour incremental, weekly full, monthly archive")
+                print(f"  {colorize('2)', Colors.BOLD)} Conservative: Daily incremental, weekly full, monthly archive")
+                print(f"  {colorize('3)', Colors.BOLD)} Minimal: Weekly full, monthly archive only")
+                print(f"  {colorize('4)', Colors.BOLD)} Custom schedule")
                 print()
                 
-                backup_choice = get_input("Choose backup plan [1-3]", "1")
+                backup_choice = get_input("Choose backup plan [1-4]", "1")
                 
                 if backup_choice == "1":
-                    common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    # Recommended: comprehensive coverage
                     common.cfg.cron_incr_time = "0 */6 * * *"   # Every 6 hours
-                elif backup_choice == "2":
                     common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    common.cfg.cron_archive_time = "0 4 1 * *"  # 1st of month 4:00 AM
+                elif backup_choice == "2":
+                    # Conservative: less frequent
                     common.cfg.cron_incr_time = "0 0 * * *"     # Daily midnight
+                    common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    common.cfg.cron_archive_time = "0 4 1 * *"  # 1st of month 4:00 AM
+                elif backup_choice == "3":
+                    # Minimal: just full and archive
+                    common.cfg.cron_incr_time = ""              # Disabled
+                    common.cfg.cron_full_time = "30 3 * * 0"    # Sunday 3:30 AM
+                    common.cfg.cron_archive_time = "0 4 1 * *"  # 1st of month 4:00 AM
                 else:
-                    common.prompt_backup_plan()
+                    # Custom - use helper function
+                    self._configure_custom_backup_schedule()
+                
+                print()
+                print(colorize("  Retention Policy:", Colors.BOLD))
+                print(f"  {colorize('1)', Colors.BOLD)} Standard: Keep all for 30 days, monthly archives for 6 months")
+                print(f"  {colorize('2)', Colors.BOLD)} Extended: Keep all for 60 days, monthly archives for 12 months")
+                print(f"  {colorize('3)', Colors.BOLD)} Compact: Keep all for 14 days, monthly archives for 3 months")
+                print(f"  {colorize('4)', Colors.BOLD)} Custom retention")
+                print()
+                
+                retention_choice = get_input("Choose retention policy [1-4]", "1")
+                
+                if retention_choice == "1":
+                    common.cfg.retention_days = "30"
+                    common.cfg.retention_monthly_days = "180"
+                elif retention_choice == "2":
+                    common.cfg.retention_days = "60"
+                    common.cfg.retention_monthly_days = "365"
+                elif retention_choice == "3":
+                    common.cfg.retention_days = "14"
+                    common.cfg.retention_monthly_days = "90"
+                else:
+                    # Custom retention
+                    common.cfg.retention_days = get_input("Keep ALL backups for how many days?", "30")
+                    common.cfg.retention_monthly_days = get_input("Keep monthly archives for how many days?", "180")
                 
                 ok("Backup schedule configured")
             else:
                 warn("Backup server not configured - backups will be disabled")
                 say("Configure from main menu: Configure Backup Server")
-                common.cfg.cron_full_time = ""
                 common.cfg.cron_incr_time = ""
+                common.cfg.cron_full_time = ""
+                common.cfg.cron_archive_time = ""
             print()
             
             # ─── Step 4: Review & Create ──────────────────────────────────────
@@ -2786,6 +2827,19 @@ class PaperlessManager:
             
             if common.cfg.enable_tailscale == "yes":
                 print(box_line(f"           🔐 + Tailscale private access"))
+            
+            # Show backup schedule summary
+            print(box_line(""))
+            if common.cfg.cron_full_time:
+                backup_summary = []
+                if common.cfg.cron_incr_time:
+                    backup_summary.append("incr")
+                backup_summary.append("full")
+                if common.cfg.cron_archive_time:
+                    backup_summary.append("archive")
+                print(box_line(f" Backups:  {' + '.join(backup_summary)}, {common.cfg.retention_days}d retention"))
+            else:
+                print(box_line(f" Backups:  {colorize('Disabled', Colors.YELLOW)}"))
             
             print(box_line(""))
             print(box_line(f" Admin:    {common.cfg.paperless_admin_user}"))
@@ -3283,7 +3337,7 @@ class PaperlessManager:
         input("\nPress Enter to continue...")
     
     def edit_instance(self, instance: Instance) -> None:
-        """Edit instance settings - networking, domain, ports, etc."""
+        """Edit instance settings - networking, domain, ports, backup schedule, etc."""
         while True:
             print_header(f"Edit: {instance.name}")
             
@@ -3298,6 +3352,26 @@ class PaperlessManager:
             print(box_line(f"   Traefik:       {instance.get_env_value('ENABLE_TRAEFIK', 'no')}"))
             print(box_line(f"   Cloudflare:    {instance.get_env_value('ENABLE_CLOUDFLARED', 'no')}"))
             print(box_line(f"   Tailscale:     {instance.get_env_value('ENABLE_TAILSCALE', 'no')}"))
+            print(draw_box_divider(box_width))
+            # Backup schedule info
+            cron_incr = instance.get_env_value('CRON_INCR_TIME', '')
+            cron_full = instance.get_env_value('CRON_FULL_TIME', '')
+            cron_archive = instance.get_env_value('CRON_ARCHIVE_TIME', '')
+            retention = instance.get_env_value('RETENTION_DAYS', '30')
+            retention_monthly = instance.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+            
+            backup_parts = []
+            if cron_incr:
+                backup_parts.append("incr")
+            if cron_full:
+                backup_parts.append("full")
+            if cron_archive:
+                backup_parts.append("archive")
+            backup_str = " + ".join(backup_parts) if backup_parts else "Disabled"
+            
+            print(box_line(f" {colorize('Backup Schedule:', Colors.BOLD)}"))
+            print(box_line(f"   Schedule:      {backup_str}"))
+            print(box_line(f"   Retention:     {retention}d all, {retention_monthly}d monthly"))
             print(draw_box_bottom(box_width))
             print()
             
@@ -3319,6 +3393,9 @@ class PaperlessManager:
                 ("", ""),
                 ("", colorize("Credentials:", Colors.BOLD)),
                 ("6", "  Change admin password"),
+                ("", ""),
+                ("", colorize("Backups:", Colors.BOLD)),
+                ("7", "  Change backup schedule"),
                 ("", ""),
                 ("0", colorize("◀ Back", Colors.CYAN))
             ]
@@ -3346,6 +3423,8 @@ class PaperlessManager:
                 self._toggle_instance_tailscale(instance)
             elif choice == "6":
                 self._edit_instance_admin_password(instance)
+            elif choice == "7":
+                self._edit_instance_backup_schedule(instance)
             else:
                 warn("Invalid option")
     
@@ -3570,6 +3649,276 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
+    def _edit_instance_backup_schedule(self, instance: Instance) -> None:
+        """Change the backup schedule and retention policy for an instance."""
+        print_header(f"Backup Schedule: {instance.name}")
+        
+        # Get current settings
+        cron_incr = instance.get_env_value('CRON_INCR_TIME', '0 */6 * * *')
+        cron_full = instance.get_env_value('CRON_FULL_TIME', '30 3 * * 0')
+        cron_archive = instance.get_env_value('CRON_ARCHIVE_TIME', '0 4 1 * *')
+        retention = instance.get_env_value('RETENTION_DAYS', '30')
+        retention_monthly = instance.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+        
+        # Show current settings
+        box_line, box_width = create_box_helper(62)
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Current Backup Schedule:', Colors.BOLD)}"))
+        print(box_line(f""))
+        print(box_line(f"   Incremental:  {cron_incr or 'Disabled'}"))
+        print(box_line(f"   Full:         {cron_full or 'Disabled'}"))
+        print(box_line(f"   Archive:      {cron_archive or 'Disabled'}"))
+        print(box_line(f""))
+        print(box_line(f" {colorize('Current Retention Policy:', Colors.BOLD)}"))
+        print(box_line(f"   All backups:  {retention} days"))
+        print(box_line(f"   Monthly arch: {retention_monthly} days"))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        options = [
+            ("1", "Change backup frequency preset"),
+            ("2", "Change retention policy preset"),
+            ("3", "Custom schedule (advanced)"),
+            ("4", "Custom retention (advanced)"),
+            ("5", "Disable all backups"),
+            ("6", "Run retention cleanup now"),
+            ("0", colorize("◀ Back", Colors.CYAN))
+        ]
+        print_menu(options)
+        
+        choice = get_input("Select option", "")
+        
+        if choice == "0":
+            return
+        elif choice == "1":
+            self._edit_backup_frequency_preset(instance)
+        elif choice == "2":
+            self._edit_retention_preset(instance)
+        elif choice == "3":
+            self._edit_backup_schedule_custom(instance)
+        elif choice == "4":
+            self._edit_retention_custom(instance)
+        elif choice == "5":
+            self._disable_backups(instance)
+        elif choice == "6":
+            self._run_retention_cleanup(instance)
+        else:
+            warn("Invalid option")
+            input("\nPress Enter to continue...")
+    
+    def _edit_backup_frequency_preset(self, instance: Instance) -> None:
+        """Change backup frequency using preset options."""
+        print()
+        print(colorize("Select Backup Frequency:", Colors.BOLD))
+        print()
+        print(f"  {colorize('1)', Colors.BOLD)} Recommended: 6-hour incremental, weekly full, monthly archive")
+        print(f"  {colorize('2)', Colors.BOLD)} Conservative: Daily incremental, weekly full, monthly archive")
+        print(f"  {colorize('3)', Colors.BOLD)} Minimal: Weekly full, monthly archive only (no incremental)")
+        print(f"  {colorize('4)', Colors.BOLD)} High-frequency: 2-hour incremental, daily full, weekly archive")
+        print()
+        
+        choice = get_input("Select preset [1-4]", "1")
+        
+        if choice == "1":
+            cron_incr = "0 */6 * * *"
+            cron_full = "30 3 * * 0"
+            cron_archive = "0 4 1 * *"
+        elif choice == "2":
+            cron_incr = "0 0 * * *"
+            cron_full = "30 3 * * 0"
+            cron_archive = "0 4 1 * *"
+        elif choice == "3":
+            cron_incr = ""
+            cron_full = "30 3 * * 0"
+            cron_archive = "0 4 1 * *"
+        elif choice == "4":
+            cron_incr = "0 */2 * * *"
+            cron_full = "30 3 * * *"
+            cron_archive = "0 4 * * 0"
+        else:
+            warn("Invalid choice")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Update instance env file
+        self._update_instance_env(instance, "CRON_INCR_TIME", cron_incr)
+        self._update_instance_env(instance, "CRON_FULL_TIME", cron_full)
+        self._update_instance_env(instance, "CRON_ARCHIVE_TIME", cron_archive)
+        
+        # Reinstall cron
+        self._reinstall_backup_cron(instance)
+        ok("Backup frequency updated")
+        input("\nPress Enter to continue...")
+    
+    def _edit_retention_preset(self, instance: Instance) -> None:
+        """Change retention policy using preset options."""
+        print()
+        print(colorize("Select Retention Policy:", Colors.BOLD))
+        print()
+        print(f"  {colorize('1)', Colors.BOLD)} Standard: Keep all for 30 days, monthly archives for 6 months")
+        print(f"  {colorize('2)', Colors.BOLD)} Extended: Keep all for 60 days, monthly archives for 12 months")
+        print(f"  {colorize('3)', Colors.BOLD)} Compact: Keep all for 14 days, monthly archives for 3 months")
+        print(f"  {colorize('4)', Colors.BOLD)} Aggressive: Keep all for 7 days, monthly archives for 1 month")
+        print()
+        
+        choice = get_input("Select preset [1-4]", "1")
+        
+        if choice == "1":
+            retention = "30"
+            retention_monthly = "180"
+        elif choice == "2":
+            retention = "60"
+            retention_monthly = "365"
+        elif choice == "3":
+            retention = "14"
+            retention_monthly = "90"
+        elif choice == "4":
+            retention = "7"
+            retention_monthly = "30"
+        else:
+            warn("Invalid choice")
+            input("\nPress Enter to continue...")
+            return
+        
+        self._update_instance_env(instance, "RETENTION_DAYS", retention)
+        self._update_instance_env(instance, "RETENTION_MONTHLY_DAYS", retention_monthly)
+        
+        ok("Retention policy updated")
+        input("\nPress Enter to continue...")
+    
+    def _edit_backup_schedule_custom(self, instance: Instance) -> None:
+        """Configure custom cron schedules for backups."""
+        print()
+        say("Enter cron expressions (or leave blank to disable)")
+        say("Format: minute hour day-of-month month day-of-week")
+        say("Examples: '0 */6 * * *' = every 6 hours, '30 3 * * 0' = Sunday 3:30 AM")
+        print()
+        
+        current_incr = instance.get_env_value('CRON_INCR_TIME', '0 */6 * * *')
+        current_full = instance.get_env_value('CRON_FULL_TIME', '30 3 * * 0')
+        current_archive = instance.get_env_value('CRON_ARCHIVE_TIME', '0 4 1 * *')
+        
+        cron_incr = get_input(f"Incremental schedule [{current_incr}]", current_incr)
+        cron_full = get_input(f"Full backup schedule [{current_full}]", current_full)
+        cron_archive = get_input(f"Archive schedule [{current_archive}]", current_archive)
+        
+        self._update_instance_env(instance, "CRON_INCR_TIME", cron_incr)
+        self._update_instance_env(instance, "CRON_FULL_TIME", cron_full)
+        self._update_instance_env(instance, "CRON_ARCHIVE_TIME", cron_archive)
+        
+        self._reinstall_backup_cron(instance)
+        ok("Custom backup schedule configured")
+        input("\nPress Enter to continue...")
+    
+    def _edit_retention_custom(self, instance: Instance) -> None:
+        """Configure custom retention periods."""
+        print()
+        say("Retention policy determines how long backups are kept:")
+        say("  • All backups (incr/full/archive) kept for RETENTION_DAYS")
+        say("  • After that, only monthly archives kept for RETENTION_MONTHLY_DAYS")
+        print()
+        
+        current_retention = instance.get_env_value('RETENTION_DAYS', '30')
+        current_monthly = instance.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+        
+        retention = get_input(f"Keep ALL backups for how many days? [{current_retention}]", current_retention)
+        retention_monthly = get_input(f"Keep monthly archives for how many days? [{current_monthly}]", current_monthly)
+        
+        # Validate inputs
+        try:
+            int(retention)
+            int(retention_monthly)
+        except ValueError:
+            error("Invalid number entered")
+            input("\nPress Enter to continue...")
+            return
+        
+        self._update_instance_env(instance, "RETENTION_DAYS", retention)
+        self._update_instance_env(instance, "RETENTION_MONTHLY_DAYS", retention_monthly)
+        
+        ok("Custom retention policy configured")
+        input("\nPress Enter to continue...")
+    
+    def _disable_backups(self, instance: Instance) -> None:
+        """Disable all backup schedules for an instance."""
+        print()
+        warn("This will disable all automatic backups for this instance.")
+        say("You can still run manual backups from the instance menu.")
+        print()
+        
+        if not confirm("Disable automatic backups?", False):
+            return
+        
+        self._update_instance_env(instance, "CRON_INCR_TIME", "")
+        self._update_instance_env(instance, "CRON_FULL_TIME", "")
+        self._update_instance_env(instance, "CRON_ARCHIVE_TIME", "")
+        
+        self._reinstall_backup_cron(instance)
+        ok("Automatic backups disabled")
+        input("\nPress Enter to continue...")
+    
+    def _run_retention_cleanup(self, instance: Instance) -> None:
+        """Run retention cleanup immediately for an instance."""
+        print()
+        say(f"Running retention cleanup for {instance.name}...")
+        
+        try:
+            backup_script = instance.stack_dir / "backup.py"
+            if backup_script.exists():
+                result = subprocess.run(
+                    ["python3", str(backup_script), "cleanup"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={**os.environ, "ENV_FILE": str(instance.env_file)}
+                )
+                if result.returncode == 0:
+                    ok("Retention cleanup completed")
+                    if result.stdout:
+                        print(result.stdout)
+                else:
+                    error("Cleanup failed")
+                    if result.stderr:
+                        print(result.stderr)
+            else:
+                error(f"Backup script not found at {backup_script}")
+        except Exception as e:
+            error(f"Failed to run cleanup: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _reinstall_backup_cron(self, instance: Instance) -> None:
+        """Reinstall backup cron jobs for an instance."""
+        try:
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import common, files
+            
+            # Load instance settings into config
+            common.cfg.instance_name = instance.name
+            common.cfg.stack_dir = str(instance.stack_dir)
+            common.cfg.cron_incr_time = instance.get_env_value("CRON_INCR_TIME", "")
+            common.cfg.cron_full_time = instance.get_env_value("CRON_FULL_TIME", "")
+            common.cfg.cron_archive_time = instance.get_env_value("CRON_ARCHIVE_TIME", "")
+            
+            files.install_cron_backup()
+        except Exception as e:
+            warn(f"Failed to reinstall cron: {e}")
+    
+    def _configure_custom_backup_schedule(self) -> None:
+        """Helper for configuring custom backup schedule during instance creation."""
+        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+        from lib.installer import common
+        
+        print()
+        say("Enter cron expressions (or leave blank to disable)")
+        say("Format: minute hour day-of-month month day-of-week")
+        say("Examples: '0 */6 * * *' = every 6 hours, '30 3 * * 0' = Sunday 3:30 AM")
+        print()
+        
+        common.cfg.cron_incr_time = get_input("Incremental schedule", "0 */6 * * *")
+        common.cfg.cron_full_time = get_input("Full backup schedule", "30 3 * * 0")
+        common.cfg.cron_archive_time = get_input("Archive schedule", "0 4 1 * *")
+
     def _create_cloudflare_service(self, instance_name: str) -> bool:
         """Create and start a systemd service for Cloudflare tunnel."""
         try:
@@ -4443,12 +4792,28 @@ rclone_config: {network_info['rclone']['enabled']}
                         timeout=5
                     )
                     snap_count = len([l for l in snap_result.stdout.splitlines() if l.strip()])
-                    print(f"  {idx}) {name} ({snap_count} snapshots)")
+                    
+                    # Also check archive folder
+                    arch_result = subprocess.run(
+                        ["rclone", "lsd", f"pcloud:backups/paperless/{name}/archive"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5
+                    )
+                    arch_count = len([l for l in arch_result.stdout.splitlines() if l.strip()])
+                    
+                    if arch_count > 0:
+                        print(f"  {idx}) {name} ({snap_count} snapshots, {arch_count} archives)")
+                    else:
+                        print(f"  {idx}) {name} ({snap_count} snapshots)")
                 print()
                 
                 options = [(str(i), f"Explore '{backup_instances[i-1]}'" ) for i in range(1, len(backup_instances) + 1)]
-                options.append((str(len(backup_instances) + 1), colorize("🧹", Colors.YELLOW) + " Clean empty folders (auto)"))
-                options.append((str(len(backup_instances) + 2), colorize("🧹", Colors.YELLOW) + " Clean empty folders (select)"))
+                options.append(("", colorize("─── Maintenance ───", Colors.CYAN)))
+                options.append((str(len(backup_instances) + 1), colorize("🔄", Colors.YELLOW) + " Run retention cleanup (all instances)"))
+                options.append((str(len(backup_instances) + 2), colorize("🧹", Colors.YELLOW) + " Clean empty folders (auto)"))
+                options.append((str(len(backup_instances) + 3), colorize("🧹", Colors.YELLOW) + " Clean empty folders (select)"))
                 options.append(("0", "Back to main menu"))
                 print_menu(options)
                 
@@ -4459,8 +4824,10 @@ rclone_config: {network_info['rclone']['enabled']}
                 elif choice.isdigit() and 1 <= int(choice) <= len(backup_instances):
                     self._explore_instance_backups(backup_instances[int(choice) - 1])
                 elif choice == str(len(backup_instances) + 1):
-                    self._clean_empty_backup_folders()
+                    self._run_global_retention_cleanup()
                 elif choice == str(len(backup_instances) + 2):
+                    self._clean_empty_backup_folders()
+                elif choice == str(len(backup_instances) + 3):
                     self._clean_empty_backup_folders_selective()
                 else:
                     warn("Invalid option")
@@ -4547,8 +4914,9 @@ rclone_config: {network_info['rclone']['enabled']}
                 for i in range(1, len(snapshots) + 1):
                     options.append((str(i), f"View details of snapshot #{i}"))
                 options.append((str(len(snapshots) + 1), colorize("↻", Colors.GREEN) + " Restore to new instance"))
-                options.append((str(len(snapshots) + 2), colorize("✗", Colors.RED) + " Delete snapshot"))
-                options.append((str(len(snapshots) + 3), colorize("🗑", Colors.RED) + " Delete entire backup folder"))
+                options.append((str(len(snapshots) + 2), colorize("🔄", Colors.YELLOW) + " Run retention cleanup"))
+                options.append((str(len(snapshots) + 3), colorize("✗", Colors.RED) + " Delete snapshot"))
+                options.append((str(len(snapshots) + 4), colorize("🗑", Colors.RED) + " Delete entire backup folder"))
                 options.append(("0", colorize("◀ Back", Colors.CYAN)))
                 print_menu(options)
                 
@@ -4561,8 +4929,10 @@ rclone_config: {network_info['rclone']['enabled']}
                 elif choice == str(len(snapshots) + 1):
                     self._restore_from_explorer(instance_name, snapshots)
                 elif choice == str(len(snapshots) + 2):
-                    self._delete_snapshot(instance_name, snapshots)
+                    self._run_instance_retention_cleanup_from_explorer(instance_name)
                 elif choice == str(len(snapshots) + 3):
+                    self._delete_snapshot(instance_name, snapshots)
+                elif choice == str(len(snapshots) + 4):
                     self._delete_instance_backup_folder(instance_name, len(snapshots))
                 else:
                     warn("Invalid option")
@@ -4666,6 +5036,65 @@ rclone_config: {network_info['rclone']['enabled']}
                 print(f"  {colorize('Total:', Colors.BOLD)} {colorize(total, Colors.GREEN)}")
         
         print()
+        input("\nPress Enter to continue...")
+    
+    def _run_global_retention_cleanup(self) -> None:
+        """Run retention cleanup for all configured instances."""
+        print_header("Global Retention Cleanup")
+        
+        # Get all configured instances
+        instances = self.instance_manager.list_instances()
+        
+        if not instances:
+            warn("No instances configured")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Show retention policy summary
+        box_line, box_width = create_box_helper(62)
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Retention Cleanup', Colors.BOLD)}"))
+        print(box_line(f""))
+        print(box_line(f" This will apply retention policy to all instances:"))
+        print(box_line(f"   • Delete standard backups older than RETENTION_DAYS"))
+        print(box_line(f"   • Keep only monthly archives beyond that"))
+        print(box_line(f"   • Delete monthly archives older than RETENTION_MONTHLY_DAYS"))
+        print(box_line(f""))
+        print(box_line(f" Instances to process: {len(instances)}"))
+        for inst in instances:
+            ret_days = inst.get_env_value('RETENTION_DAYS', '30')
+            ret_monthly = inst.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+            print(box_line(f"   • {inst.name}: {ret_days}d / {ret_monthly}d monthly"))
+        print(draw_box_bottom(box_width))
+        print()
+        
+        if not confirm("Run retention cleanup for all instances?", True):
+            return
+        
+        print()
+        for inst in instances:
+            say(f"Processing {inst.name}...")
+            try:
+                backup_script = inst.stack_dir / "backup.py"
+                if backup_script.exists():
+                    result = subprocess.run(
+                        ["python3", str(backup_script), "cleanup"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env={**os.environ, "ENV_FILE": str(inst.env_file)}
+                    )
+                    if result.returncode == 0:
+                        ok(f"  {inst.name}: cleanup complete")
+                    else:
+                        warn(f"  {inst.name}: cleanup failed")
+                else:
+                    warn(f"  {inst.name}: backup script not found")
+            except Exception as e:
+                error(f"  {inst.name}: {e}")
+        
+        print()
+        ok("Global retention cleanup finished")
         input("\nPress Enter to continue...")
 
     def _clean_empty_backup_folders(self) -> None:
@@ -4785,6 +5214,81 @@ rclone_config: {network_info['rclone']['enabled']}
                 say("No changes made")
         except Exception as e:
             error(f"Cleanup failed: {e}")
+        input("\nPress Enter to continue...")
+    
+    def _run_instance_retention_cleanup_from_explorer(self, instance_name: str) -> None:
+        """Run retention cleanup for an instance from the backup explorer."""
+        print_header(f"Retention Cleanup: {instance_name}")
+        
+        # Check if this instance is currently configured locally
+        instances = self.instance_manager.list_instances()
+        local_instance = next((i for i in instances if i.name == instance_name), None)
+        
+        if local_instance:
+            # Use the local instance's settings
+            retention = local_instance.get_env_value('RETENTION_DAYS', '30')
+            retention_monthly = local_instance.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+            
+            say(f"Using local instance settings:")
+            say(f"  • Keep all backups for: {retention} days")
+            say(f"  • Keep monthly archives for: {retention_monthly} days")
+            print()
+            
+            if confirm("Run retention cleanup with these settings?", True):
+                backup_script = local_instance.stack_dir / "backup.py"
+                if backup_script.exists():
+                    say("Running cleanup...")
+                    result = subprocess.run(
+                        ["python3", str(backup_script), "cleanup"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env={**os.environ, "ENV_FILE": str(local_instance.env_file)}
+                    )
+                    if result.returncode == 0:
+                        ok("Retention cleanup complete")
+                        if result.stdout:
+                            print(result.stdout)
+                    else:
+                        error("Cleanup failed")
+                        if result.stderr:
+                            print(result.stderr)
+                else:
+                    error("Backup script not found")
+        else:
+            # Instance not configured locally - offer manual cleanup
+            warn(f"Instance '{instance_name}' is not configured on this system")
+            say("You can specify custom retention settings for cleanup:")
+            print()
+            
+            retention = get_input("Keep all backups for how many days?", "30")
+            retention_monthly = get_input("Keep monthly archives for how many days?", "180")
+            
+            if not confirm(f"Clean up backups older than {retention}d, keep monthly for {retention_monthly}d?", False):
+                input("\nPress Enter to continue...")
+                return
+            
+            # Run cleanup directly using rclone
+            say("Running manual cleanup...")
+            remote_path = f"pcloud:backups/paperless/{instance_name}"
+            
+            try:
+                # Delete standard backups older than retention_days
+                say(f"  Cleaning standard backups older than {retention} days...")
+                subprocess.run(
+                    ["rclone", "delete", remote_path, "--min-age", f"{retention}d", "--fast-list"],
+                    check=False
+                )
+                subprocess.run(["rclone", "rmdirs", remote_path, "--leave-root"], check=False)
+                
+                # For archives, we'd need more complex logic - just inform user
+                say(f"  Note: Archive cleanup requires instance to be configured locally")
+                say(f"         for full monthly retention logic")
+                
+                ok("Basic cleanup complete")
+            except Exception as e:
+                error(f"Cleanup failed: {e}")
+        
         input("\nPress Enter to continue...")
     
     def _restore_from_explorer(self, instance_name: str, snapshots: list) -> None:

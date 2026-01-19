@@ -53,12 +53,18 @@ GITHUB_ARCHIVE_URL = f"https://codeload.github.com/{GITHUB_OWNER}/{GITHUB_REPO}/
 
 DEFAULT_POSTGRES_VERSION = "16"
 DEFAULT_HTTP_PORT = "8000"
-DEFAULT_RETENTION_DAYS = "30"
 
 # Default cron schedules
-DEFAULT_CRON_FULL = "30 3 * * 0"    # Sunday 3:30 AM
-DEFAULT_CRON_INCR = "0 0 * * *"     # Daily midnight
-DEFAULT_CRON_ARCHIVE = ""            # Disabled
+# Incremental every 6 hours, Full weekly on Sunday, Archive monthly on 1st
+DEFAULT_CRON_INCR = "0 */6 * * *"      # Every 6 hours
+DEFAULT_CRON_FULL = "30 3 * * 0"       # Sunday 3:30 AM
+DEFAULT_CRON_ARCHIVE = "0 4 1 * *"     # 1st of month 4:00 AM
+
+# Backup retention policy (smart tiered retention)
+# All backups (full/incremental/archive) kept for full restore flexibility
+DEFAULT_RETENTION_DAYS = "30"          # Keep ALL snapshots for 30 days
+# Monthly archives kept longer for disaster recovery
+DEFAULT_RETENTION_MONTHLY_DAYS = "180" # Keep monthly archives for 6 months
 
 
 # ─── Backup Configuration ─────────────────────────────────────────────────────
