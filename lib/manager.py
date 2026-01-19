@@ -29,6 +29,7 @@ class Colors:
     CYAN = "\033[1;36m"
     MAGENTA = "\033[1;35m"
     BOLD = "\033[1m"
+    DIM = "\033[2m"
     OFF = "\033[0m"
 
 
@@ -3649,30 +3650,105 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
+    def _cron_to_human(self, cron: str) -> str:
+        """Convert a cron expression to human-readable text."""
+        if not cron:
+            return "Not configured"
+        
+        parts = cron.split()
+        if len(parts) != 5:
+            return cron  # Return as-is if invalid
+        
+        minute, hour, day, month, dow = parts
+        
+        # Common patterns for our backup schedules
+        # Incremental: every N hours
+        if hour.startswith('*/'):
+            interval = hour[2:]
+            return f"Every {interval} hours"
+        
+        # Monthly: 1st of month
+        if day == '1' and dow == '*':
+            h = int(hour) if hour.isdigit() else 0
+            m = int(minute) if minute.isdigit() else 0
+            return f"1st of month @ {h:02d}:{m:02d}"
+        
+        # Weekly: specific day of week
+        if dow != '*' and day == '*':
+            days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+            day_name = days[int(dow)] if dow.isdigit() and int(dow) < 7 else dow
+            h = int(hour) if hour.isdigit() else 0
+            m = int(minute) if minute.isdigit() else 0
+            return f"{day_name} @ {h:02d}:{m:02d}"
+        
+        # Daily: specific time each day
+        if day == '*' and dow == '*' and hour.isdigit():
+            h = int(hour)
+            m = int(minute) if minute.isdigit() else 0
+            return f"Daily @ {h:02d}:{m:02d}"
+        
+        # Fallback: return raw cron
+        return cron
+    
     def _edit_instance_backup_schedule(self, instance: Instance) -> None:
         """Change the backup schedule and retention policy for an instance."""
         print_header(f"Backup Schedule: {instance.name}")
         
-        # Get current settings
-        cron_incr = instance.get_env_value('CRON_INCR_TIME', '0 */6 * * *')
-        cron_full = instance.get_env_value('CRON_FULL_TIME', '30 3 * * 0')
-        cron_archive = instance.get_env_value('CRON_ARCHIVE_TIME', '0 4 1 * *')
-        retention = instance.get_env_value('RETENTION_DAYS', '30')
-        retention_monthly = instance.get_env_value('RETENTION_MONTHLY_DAYS', '180')
+        # Get current settings - check if explicitly set or using defaults
+        cron_incr = instance.get_env_value('CRON_INCR_TIME', '')
+        cron_full = instance.get_env_value('CRON_FULL_TIME', '')
+        cron_archive = instance.get_env_value('CRON_ARCHIVE_TIME', '')
+        retention = instance.get_env_value('RETENTION_DAYS', '')
+        retention_monthly = instance.get_env_value('RETENTION_MONTHLY_DAYS', '')
         
-        # Show current settings
+        # Format cron for table display
+        def fmt_cron_parts(val: str) -> tuple[str, str]:
+            """Return (human readable, cron code) tuple."""
+            if not val:
+                return (colorize("Not configured", Colors.YELLOW), "-")
+            human = self._cron_to_human(val)
+            return (human, val)
+        
+        def fmt_retention(val: str, default: str) -> str:
+            if not val:
+                return f"{default} {colorize('(default)', Colors.YELLOW)}"
+            return val
+        
+        # Get formatted parts
+        incr_human, incr_cron = fmt_cron_parts(cron_incr)
+        full_human, full_cron = fmt_cron_parts(cron_full)
+        arch_human, arch_cron = fmt_cron_parts(cron_archive)
+        
+        # Show current settings as a table
         box_line, box_width = create_box_helper(62)
         print(draw_box_top(box_width))
         print(box_line(f" {colorize('Current Backup Schedule:', Colors.BOLD)}"))
         print(box_line(f""))
-        print(box_line(f"   Incremental:  {cron_incr or 'Disabled'}"))
-        print(box_line(f"   Full:         {cron_full or 'Disabled'}"))
-        print(box_line(f"   Archive:      {cron_archive or 'Disabled'}"))
+        # Table header
+        print(box_line(f"   {'Type':<14} {'Schedule':<22} {'Cron'}"))
+        print(box_line(f"   {'-'*14} {'-'*22} {'-'*14}"))
+        # Table rows
+        print(box_line(f"   {'Incremental':<14} {incr_human:<22} {colorize(incr_cron, Colors.DIM)}"))
+        print(box_line(f"   {'Full':<14} {full_human:<22} {colorize(full_cron, Colors.DIM)}"))
+        print(box_line(f"   {'Archive':<14} {arch_human:<22} {colorize(arch_cron, Colors.DIM)}"))
         print(box_line(f""))
         print(box_line(f" {colorize('Current Retention Policy:', Colors.BOLD)}"))
-        print(box_line(f"   All backups:  {retention} days"))
-        print(box_line(f"   Monthly arch: {retention_monthly} days"))
+        print(box_line(f"   All backups:  {fmt_retention(retention, '30')} days"))
+        
+        # Only show monthly retention if archives are configured
+        if cron_archive:
+            print(box_line(f"   Monthly arch: {fmt_retention(retention_monthly, '180')} days"))
+        else:
+            print(box_line(f"   Monthly arch: {colorize('N/A (no archive schedule)', Colors.YELLOW)}"))
         print(draw_box_bottom(box_width))
+        
+        # Show warning if schedule not fully configured
+        if not cron_incr and not cron_full and not cron_archive:
+            print()
+            warn("No backup schedule configured! Consider enabling backups.")
+        elif not cron_archive:
+            print()
+            say("Tip: Enable archive backups for long-term monthly retention.")
         print()
         
         options = [
