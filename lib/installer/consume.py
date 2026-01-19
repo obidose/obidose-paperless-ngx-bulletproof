@@ -426,6 +426,48 @@ def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
         return False
 
 
+def get_pending_devices(instance_name: str, config: SyncthingConfig,
+                        config_dir: Path) -> list[dict]:
+    """
+    Get devices that are trying to connect but aren't trusted yet.
+    
+    These are devices that have attempted connection and were rejected.
+    Returns a list of dicts with 'deviceID', 'name', 'address', and 'time'.
+    """
+    import urllib.request
+    import urllib.error
+    
+    api_key = get_syncthing_api_key(config_dir)
+    if not api_key:
+        return []
+    
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Get pending devices from cluster/pending/devices endpoint
+        req = urllib.request.Request(f"{api_base}/cluster/pending/devices", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            pending_data = json.loads(response.read().decode())
+        
+        result = []
+        for device_id, info in pending_data.items():
+            result.append({
+                "deviceID": device_id,
+                "name": info.get("name", "Unknown Device"),
+                "address": info.get("address", ""),
+                "time": info.get("time", ""),
+            })
+        
+        return result
+        
+    except Exception:
+        return []
+
+
 def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
                            config_dir: Path) -> list[dict]:
     """

@@ -3678,7 +3678,7 @@ class PaperlessManager:
         from lib.installer.consume import (
             get_syncthing_status, get_syncthing_logs, list_syncthing_devices,
             restart_syncthing_container, initialize_syncthing, get_syncthing_device_id,
-            generate_syncthing_guide
+            generate_syncthing_guide, get_pending_devices
         )
         
         while True:
@@ -3721,8 +3721,10 @@ class PaperlessManager:
             
             # Connected devices
             devices = []
+            pending_devices = []
             if status["running"]:
                 devices = list_syncthing_devices(instance.name, config.syncthing, config_dir)
+                pending_devices = get_pending_devices(instance.name, config.syncthing, config_dir)
             
             connected = [d for d in devices if d.get("connected")]
             disconnected = [d for d in devices if not d.get("connected")]
@@ -3735,6 +3737,15 @@ class PaperlessManager:
                     print(box_line(f"   {colorize('○', Colors.YELLOW)} {d['name']} - Disconnected"))
             else:
                 print(box_line(f"   No devices configured yet"))
+            
+            # Show pending devices (trying to connect but not trusted)
+            if pending_devices:
+                print(box_line(f""))
+                print(box_line(colorize(f" PENDING ({len(pending_devices)} waiting to be added)", Colors.YELLOW)))
+                for p in pending_devices[:3]:  # Show max 3
+                    name = p.get('name', 'Unknown')[:30]
+                    short_id = p['deviceID'][:7]
+                    print(box_line(f"   {colorize('⏳', Colors.YELLOW)} {name} ({short_id}...)"))
             
             print(draw_box_divider(box_width))
             
@@ -3762,7 +3773,10 @@ class PaperlessManager:
             
             # Menu options
             print(colorize("  ── Devices ──", Colors.CYAN))
-            print(f"  {colorize('1)', Colors.BOLD)} Add a device")
+            if pending_devices:
+                print(f"  {colorize('1)', Colors.BOLD)} {colorize('Accept pending device', Colors.GREEN)} ({len(pending_devices)} waiting)")
+            else:
+                print(f"  {colorize('1)', Colors.BOLD)} Add a device manually")
             if devices:
                 print(f"  {colorize('2)', Colors.BOLD)} Remove a device")
             print()
@@ -3785,7 +3799,10 @@ class PaperlessManager:
             if choice == "0":
                 break
             elif choice == "1":
-                self._add_syncthing_device(instance, config)
+                if pending_devices:
+                    self._accept_pending_device(instance, config, pending_devices)
+                else:
+                    self._add_syncthing_device(instance, config)
             elif choice == "2" and devices:
                 self._remove_syncthing_device(instance, config, devices)
             elif choice == "3":
@@ -3799,6 +3816,50 @@ class PaperlessManager:
             else:
                 warn("Invalid option")
     
+    def _accept_pending_device(self, instance: Instance, config, pending_devices: list) -> None:
+        """Accept a pending device that's trying to connect."""
+        from lib.installer.consume import add_device_to_syncthing
+        
+        print_header("Accept Pending Device")
+        
+        print("  These devices are trying to connect to this server:")
+        print()
+        for i, device in enumerate(pending_devices, 1):
+            name = device.get('name', 'Unknown Device')
+            short_id = device['deviceID'][:20] + "..." + device['deviceID'][-7:]
+            print(f"  {colorize(str(i) + ')', Colors.BOLD)} {name}")
+            print(f"      ID: {short_id}")
+            print()
+        print(f"  {colorize('0)', Colors.BOLD)} Cancel")
+        print()
+        
+        choice = get_input("Select device to accept", "0")
+        
+        if choice == "0":
+            return
+        
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(pending_devices):
+                device = pending_devices[idx]
+                device_name = device.get('name', 'Unknown Device')
+                
+                # Ask for a better name
+                custom_name = get_input(f"Name for this device", device_name)
+                
+                config_dir = instance.stack_dir / "syncthing-config"
+                if add_device_to_syncthing(instance.name, config.syncthing, config_dir, device['deviceID'], custom_name):
+                    print()
+                    ok(f"Device '{custom_name}' added and trusted!")
+                    say("The device should now connect and receive the shared folder.")
+                else:
+                    error("Failed to add device")
+                input("\nPress Enter to continue...")
+            else:
+                warn("Invalid selection")
+        except ValueError:
+            warn("Invalid selection")
+
     def _remove_syncthing_device(self, instance: Instance, config, devices: list) -> None:
         """Remove a device from Syncthing."""
         from lib.installer.consume import remove_device_from_syncthing
@@ -3894,17 +3955,70 @@ class PaperlessManager:
     
     def _reinitialize_syncthing(self, instance: Instance, config) -> None:
         """Re-initialize Syncthing (fix folder sharing and Web UI access)."""
-        from lib.installer.consume import initialize_syncthing
+        from lib.installer.consume import initialize_syncthing, restart_syncthing_container
+        import shutil
         
-        config_dir = instance.stack_dir / "syncthing-config"
-        say("Re-initializing Syncthing...")
+        print()
+        print(f"  {colorize('1)', Colors.BOLD)} Re-initialize (fix folder/Web UI settings)")
+        print(f"  {colorize('2)', Colors.BOLD)} Full reset (delete all config, start fresh)")
+        print(f"  {colorize('0)', Colors.BOLD)} Cancel")
+        print()
         
-        if initialize_syncthing(instance.name, config.syncthing, config_dir):
-            ok("Syncthing re-initialized successfully")
-            say("The consume folder should now be shared with connected devices")
-            say("Web UI should now be accessible externally")
-        else:
-            error("Re-initialization failed - check logs for details")
+        choice = get_input("Select option", "0")
+        
+        if choice == "1":
+            config_dir = instance.stack_dir / "syncthing-config"
+            say("Re-initializing Syncthing...")
+            
+            if initialize_syncthing(instance.name, config.syncthing, config_dir):
+                ok("Syncthing re-initialized successfully")
+                say("The consume folder should now be shared with connected devices")
+                say("Web UI should now be accessible externally")
+            else:
+                error("Re-initialization failed - check logs for details")
+        
+        elif choice == "2":
+            if confirm("This will delete ALL Syncthing config including paired devices. Continue?", False):
+                from lib.installer.consume import stop_syncthing_container, start_syncthing_container, SyncthingConfig, generate_folder_id
+                
+                say("Stopping Syncthing...")
+                stop_syncthing_container(instance.name)
+                
+                # Delete config directory
+                config_dir = instance.stack_dir / "syncthing-config"
+                if config_dir.exists():
+                    shutil.rmtree(config_dir)
+                    say("Config directory deleted")
+                
+                # Generate fresh config
+                consume_dir = instance.data_root / "consume"
+                web_port = config.syncthing.web_ui_port
+                sync_port = config.syncthing.sync_port
+                folder_id = generate_folder_id()
+                
+                syncthing_config = SyncthingConfig(
+                    enabled=True,
+                    web_ui_port=web_port,
+                    sync_port=sync_port,
+                    folder_id=folder_id,
+                    folder_label=f"Paperless {instance.name}",
+                    device_id=""  # Will be populated after container starts
+                )
+                
+                say("Starting fresh Syncthing...")
+                if start_syncthing_container(
+                    instance_name=instance.name,
+                    config=syncthing_config,
+                    consume_path=consume_dir,
+                    config_dir=config_dir
+                ):
+                    config.syncthing = syncthing_config
+                    from lib.installer.consume import save_consume_config
+                    save_consume_config(config, instance.env_file)
+                    ok("Syncthing reset complete with fresh configuration")
+                    say(f"New Device ID: {config.syncthing.device_id}")
+                else:
+                    error("Failed to restart Syncthing")
         
         input("\nPress Enter to continue...")
     
@@ -3977,12 +4091,26 @@ class PaperlessManager:
             # Disable
             print()
             warn("This will stop and remove the Syncthing container for this instance.")
-            say("Any paired devices will need to be re-paired if you enable it again.")
+            print()
+            print(f"  {colorize('1)', Colors.BOLD)} Keep config (can re-enable with same devices)")
+            print(f"  {colorize('2)', Colors.BOLD)} Delete config (fresh start if re-enabled)")
+            print(f"  {colorize('0)', Colors.BOLD)} Cancel")
             print()
             
-            if confirm("Disable Syncthing?", False):
+            choice = get_input("Select option", "0")
+            
+            if choice in ["1", "2"]:
                 try:
                     stop_syncthing_container(instance.name)
+                    
+                    if choice == "2":
+                        # Delete config directory for fresh start
+                        import shutil
+                        config_dir = instance.stack_dir / "syncthing-config"
+                        if config_dir.exists():
+                            shutil.rmtree(config_dir)
+                            say("Config directory deleted")
+                    
                     config.syncthing.enabled = False
                     save_consume_config(config, instance.env_file)
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "false")
