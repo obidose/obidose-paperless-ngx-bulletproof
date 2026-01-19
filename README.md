@@ -1,8 +1,8 @@
-# Paperless-NGX Bulletproof (now ACTUALLY working!)
+# Paperless-NGX Bulletproof
 
-A deployment and instance management system for Paperless-NGX with, automated backups, and simple disaster recovery.
+A deployment and instance management system for [Paperless-NGX](https://github.com/paperless-ngx/paperless-ngx) with automated backups, disaster recovery, and multi-instance support.
 
-Designed for managing multiple Paperless-NGX instances (personal, family, whatever) from a single command.
+Deploy and manage multiple isolated Paperless-NGX instances from a single unified interface with automated backups to pCloud and complete disaster recovery capability.
 
 ---
 
@@ -36,6 +36,33 @@ paperless
 - Run isolated instances with separate databases, media, and configuration
 - Switch between instances from a unified interface
 - Independent backup and restore per instance
+- Each instance gets its own domain, admin credentials, and settings
+
+### Access Methods
+
+Configure how each instance is accessed:
+
+**Traefik HTTPS** - Automatic SSL via Let's Encrypt. Point your domain DNS to the server and Traefik handles certificates with auto-renewal.
+
+**Cloudflare Tunnels** - No exposed ports needed. Cloudflare handles the tunnel connection; works behind NAT or restrictive firewalls.
+
+**Tailscale** - Private network access. All instances accessible from your devices over Tailscale without exposing to the public internet.
+
+**Direct HTTP** - Basic access on localhost (default port 8000). No HTTPS, suitable for development or behind another reverse proxy.
+
+Each instance can use any combination of these methods simultaneously.
+
+### Consume Folder Integration
+
+Paperless needs an input folder for document importing. Multiple options are available:
+
+**Syncthing** - Peer-to-peer folder sync. Documents sync automatically from your devices to the consume folder. Each instance runs its own Syncthing container with separate sync credentials.
+
+**Samba** (SMB) - Traditional network file shares. Browse and drag-drop files over your local network or Tailscale connection.
+
+**SFTP** - Secure file transfer. Import documents via SSH/SFTP with per-instance credentials.
+
+Each instance can enable the consume methods it needs. Syncthing config and folder state are backed up and restored automatically.
 
 ### Backup System
 
@@ -45,6 +72,7 @@ Two backup types:
 - Full and incremental snapshots uploaded to pCloud
 - Docker image version tracking for reproducible restores
 - Point-in-time recovery from any snapshot
+- Includes Syncthing config and consume folder
 
 **Whole system backup** - Metadata and system state:
 - Captures overall system configuration and all registered instances
@@ -55,7 +83,7 @@ Two backup types:
 
 Each instance snapshot includes:
 - PostgreSQL database dump
-- Incremental tarballs (media, data, export)
+- Incremental tarballs (media, data, export, Syncthing config)
 - Environment and compose configuration
 - Docker image versions
 - Manifest with metadata and checksums
@@ -76,11 +104,11 @@ This allows full disaster recovery on new hardware: install the system, provide 
 
 ## Requirements
 
-- Ubuntu 24.04 LTS (may well work on other distros but tested on 24.04)
+- Ubuntu 24.04 LTS (may work on other distros but tested on 24.04)
 - 4GB RAM minimum (8GB+ for multiple instances)
 - 20GB+ disk space
 - Root/sudo access
-- pCloud account for backups (will probably work with other Rclone providers, have also added some options for dropbox and google drive, but all untested)
+- pCloud account for backups (other rclone providers supported: Dropbox, Google Drive, etc., but untested)
 
 ---
 
@@ -102,11 +130,15 @@ From the manager:
 paperless
 → Instances
   → Add new instance
-    → Name: paperless-personal
+    → Name: personal
     → Domain: docs.mydomain.com
+    → Access: Traefik + Tailscale
+    → Consume: Syncthing
   → Add new instance  
-    → Name: paperless-dad
+    → Name: dad
     → Domain: docs-dad.mydomain.com
+    → Access: Cloudflare Tunnel
+    → Consume: Syncthing
 ```
 
 Each instance runs independently with its own database and backups.
@@ -120,16 +152,17 @@ Each instance runs independently with its own database and backups.
 ║        Paperless-NGX Bulletproof Manager                 ║
 ╚══════════════════════════════════════════════════════════╝
 
-Current Instance: paperless [Running]
+Current Instance: personal [Running]
 
-  1) Setup new instance
-  2) Select/switch instance
-  3) Backup management
-  4) Restore from backup
-  5) System health check
-  6) Instance management
-  7) Container operations
-  q) Quit
+  1) Manage Instances
+  2) Browse Backups
+  3) System Backup/Restore
+  4) Manage Traefik (HTTPS)
+  5) Manage Cloudflare Tunnel
+  6) Manage Tailscale
+  7) Configure Backup Server
+  8) Nuke Setup (Clean Start)
+  0) Quit
 ```
 
 ---
@@ -174,14 +207,17 @@ Backups go to: `pcloud:backups/paperless/{instance_name}/`
 
 ```bash
 paperless
-→ Backup management
-→ Choose full/incremental/archive
+→ Manage Instances
+→ [instance name]
+→ Backup now
 ```
 
 ### Restore
 
 ```bash
 paperless
+→ Manage Instances
+→ [instance name]
 → Restore from backup
 → Select snapshot
 → Confirm
@@ -209,11 +245,12 @@ To recover on fresh hardware after complete system failure:
    ```bash
    paperless
    ```
-5. Select "Restore from backup" and choose your system backup snapshot
+5. Select "System Backup/Restore" and choose your system backup snapshot
 6. The system will:
    - Download system metadata (instance list, configurations, settings)
    - Restore each instance from its LATEST available backup in pCloud
    - Recreate all instances with their most recent data
+   - Restore Syncthing configs for consume folder sync
 
 System backup preserves metadata. Instance data comes from the most recent instance backups, not from the backup created at system backup time.
 
@@ -227,16 +264,18 @@ Choose during installation:
 
 **Traefik** - Reverse proxy with automatic HTTPS via Let's Encrypt. Requires domain DNS pointing to server.
 
+**Cloudflare Tunnel** - Automated tunnel with Cloudflare. No port forwarding needed.
+
 **Direct** - Direct HTTP access on localhost (default port 8000). No HTTPS.
 
 ### Environment Variables
 
-All settings in `/home/docker/paperless-setup/.env`:
+All settings in `/home/docker/[instance_name]-setup/.env`:
 
 ```bash
-INSTANCE_NAME=paperless
-DATA_ROOT=/home/docker/paperless
-STACK_DIR=/home/docker/paperless-setup
+INSTANCE_NAME=personal
+DATA_ROOT=/home/docker/personal
+STACK_DIR=/home/docker/personal-setup
 
 PAPERLESS_ADMIN_USER=admin
 PAPERLESS_ADMIN_PASSWORD=...
@@ -244,13 +283,21 @@ PAPERLESS_URL=https://your-domain.com
 
 POSTGRES_PASSWORD=...
 
+# Access Methods
 ENABLE_TRAEFIK=yes
-DOMAIN=paperless.example.com
-LETSENCRYPT_EMAIL=admin@example.com
+ENABLE_CLOUDFLARED=no
+ENABLE_TAILSCALE=yes
+
+DOMAIN=docs.example.com
 HTTP_PORT=8000
 
-RCLONE_REMOTE_NAME=pcloud
-RCLONE_REMOTE_PATH=backups/paperless/paperless
+# Consume Folder
+CONSUME_SYNCTHING_ENABLED=yes
+CONSUME_SYNCTHING_SYNC_PORT=22000
+CONSUME_SYNCTHING_GUI_PORT=8384
+
+CONSUME_SAMBA_ENABLED=no
+CONSUME_SFTP_ENABLED=no
 
 # Backup schedule (cron format: minute hour day month weekday)
 CRON_INCR_TIME=0 */6 * * *    # Every 6 hours
@@ -269,8 +316,8 @@ Instance metadata stored in `/etc/paperless-bulletproof/instances.json`
 Add existing instance:
 ```bash
 paperless
-→ Instance management
-→ Add existing instance
+→ Manage Instances
+→ Add new instance or restore existing
 ```
 
 ---
@@ -289,7 +336,8 @@ lib/
 │   ├── pcloud.py       # Backup configuration
 │   ├── cloudflared.py  # Cloudflare tunnel setup
 │   ├── tailscale.py    # Tailscale setup
-│   └── traefik.py      # Traefik configuration
+│   ├── traefik.py      # Traefik configuration
+│   └── consume.py      # Consume folder setup (Syncthing/Samba/SFTP)
 ├── modules/
 │   ├── backup.py       # Snapshot creation
 │   └── restore.py      # Snapshot restoration
@@ -315,7 +363,7 @@ sudo python3 paperless.py --branch dev
 ```
 
 Branches:
-- **main**: Stable
+- **main**: Stable releases
 - **dev**: Active development
 
 ---
@@ -331,6 +379,11 @@ Branches:
 - Check DNS points to server
 - Verify ports 80/443 are open
 - Check Traefik logs via manager
+
+### Syncthing Not Connecting
+- Check Syncthing GUI at http://tailscale-ip:8384
+- Verify device IDs match between instances
+- Check consume folder permissions
 
 ### No Snapshots Found
 - Run a manual backup first
@@ -354,12 +407,12 @@ Branches:
 Remove stack (keeps backups):
 
 ```bash
-cd /home/docker/paperless-setup
+cd /home/docker/[instance_name]-setup
 docker compose down -v
 
 # Optional: remove files
-sudo rm -rf /home/docker/paperless
-sudo rm -rf /home/docker/paperless-setup
+sudo rm -rf /home/docker/[instance_name]
+sudo rm -rf /home/docker/[instance_name]-setup
 sudo rm /usr/local/bin/paperless
 sudo rm -rf /usr/local/lib/paperless-bulletproof
 sudo rm -rf /etc/paperless-bulletproof
@@ -381,6 +434,7 @@ pCloud backups remain intact.
 - Configures pCloud
 - Generates docker-compose.yml and .env
 - Sets up cron jobs
+- Configures optional services (Traefik, Cloudflare, Tailscale, Syncthing, Samba, SFTP)
 
 **Manager** (`lib/manager.py`)
 - Interactive TUI
@@ -388,6 +442,7 @@ pCloud backups remain intact.
 - Backup/restore operations
 - Health monitoring
 - Container control
+- Access method configuration
 
 **Modules** (`lib/modules/`)
 - `backup.py`: Creates and uploads snapshots
@@ -408,4 +463,6 @@ MIT License - See [LICENSE](LICENSE) file for details.
 ## Support
 
 - [GitHub Issues](https://github.com/obidose/obidose-paperless-ngx-bulletproof/issues)
+- [Paperless-NGX Project](https://github.com/paperless-ngx/paperless-ngx)
 - In-app help via `paperless` → "About & Help"
+
