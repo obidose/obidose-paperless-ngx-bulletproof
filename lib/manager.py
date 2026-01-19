@@ -3784,8 +3784,9 @@ class PaperlessManager:
             print(colorize("  ── Help & Troubleshooting ──", Colors.CYAN))
             print(f"  {colorize('3)', Colors.BOLD)} View setup guide")
             print(f"  {colorize('4)', Colors.BOLD)} View full logs")
-            print(f"  {colorize('5)', Colors.BOLD)} Restart / Fix Web UI")
-            print(f"  {colorize('6)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
+            print(f"  {colorize('5)', Colors.BOLD)} Restart container")
+            print(f"  {colorize('6)', Colors.BOLD)} Recreate container (fixes Web UI access)")
+            print(f"  {colorize('7)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
             print()
             
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
@@ -3807,8 +3808,10 @@ class PaperlessManager:
             elif choice == "4":
                 self._view_syncthing_logs(instance, config)
             elif choice == "5":
-                self._restart_and_fix_syncthing(instance, config)
+                self._restart_syncthing(instance, config)
             elif choice == "6":
+                self._recreate_syncthing(instance, config)
+            elif choice == "7":
                 self._factory_reset_syncthing(instance, config)
             else:
                 warn("Invalid option")
@@ -3926,15 +3929,34 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
-    def _restart_and_fix_syncthing(self, instance: Instance, config) -> None:
-        """Restart Syncthing and fix Web UI access."""
+    def _restart_syncthing(self, instance: Instance, config) -> None:
+        """Simple restart of Syncthing container."""
+        from lib.installer.consume import restart_syncthing_container, get_syncthing_status
+        import time
+        
+        say("Restarting Syncthing...")
+        restart_syncthing_container(instance.name)
+        
+        say("Waiting for container to start...")
+        time.sleep(3)
+        
+        status = get_syncthing_status(instance.name)
+        if status["running"]:
+            ok("Syncthing is now running")
+        else:
+            error(f"Syncthing failed to start: {status['status']}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _recreate_syncthing(self, instance: Instance, config) -> None:
+        """Recreate Syncthing container (fixes Web UI access issues)."""
         from lib.installer.consume import (
             recreate_syncthing_container, get_syncthing_status, get_syncthing_device_id
         )
         import time
         
         config_dir = instance.stack_dir / "syncthing-config"
-        consume_path = instance.data_dir / "consume"
+        consume_path = instance.data_root / "consume"
         
         say("Recreating Syncthing container with external Web UI access...")
         recreate_syncthing_container(instance.name, config.syncthing, consume_path, config_dir)
