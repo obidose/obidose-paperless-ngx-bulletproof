@@ -228,6 +228,37 @@ def main() -> None:
             warn("Restore complete, but self-test failed")
     else:
         warn("Docker compose file not found - services not started")
+    
+    # Restart Syncthing if it was enabled (syncthing-config was restored)
+    syncthing_config_dir = STACK_DIR / "syncthing-config"
+    if syncthing_config_dir.exists():
+        try:
+            from lib.installer.consume import (
+                load_consume_config, start_syncthing_container, SyncthingConfig
+            )
+            
+            consume_config = load_consume_config(ENV_FILE)
+            if consume_config.syncthing.enabled:
+                say("Restarting Syncthing container...")
+                consume_path = DATA_ROOT / "consume"
+                consume_path.mkdir(parents=True, exist_ok=True)
+                
+                # Create config from env settings
+                config = SyncthingConfig(
+                    enabled=True,
+                    folder_id=consume_config.syncthing.folder_id,
+                    folder_label=consume_config.syncthing.folder_label,
+                    device_id=consume_config.syncthing.device_id,
+                    api_key=consume_config.syncthing.api_key,
+                    sync_port=consume_config.syncthing.sync_port,
+                )
+                
+                if start_syncthing_container(INSTANCE_NAME, config, consume_path, syncthing_config_dir):
+                    ok("Syncthing container restarted")
+                else:
+                    warn("Failed to restart Syncthing - start manually from Consume menu")
+        except Exception as e:
+            warn(f"Could not restart Syncthing: {e}")
 
 
 def restore_snapshot(snapshot_name: str) -> None:

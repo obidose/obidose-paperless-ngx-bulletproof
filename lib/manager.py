@@ -452,6 +452,14 @@ class InstanceManager:
                 except Exception:
                     pass
             
+            # Stop and remove Syncthing container for this instance (consume folder sync)
+            syncthing_container = f"syncthing-{name}"
+            subprocess.run(
+                ["docker", "rm", "-f", syncthing_container],
+                capture_output=True,
+                check=False
+            )
+            
             # Delete stack directory - use rm -rf for reliability with mixed ownership
             if instance.stack_dir.exists():
                 result = subprocess.run(
@@ -471,6 +479,28 @@ class InstanceManager:
                 )
                 if result.returncode != 0:
                     warn(f"Could not delete data directory: {instance.data_root}")
+            
+            # Cleanup consume folder service users (Samba/SFTP) if services are running
+            try:
+                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+                from lib.installer.consume import (
+                    load_consume_config, remove_samba_user, 
+                    is_samba_available, is_sftp_available
+                )
+                
+                # Get consume config from .env to find usernames
+                if instance.env_file.exists():
+                    consume_config = load_consume_config(instance.env_file)
+                    
+                    # Remove Samba user if Samba is running
+                    if consume_config.samba.enabled and consume_config.samba.username:
+                        if is_samba_available():
+                            remove_samba_user(consume_config.samba.username)
+                    
+                    # Note: SFTP users are managed at container restart - no cleanup needed
+                    # When SFTP container restarts, it will only have users from remaining instances
+            except Exception:
+                pass  # Best effort cleanup
             
             # Stop and remove cloudflared service if exists
             try:
@@ -5446,6 +5476,36 @@ WantedBy=multi-user.target
                 network_info["rclone"] = {"enabled": True}
                 ok("rclone config backed up")
             
+            # ─── Backup Consume Folder Services Configuration ─────────────────
+            consume_backup_dir = work / "consume"
+            consume_backup_dir.mkdir(parents=True, exist_ok=True)
+            consume_info = {"enabled": False, "global_config": False, "samba_config": False, "sftp_config": False}
+            
+            # Global consume config
+            global_consume_conf = Path("/etc/paperless-bulletproof/consume-global.conf")
+            if global_consume_conf.exists():
+                shutil.copy2(global_consume_conf, consume_backup_dir / "consume-global.conf")
+                consume_info["global_config"] = True
+            
+            # Samba config directory
+            samba_config_dir = Path("/etc/paperless-bulletproof/samba")
+            if samba_config_dir.exists():
+                samba_backup = consume_backup_dir / "samba"
+                shutil.copytree(samba_config_dir, samba_backup, dirs_exist_ok=True)
+                consume_info["samba_config"] = True
+            
+            # SFTP config directory
+            sftp_config_dir = Path("/etc/paperless-bulletproof/sftp")
+            if sftp_config_dir.exists():
+                sftp_backup = consume_backup_dir / "sftp"
+                shutil.copytree(sftp_config_dir, sftp_backup, dirs_exist_ok=True)
+                consume_info["sftp_config"] = True
+            
+            consume_info["enabled"] = consume_info["global_config"] or consume_info["samba_config"] or consume_info["sftp_config"]
+            if consume_info["enabled"]:
+                network_info["consume"] = consume_info
+                ok("Consume folder services config backed up")
+            
             # Note Tailscale status (can't really backup Tailscale auth)
             if tailscale_connected:
                 ts_hostname = None
@@ -5466,7 +5526,7 @@ WantedBy=multi-user.target
             system_info = {
                 "backup_date": datetime.utcnow().isoformat(),
                 "backup_name": backup_name,
-                "backup_version": "2.0",  # New version with network config
+                "backup_version": "2.1",  # Version 2.1 adds consume config
                 "instance_count": len(instances),
                 "network": network_info,
                 "instances": {},
@@ -5505,13 +5565,14 @@ WantedBy=multi-user.target
             
             # Create manifest
             manifest = f"""system_backup: true
-backup_version: "2.0"
+backup_version: "2.1"
 backup_date: {datetime.utcnow().isoformat()}
 instance_count: {len(instances)}
 network_config: true
 traefik_enabled: {network_info['traefik']['enabled']}
 cloudflare_tunnels: {len(network_info['cloudflare'].get('tunnels', []))}
 rclone_config: {network_info['rclone']['enabled']}
+consume_config: {network_info.get('consume', {}).get('enabled', False)}
 """
             (work / "manifest.yaml").write_text(manifest)
             
@@ -5539,6 +5600,8 @@ rclone_config: {network_info['rclone']['enabled']}
                 print(box_line(f" ✓ Cloudflare tunnel configs ({len(network_info['cloudflare']['tunnels'])})"))
             if network_info["rclone"]["enabled"]:
                 print(box_line(" ✓ rclone backup server config"))
+            if network_info.get("consume", {}).get("enabled"):
+                print(box_line(" ✓ Consume folder services config (Samba/SFTP)"))
             if network_info["tailscale"]["enabled"]:
                 print(box_line(" ✓ Tailscale info (requires re-auth)"))
             print(draw_box_bottom(box_width))
@@ -5741,6 +5804,7 @@ rclone_config: {network_info['rclone']['enabled']}
                 cf_info = network_info.get("cloudflare", {})
                 rclone_info = network_info.get("rclone", {})
                 ts_info = network_info.get("tailscale", {})
+                consume_info = network_info.get("consume", {})
                 
                 if traefik_info.get("enabled"):
                     print(box_line(f"   ✓ Traefik + SSL certificates"))
@@ -5758,6 +5822,11 @@ rclone_config: {network_info['rclone']['enabled']}
                 else:
                     print(box_line(f"   ○ rclone: not configured"))
                 
+                if consume_info.get("enabled"):
+                    print(box_line(f"   ✓ Consume services (Samba/SFTP)"))
+                else:
+                    print(box_line(f"   ○ Consume services: not configured"))
+                
                 if ts_info.get("enabled"):
                     print(box_line(f"   ⚠ Tailscale: requires re-auth"))
                 else:
@@ -5768,6 +5837,7 @@ rclone_config: {network_info['rclone']['enabled']}
                 cf_info = {}
                 rclone_info = {}
                 ts_info = {}
+                consume_info = {}
             
             print(draw_box_divider(box_width))
             print(box_line(" Instances:"))
@@ -5814,24 +5884,30 @@ rclone_config: {network_info['rclone']['enabled']}
                     shutil.copy2(traefik_backup / "acme.json", traefik_dest / "acme.json")
                     (traefik_dest / "acme.json").chmod(0o600)
                 
-                # Start Traefik if not running
+                # Start Traefik if not running (use same method as setup_system_traefik)
                 if not traefik.is_traefik_running():
                     say("Starting Traefik with restored certificates...")
-                    # Check if docker network exists
-                    subprocess.run(
-                        ["docker", "network", "create", "web"],
-                        capture_output=True,
-                        check=False
-                    )
-                    # Start Traefik
-                    result = subprocess.run(
-                        ["docker", "compose", "-f", "/opt/traefik/docker-compose.yml", "up", "-d"],
-                        capture_output=True,
-                        check=False
-                    )
-                    if result.returncode == 0:
+                    # Ensure traefik network exists
+                    traefik.ensure_traefik_network()
+                    
+                    # Start Traefik container directly (matches setup_system_traefik)
+                    acme_file = traefik_dest / "acme.json"
+                    config_file = traefik_dest / "traefik.yml"
+                    try:
+                        subprocess.run([
+                            "docker", "run", "-d",
+                            "--name", "traefik-system",
+                            "--network", "traefik",
+                            "--restart", "unless-stopped",
+                            "-p", "80:80",
+                            "-p", "443:443",
+                            "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
+                            "-v", f"{acme_file}:/acme.json",
+                            "-v", f"{config_file}:/traefik.yml:ro",
+                            "traefik:latest",
+                        ], check=True, capture_output=True)
                         ok("Traefik started with restored SSL certificates")
-                    else:
+                    except subprocess.CalledProcessError:
                         # May need to set up fresh
                         email = traefik_info.get("email", "admin@example.com")
                         if traefik.setup_system_traefik(email):
@@ -5894,6 +5970,46 @@ rclone_config: {network_info['rclone']['enabled']}
                         )
                     ok("Cloudflare tunnel services started")
             
+            # Restore Consume Folder Services Configuration (Samba/SFTP)
+            consume_backup = work / "consume"
+            consume_info = network_info.get("consume", {})
+            if consume_backup.exists() and consume_info.get("enabled"):
+                say("Restoring Consume Folder Services configuration...")
+                
+                # Restore global consume config
+                global_conf_backup = consume_backup / "consume-global.conf"
+                if global_conf_backup.exists():
+                    dest_dir = Path("/etc/paperless-bulletproof")
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(global_conf_backup, dest_dir / "consume-global.conf")
+                    ok("Global consume config restored")
+                
+                # Restore Samba config directory
+                samba_backup = consume_backup / "samba"
+                if samba_backup.exists():
+                    samba_dest = Path("/etc/paperless-bulletproof/samba")
+                    samba_dest.mkdir(parents=True, exist_ok=True)
+                    for file in samba_backup.iterdir():
+                        if file.is_file():
+                            shutil.copy2(file, samba_dest / file.name)
+                        elif file.is_dir():
+                            shutil.copytree(file, samba_dest / file.name, dirs_exist_ok=True)
+                    ok("Samba config restored")
+                
+                # Restore SFTP config directory
+                sftp_backup = consume_backup / "sftp"
+                if sftp_backup.exists():
+                    sftp_dest = Path("/etc/paperless-bulletproof/sftp")
+                    sftp_dest.mkdir(parents=True, exist_ok=True)
+                    for file in sftp_backup.iterdir():
+                        if file.is_file():
+                            shutil.copy2(file, sftp_dest / file.name)
+                        elif file.is_dir():
+                            shutil.copytree(file, sftp_dest / file.name, dirs_exist_ok=True)
+                    ok("SFTP config restored")
+                
+                ok("Consume folder services configuration restored")
+            
             # ─── Restore Instance Registry ────────────────────────────────────
             print()
             say("Restoring Instance Registry...")
@@ -5919,6 +6035,14 @@ rclone_config: {network_info['rclone']['enabled']}
             print(box_line("      → Manage Instances → [instance] → Restore from backup"))
             print(box_line(""))
             print(box_line("   2. Start instances after data is restored"))
+            print(box_line("      → Syncthing auto-restarts with instance data"))
+            
+            # Consume services note
+            if consume_info.get("enabled"):
+                print(box_line(""))
+                print(box_line("   3. Restart shared consume services (if used):"))
+                print(box_line("      → Samba/SFTP: re-enable from Consume menu"))
+            
             print(draw_box_divider(box_width))
             
             # IP/Server change guidance
@@ -7134,6 +7258,40 @@ rclone_config: {network_info['rclone']['enabled']}
             old_tracking = Path("/root/.paperless_instances.json")
             if old_tracking.exists():
                 old_tracking.unlink()
+            
+            # Clean up consume folder services (Syncthing, Samba, SFTP)
+            say("Cleaning up consume folder services...")
+            
+            # Stop any remaining Syncthing containers (syncthing-*)
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", "name=syncthing-", "--format", "{{.Names}}"],
+                capture_output=True, text=True, check=False
+            )
+            for container in result.stdout.splitlines():
+                if container.strip():
+                    subprocess.run(["docker", "rm", "-f", container.strip()], 
+                                   capture_output=True, check=False)
+            
+            # Stop shared Samba container
+            subprocess.run(["docker", "rm", "-f", "paperless-samba"], 
+                           capture_output=True, check=False)
+            
+            # Stop shared SFTP container
+            subprocess.run(["docker", "rm", "-f", "paperless-sftp"], 
+                           capture_output=True, check=False)
+            
+            # Remove consume service config files
+            consume_config_files = [
+                Path("/etc/paperless-bulletproof/consume-global.conf"),
+                Path("/etc/paperless-bulletproof/samba"),
+                Path("/etc/paperless-bulletproof/sftp"),
+            ]
+            for config_path in consume_config_files:
+                if config_path.exists():
+                    subprocess.run(["rm", "-rf", str(config_path)], 
+                                   capture_output=True, check=False)
+            
+            ok("Consume folder services cleaned up")
             
             # Reload instance manager to reflect changes
             self.instance_manager = InstanceManager()
