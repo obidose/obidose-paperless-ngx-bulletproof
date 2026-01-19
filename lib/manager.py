@@ -4052,17 +4052,27 @@ class PaperlessManager:
     def _show_samba_credentials(self, instance: Instance, config) -> None:
         """Show Samba credentials and connection info."""
         from lib.installer.consume import generate_samba_guide
+        from lib.installer.tailscale import get_ip as get_tailscale_ip
         
-        guide = generate_samba_guide(instance.name, config.samba, self._get_local_ip())
+        ts_ip = get_tailscale_ip()
+        display_ip = ts_ip or self._get_local_ip()
+        guide = generate_samba_guide(instance.name, config.samba, display_ip, is_tailscale=bool(ts_ip))
         print(guide)
-        input("\nPress Enter to continue...")
+        if not ts_ip:
+            print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
+        input("\nPress Enter to continue..."))
     
     def _show_sftp_credentials(self, instance: Instance, config) -> None:
         """Show SFTP credentials and connection info."""
         from lib.installer.consume import generate_sftp_guide
+        from lib.installer.tailscale import get_ip as get_tailscale_ip
         
-        guide = generate_sftp_guide(instance.name, config.sftp, self._get_local_ip())
+        ts_ip = get_tailscale_ip()
+        display_ip = ts_ip or self._get_local_ip()
+        guide = generate_sftp_guide(instance.name, config.sftp, display_ip, is_tailscale=bool(ts_ip))
         print(guide)
+        if not ts_ip:
+            print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
         input("\nPress Enter to continue...")
 
     def _add_syncthing_device(self, instance: Instance, config) -> None:
@@ -4234,11 +4244,17 @@ class PaperlessManager:
                     self._update_instance_env(instance, "CONSUME_SAMBA_USERNAME", username)
                     self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", password)
                     
-                    local_ip = self._get_local_ip()
+                    from lib.installer.tailscale import get_ip as get_tailscale_ip
+                    ts_ip = get_tailscale_ip()
+                    display_ip = ts_ip or self._get_local_ip()
                     ok(f"Samba share enabled!")
-                    say(f"  Share: \\\\{local_ip}\\{share_name}")
+                    say(f"  Share: \\\\{display_ip}\\{share_name}")
                     say(f"  Username: {username}")
                     say(f"  Password: {password}")
+                    if ts_ip:
+                        say("  (Using Tailscale IP for secure access)")
+                    else:
+                        say("  💡 Install Tailscale for secure remote access!")
                     say("  Use 'View setup guides' for detailed instructions")
                 except Exception as e:
                     error(f"Failed to enable Samba: {e}")
@@ -4307,11 +4323,17 @@ class PaperlessManager:
                     self._update_instance_env(instance, "CONSUME_SFTP_USERNAME", username)
                     self._update_instance_env(instance, "CONSUME_SFTP_PASSWORD", password)
                     
-                    local_ip = self._get_local_ip()
+                    from lib.installer.tailscale import get_ip as get_tailscale_ip
+                    ts_ip = get_tailscale_ip()
+                    display_ip = ts_ip or self._get_local_ip()
                     ok(f"SFTP access enabled!")
-                    say(f"  Server: sftp://{local_ip}:{sftp_port}")
+                    say(f"  Server: sftp://{display_ip}:{sftp_port}")
                     say(f"  Username: {username}")
                     say(f"  Password: {password}")
+                    if ts_ip:
+                        say("  (Using Tailscale IP for secure access)")
+                    else:
+                        say("  💡 Install Tailscale for secure remote access!")
                     say("  Use 'View setup guides' for detailed instructions")
                 except Exception as e:
                     error(f"Failed to enable SFTP: {e}")

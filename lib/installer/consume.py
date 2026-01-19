@@ -1391,9 +1391,19 @@ Only share Device IDs with people you trust to upload documents.
 
 
 def generate_samba_guide(instance_name: str, config: SambaConfig,
-                          tailscale_ip: Optional[str] = None) -> str:
+                          server_ip: Optional[str] = None,
+                          is_tailscale: bool = False) -> str:
     """Generate setup guide for Samba."""
-    host = tailscale_ip or "your-server-ip"
+    host = server_ip or "your-server-ip"
+    
+    security_note = ""
+    if not is_tailscale and server_ip and not server_ip.startswith("100."):
+        security_note = """
+⚠️  SECURITY NOTE
+──────────────────
+You're using a public IP. For secure remote access, consider installing Tailscale!
+This ensures only your devices can access the share.
+"""
     
     return f"""
 ╭────────────────────────────────────────────────────────────────────────────────╮
@@ -1456,13 +1466,23 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
 • "Network path not found": Check server IP and firewall (port 445)
 • "Access denied": Double-check username and password
 • Slow connection: Samba works best on local/Tailscale networks
-"""
+{security_note}"""
 
 
 def generate_sftp_guide(instance_name: str, config: SFTPConfig,
-                         tailscale_ip: Optional[str] = None) -> str:
+                         server_ip: Optional[str] = None,
+                         is_tailscale: bool = False) -> str:
     """Generate setup guide for SFTP."""
-    host = tailscale_ip or "your-server-ip"
+    host = server_ip or "your-server-ip"
+    
+    security_note = ""
+    if not is_tailscale and server_ip and not server_ip.startswith("100."):
+        security_note = """
+⚠️  SECURITY NOTE
+──────────────────
+You're using a public IP. For secure remote access, consider installing Tailscale!
+This ensures only your devices can access the SFTP server.
+"""
     
     return f"""
 ╭────────────────────────────────────────────────────────────────────────────────╮
@@ -1529,7 +1549,7 @@ def generate_sftp_guide(instance_name: str, config: SFTPConfig,
 • "Connection refused": Check firewall allows port {config.port}
 • "Permission denied": Verify username and password
 • "Host key verification": Accept the server's fingerprint on first connect
-"""
+{security_note}"""
 
 
 # ─── Full Status Report ───────────────────────────────────────────────────────
