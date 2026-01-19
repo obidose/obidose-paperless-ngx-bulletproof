@@ -2834,7 +2834,6 @@ class PaperlessManager:
                 if "1" in consume_methods:
                     # Enable Syncthing config - container will be started on first use
                     common.cfg.consume_syncthing_enabled = "true"
-                    common.cfg.consume_syncthing_web_ui_port = str(self._find_available_port(8384))
                     common.cfg.consume_syncthing_sync_port = str(self._find_available_port(22000))
                     common.cfg.consume_syncthing_folder_id = f"paperless-{instance_name}"
                     common.cfg.consume_syncthing_folder_label = f"Paperless {instance_name}"
@@ -2959,7 +2958,6 @@ class PaperlessManager:
                     from lib.installer.consume import start_syncthing_container, SyncthingConfig
                     syncthing_config = SyncthingConfig(
                         enabled=True,
-                        web_ui_port=int(common.cfg.consume_syncthing_web_ui_port),
                         sync_port=int(common.cfg.consume_syncthing_sync_port),
                         folder_id=common.cfg.consume_syncthing_folder_id,
                         folder_label=common.cfg.consume_syncthing_folder_label
@@ -2970,7 +2968,7 @@ class PaperlessManager:
                         consume_path=Path(common.cfg.dir_consume),
                         config_dir=Path(common.cfg.stack_dir) / "syncthing-config"
                     )
-                    consume_services_started.append(f"Syncthing (UI: http://localhost:{common.cfg.consume_syncthing_web_ui_port})")
+                    consume_services_started.append("Syncthing")
                 except Exception as e:
                     warn(f"Failed to start Syncthing: {e}")
             
@@ -3713,14 +3711,13 @@ class PaperlessManager:
             else:
                 print(box_line(f" Device ID:  {colorize('Not available', Colors.RED)}"))
             
-            # Ports
-            if config.syncthing.gui_enabled:
-                print(box_line(f" Web UI:     http://{local_ip}:{config.syncthing.web_ui_port}"))
-                if config.syncthing.gui_username:
-                    print(box_line(f" Web UI Auth: {config.syncthing.gui_username} (see setup guide for password)"))
-                print(box_line(f" Firewall:   Allow TCP {config.syncthing.web_ui_port} for Web UI"))
+            # Web UI access info - Tailscale only for security
+            from lib.installer.tailscale import get_ip as get_tailscale_ip
+            ts_ip = get_tailscale_ip()
+            if ts_ip:
+                print(box_line(f" Web UI:     http://{ts_ip}:8384 (Tailscale only)"))
             else:
-                print(box_line(" Web UI:     Disabled (local only)"))
+                print(box_line(f" Web UI:     {colorize('Local only (no Tailscale)', Colors.YELLOW)}"))
             print(box_line(f" Sync Port:  {config.syncthing.sync_port} (TCP/UDP)"))
             
             print(draw_box_divider(box_width))
@@ -3790,13 +3787,9 @@ class PaperlessManager:
             print(colorize("  ── Help & Troubleshooting ──", Colors.CYAN))
             print(f"  {colorize('3)', Colors.BOLD)} View setup guide")
             print(f"  {colorize('4)', Colors.BOLD)} View full logs")
-            if config.syncthing.gui_enabled:
-                print(f"  {colorize('5)', Colors.BOLD)} Disable Web UI (external)")
-            else:
-                print(f"  {colorize('5)', Colors.BOLD)} Enable Web UI (external)")
-            print(f"  {colorize('6)', Colors.BOLD)} Restart container")
-            print(f"  {colorize('7)', Colors.BOLD)} Recreate container (apply Web UI settings)")
-            print(f"  {colorize('8)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
+            print(f"  {colorize('5)', Colors.BOLD)} Restart container")
+            print(f"  {colorize('6)', Colors.BOLD)} Recreate container")
+            print(f"  {colorize('7)', Colors.BOLD)} {colorize('Factory reset', Colors.RED)} (new Device ID)")
             print()
             
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
@@ -3818,15 +3811,10 @@ class PaperlessManager:
             elif choice == "4":
                 self._view_syncthing_logs(instance, config)
             elif choice == "5":
-                if config.syncthing.gui_enabled:
-                    self._disable_syncthing_webui(instance, config)
-                else:
-                    self._enable_syncthing_webui(instance, config)
-            elif choice == "6":
                 self._restart_syncthing(instance, config)
-            elif choice == "7":
+            elif choice == "6":
                 self._recreate_syncthing(instance, config)
-            elif choice == "8":
+            elif choice == "7":
                 self._factory_reset_syncthing(instance, config)
             else:
                 warn("Invalid option")
@@ -3943,39 +3931,6 @@ class PaperlessManager:
                     print(line)
         
         input("\nPress Enter to continue...")
-
-    def _enable_syncthing_webui(self, instance: Instance, config) -> None:
-        """Enable external Syncthing Web UI with credentials."""
-        from lib.installer.consume import initialize_syncthing, save_consume_config, generate_secure_password
-        print()
-        warn("Enabling the Web UI exposes Syncthing on an HTTP port.")
-        warn("Only do this if you trust the network and open the firewall carefully.")
-        print()
-        if not confirm("Enable Syncthing Web UI (external)?", False):
-            return
-        config.syncthing.gui_enabled = True
-        if not config.syncthing.gui_username:
-            config.syncthing.gui_username = "paperless"
-        if not config.syncthing.gui_password:
-            config.syncthing.gui_password = generate_secure_password(20)
-        save_consume_config(config, instance.env_file)
-        initialize_syncthing(instance.name, config.syncthing, instance.stack_dir / "syncthing-config")
-        ok("Web UI enabled.")
-        say(f"Username: {config.syncthing.gui_username}")
-        say(f"Password: {config.syncthing.gui_password}")
-        input("\nPress Enter to continue...")
-
-    def _disable_syncthing_webui(self, instance: Instance, config) -> None:
-        """Disable external Syncthing Web UI."""
-        from lib.installer.consume import initialize_syncthing, save_consume_config
-        print()
-        if not confirm("Disable Syncthing Web UI (external)?", False):
-            return
-        config.syncthing.gui_enabled = False
-        save_consume_config(config, instance.env_file)
-        initialize_syncthing(instance.name, config.syncthing, instance.stack_dir / "syncthing-config")
-        ok("Web UI disabled (local only).")
-        input("\nPress Enter to continue...")
     
     def _restart_syncthing(self, instance: Instance, config) -> None:
         """Simple restart of Syncthing container."""
@@ -4002,6 +3957,7 @@ class PaperlessManager:
             stop_syncthing_container, start_syncthing_container, 
             get_syncthing_status, get_syncthing_device_id
         )
+        from lib.installer.tailscale import get_ip as get_tailscale_ip
         import time
         
         config_dir = instance.stack_dir / "syncthing-config"
@@ -4010,7 +3966,7 @@ class PaperlessManager:
         say("Stopping Syncthing...")
         stop_syncthing_container(instance.name)
         
-        say("Starting Syncthing (will fix Web UI access)...")
+        say("Starting Syncthing with fresh container...")
         start_syncthing_container(instance.name, config.syncthing, consume_path, config_dir)
         
         say("Waiting for initialization...")
@@ -4022,7 +3978,11 @@ class PaperlessManager:
             device_id = get_syncthing_device_id(instance.name)
             if device_id:
                 say(f"Device ID: {device_id}")
-            ok(f"Web UI: http://{self._get_local_ip()}:{config.syncthing.web_ui_port}")
+            ts_ip = get_tailscale_ip()
+            if ts_ip:
+                ok(f"Web UI: http://{ts_ip}:8384 (Tailscale only)")
+            else:
+                say("Web UI: localhost only (no Tailscale detected)")
         else:
             error(f"Syncthing failed to start: {status['status']}")
         
@@ -4059,13 +4019,11 @@ class PaperlessManager:
         
         # Generate fresh config
         consume_dir = instance.data_root / "consume"
-        web_port = config.syncthing.web_ui_port
         sync_port = config.syncthing.sync_port
         folder_id = generate_folder_id()
         
         syncthing_config = SyncthingConfig(
             enabled=True,
-            web_ui_port=web_port,
             sync_port=sync_port,
             folder_id=folder_id,
             folder_label=f"Paperless {instance.name}",
@@ -4183,14 +4141,12 @@ class PaperlessManager:
                     consume_dir = instance.data_root / "consume"
                     syncthing_config_dir = instance.stack_dir / "syncthing-config"
                     
-                    # Find available ports
-                    web_port = self._find_available_port(8384)
+                    # Find available sync port
                     sync_port = self._find_available_port(22000)
                     folder_id = generate_folder_id()
                     
                     syncthing_config = SyncthingConfig(
                         enabled=True,
-                        web_ui_port=web_port,
                         sync_port=sync_port,
                         folder_id=folder_id,
                         folder_label=f"Paperless {instance.name}",
@@ -4207,11 +4163,9 @@ class PaperlessManager:
                     config.syncthing = syncthing_config
                     save_consume_config(config, instance.env_file)
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_ENABLED", "true")
-                    self._update_instance_env(instance, "CONSUME_SYNCTHING_WEB_UI_PORT", str(web_port))
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_SYNC_PORT", str(sync_port))
                     
-                    ok(f"Syncthing enabled!")
-                    say(f"  Web UI: http://localhost:{web_port}")
+                    ok("Syncthing enabled!")
                     say("  Use 'View setup guides' to see pairing instructions")
                 except Exception as e:
                     error(f"Failed to enable Syncthing: {e}")

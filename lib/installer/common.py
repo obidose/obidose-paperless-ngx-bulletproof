@@ -271,7 +271,6 @@ class Config:
     consume_syncthing_folder_label: str = os.environ.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
     consume_syncthing_device_id: str = os.environ.get("CONSUME_SYNCTHING_DEVICE_ID", "")
     consume_syncthing_api_key: str = os.environ.get("CONSUME_SYNCTHING_API_KEY", "")
-    consume_syncthing_web_ui_port: str = os.environ.get("CONSUME_SYNCTHING_WEB_UI_PORT", "8384")
     consume_syncthing_sync_port: str = os.environ.get("CONSUME_SYNCTHING_SYNC_PORT", "22000")
     
     # Samba (Tailscale + SMB network shares)

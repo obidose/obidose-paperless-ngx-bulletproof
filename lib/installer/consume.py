@@ -34,10 +34,6 @@ class SyncthingConfig:
     folder_label: str = ""
     device_id: str = ""
     api_key: str = ""
-    gui_enabled: bool = False
-    gui_username: str = ""
-    gui_password: str = ""
-    web_ui_port: int = 8384
     sync_port: int = 22000
     
     def to_dict(self) -> dict:
@@ -47,10 +43,6 @@ class SyncthingConfig:
             "folder_label": self.folder_label,
             "device_id": self.device_id,
             "api_key": self.api_key,
-            "gui_enabled": self.gui_enabled,
-            "gui_username": self.gui_username,
-            "gui_password": self.gui_password,
-            "web_ui_port": self.web_ui_port,
             "sync_port": self.sync_port,
         }
     
@@ -261,17 +253,26 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
-def fix_syncthing_gui_address(config_dir: Path, gui_enabled: bool) -> bool:
+def fix_syncthing_gui_address(config_dir: Path) -> str:
     """
-    Fix Syncthing GUI to listen on all interfaces by modifying config.xml directly.
+    Fix Syncthing GUI to listen on Tailscale interface only (secure).
+    Returns the GUI address that was set.
     
-    This is more reliable than the API approach because it modifies the file
-    on disk, ensuring the change persists across restarts.
+    If Tailscale is not available, binds to localhost only.
+    NEVER binds to 0.0.0.0 to prevent external HTTP access.
     """
     import time
     import re
+    from .tailscale import get_ip as get_tailscale_ip
     
     config_file = config_dir / "config.xml"
+    
+    # Determine the GUI address based on Tailscale availability
+    tailscale_ip = get_tailscale_ip()
+    if tailscale_ip:
+        desired = f"{tailscale_ip}:8384"
+    else:
+        desired = "127.0.0.1:8384"
     
     # Wait for config file to exist (Syncthing generates it on first start)
     for _ in range(30):
@@ -281,11 +282,10 @@ def fix_syncthing_gui_address(config_dir: Path, gui_enabled: bool) -> bool:
     
     if not config_file.exists():
         warn(f"Config file not found: {config_file}")
-        return False
+        return desired
     
     try:
         content = config_file.read_text()
-        desired = "0.0.0.0:8384" if gui_enabled else "127.0.0.1:8384"
         changed = False
         
         # Update GUI listen address inside <gui> block
@@ -299,8 +299,8 @@ def fix_syncthing_gui_address(config_dir: Path, gui_enabled: bool) -> bool:
         else:
             warn("GUI address tag not found in config.xml")
         
-        # Ensure host check aligns with GUI mode
-        desired_hostcheck = "true" if gui_enabled else "false"
+        # Disable host check for Tailscale access (Tailscale IPs are trusted)
+        desired_hostcheck = "true" if tailscale_ip else "false"
         if f"<insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>" not in content:
             gui_block_pattern = re.compile(r"(<gui[^>]*>)(.*?)(</gui>)", re.S)
             gui_match = gui_block_pattern.search(content)
@@ -317,31 +317,27 @@ def fix_syncthing_gui_address(config_dir: Path, gui_enabled: bool) -> bool:
         
         if changed:
             config_file.write_text(content)
-        return changed
+        return desired
     except Exception as e:
         warn(f"Could not fix GUI address: {e}")
-        return False
+        return desired
 
 
 def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                          config_dir: Path) -> bool:
     """
-    Initialize Syncthing with the consume folder and proper settings.
+    Initialize Syncthing with the consume folder.
     
-    This should be called after the container starts. It:
-    1. Sets the GUI to listen on 0.0.0.0:8384 (accessible externally)
-    2. Creates the consume folder in Syncthing's config
-    
-    Without this, Syncthing won't have a folder to share with connected devices.
+    Called after the container starts to create the shared folder.
     """
     import time
     import urllib.request
     import urllib.error
     
-    # First, try to fix the GUI address directly in config.xml
-    gui_was_fixed = fix_syncthing_gui_address(config_dir, config.gui_enabled)
+    # Fix the GUI address in config.xml (binds to Tailscale IP for secure access)
+    fix_syncthing_gui_address(config_dir)
     
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    api_base = "http://localhost:8384/rest"
     
     # Wait for API to be available and get API key
     api_key = None
@@ -376,37 +372,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             current_config = json.loads(response.read().decode())
         
         config_changed = False
-        gui_changed = False
-        gui_config = current_config.get("gui", {})
-        if config.gui_enabled:
-            desired_gui_addr = "0.0.0.0:8384"
-            if gui_config.get("address") != desired_gui_addr:
-                gui_config["address"] = desired_gui_addr
-                gui_changed = True
-            if gui_config.get("insecureSkipHostcheck") is not True:
-                gui_config["insecureSkipHostcheck"] = True
-                gui_changed = True
-            if config.gui_username and gui_config.get("user") != config.gui_username:
-                gui_config["user"] = config.gui_username
-                gui_changed = True
-            if config.gui_password and gui_config.get("password") != config.gui_password:
-                gui_config["password"] = config.gui_password
-                gui_changed = True
-        else:
-            desired_gui_addr = "127.0.0.1:8384"
-            if gui_config.get("address") != desired_gui_addr:
-                gui_config["address"] = desired_gui_addr
-                gui_changed = True
-            if gui_config.get("insecureSkipHostcheck") is not False:
-                gui_config["insecureSkipHostcheck"] = False
-                gui_changed = True
-            if gui_config.get("user"):
-                gui_config["user"] = ""
-                gui_changed = True
-            if gui_config.get("password"):
-                gui_config["password"] = ""
-                gui_changed = True
-        current_config["gui"] = gui_config
+        
         # 1. Check if consume folder exists, create if not
         folder_exists = False
         for folder in current_config.get("folders", []):
@@ -432,8 +398,8 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
             config_changed = True
             say(f"Created shared folder: {config.folder_label}")
         
-        # Push updated config if changed (folder creation + GUI settings)
-        if config_changed or gui_changed:
+        # Push updated config if changed
+        if config_changed:
             config_data = json.dumps(current_config).encode()
             req = urllib.request.Request(
                 f"{api_base}/config",
@@ -442,17 +408,7 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
                 method="PUT"
             )
             urllib.request.urlopen(req, timeout=10)
-            if config_changed:
-                ok("Syncthing folder configured")
-            if gui_changed:
-                ok("Syncthing GUI configured for external access")
-        
-        # If we changed GUI settings, restart to apply
-        if gui_was_fixed or gui_changed:
-            say("Restarting Syncthing to enable external Web UI access...")
-            restart_syncthing_container(instance_name)
-            time.sleep(3)
-            ok("Web UI now accessible externally")
+            ok("Syncthing folder configured")
         
         return True
         
@@ -477,7 +433,7 @@ def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    api_base = "http://localhost:8384/rest"
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -544,7 +500,7 @@ def get_pending_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    api_base = "http://localhost:8384/rest"
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -585,7 +541,7 @@ def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    api_base = "http://localhost:8384/rest"
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -636,7 +592,7 @@ def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    api_base = "http://localhost:8384/rest"
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -660,53 +616,41 @@ def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
 
 
 def create_syncthing_config(instance_name: str, consume_path: Path, 
-                            config_dir: Path, ports: Optional[tuple[int, int]] = None) -> SyncthingConfig:
+                            config_dir: Path, sync_port: Optional[int] = None) -> SyncthingConfig:
     """Create a new Syncthing configuration for an instance."""
-    if ports is None:
-        web_ui_port = get_next_available_port(8384)
+    if sync_port is None:
         sync_port = get_next_available_port(22000)
-    else:
-        web_ui_port, sync_port = ports
     
-    config = SyncthingConfig(
+    return SyncthingConfig(
         enabled=True,
         folder_id=generate_folder_id(),
         folder_label=f"{instance_name} Consume",
         device_id="",  # Will be set after container starts
         api_key=generate_secure_password(32),
-        gui_enabled=False,
-        gui_username="",
-        gui_password="",
-        web_ui_port=web_ui_port,
         sync_port=sync_port,
     )
-    
-    return config
 
 
 def write_syncthing_compose_snippet(instance_name: str, config: SyncthingConfig,
                                      consume_path: Path, config_dir: Path) -> str:
-    """Generate Docker Compose service definition for Syncthing."""
+    """Generate Docker Compose service definition for Syncthing.
+    
+    Uses host network to bind to Tailscale interface directly.
+    Web UI is only accessible via Tailscale IP (secure by default).
+    """
     return f"""
   syncthing-{instance_name}:
     image: syncthing/syncthing:latest
     container_name: syncthing-{instance_name}
     hostname: syncthing-{instance_name}
+    network_mode: host
     environment:
       - PUID=1000
       - PGID=1000
-      - STGUIADDRESS=0.0.0.0:8384
     volumes:
       - {config_dir}:/var/syncthing/config
       - {consume_path}:/var/syncthing/data/consume
-    ports:
-      - "{config.web_ui_port}:8384"
-      - "{config.sync_port}:22000/tcp"
-      - "{config.sync_port}:22000/udp"
-      - "{config.sync_port + 27}:21027/udp"
     restart: unless-stopped
-    networks:
-      - paperless
 """
 
 
@@ -746,23 +690,34 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
     )
     
     try:
-        # Run container
-        result = subprocess.run([
+        # Get Tailscale IP for secure Web UI binding
+        from .tailscale import get_ip as get_tailscale_ip
+        tailscale_ip = get_tailscale_ip()
+        
+        # Bind Web UI to Tailscale IP only (secure) or localhost (no external access)
+        # NEVER bind to 0.0.0.0 - that would expose HTTP to the world
+        if tailscale_ip:
+            gui_addr = f"{tailscale_ip}:8384"
+            say(f"Web UI will be available via Tailscale at http://{tailscale_ip}:8384")
+        else:
+            gui_addr = "127.0.0.1:8384"
+            say("Web UI bound to localhost only (no Tailscale detected)")
+        
+        docker_cmd = [
             "docker", "run", "-d",
             "--name", container_name,
             "--hostname", container_name,
+            "--network", "host",  # Use host network to bind to Tailscale interface
             "-e", "PUID=1000",
             "-e", "PGID=1000",
-            "-e", "STGUIADDRESS=0.0.0.0:8384",
+            "-e", f"STGUIADDRESS={gui_addr}",
             "-v", f"{config_dir}:/var/syncthing/config",
             "-v", f"{consume_path}:/var/syncthing/data/consume",
-            "-p", f"{config.web_ui_port}:8384",
-            "-p", f"{config.sync_port}:22000/tcp",
-            "-p", f"{config.sync_port}:22000/udp",
-            "-p", f"{config.sync_port + 27}:21027/udp",
             "--restart", "unless-stopped",
             "syncthing/syncthing:latest"
-        ], capture_output=True, text=True, check=True)
+        ]
+        # Note: With host network, we don't need to publish ports - they bind directly
+        result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
         
         ok(f"Syncthing container started: {container_name}")
         
@@ -1257,10 +1212,6 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.syncthing.folder_label = env_vars.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
     config.syncthing.device_id = env_vars.get("CONSUME_SYNCTHING_DEVICE_ID", "")
     config.syncthing.api_key = env_vars.get("CONSUME_SYNCTHING_API_KEY", "")
-    config.syncthing.gui_enabled = env_vars.get("CONSUME_SYNCTHING_GUI_ENABLED", "").lower() == "true"
-    config.syncthing.gui_username = env_vars.get("CONSUME_SYNCTHING_GUI_USER", "")
-    config.syncthing.gui_password = env_vars.get("CONSUME_SYNCTHING_GUI_PASSWORD", "")
-    config.syncthing.web_ui_port = int(env_vars.get("CONSUME_SYNCTHING_WEB_UI_PORT", "8384"))
     config.syncthing.sync_port = int(env_vars.get("CONSUME_SYNCTHING_SYNC_PORT", "22000"))
     
     # Samba
@@ -1274,18 +1225,6 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.sftp.username = env_vars.get("CONSUME_SFTP_USERNAME", "")
     config.sftp.password = env_vars.get("CONSUME_SFTP_PASSWORD", "")
     config.sftp.port = int(env_vars.get("CONSUME_SFTP_PORT", "2222"))
-    
-    # Ensure GUI credentials exist only if GUI is enabled
-    if config.syncthing.enabled and config.syncthing.gui_enabled:
-        updated = False
-        if not config.syncthing.gui_username:
-            config.syncthing.gui_username = "paperless"
-            updated = True
-        if not config.syncthing.gui_password:
-            config.syncthing.gui_password = generate_secure_password(20)
-            updated = True
-        if updated:
-            save_consume_config(config, instance_env_file)
     
     return config
 
@@ -1305,10 +1244,6 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
         "CONSUME_SYNCTHING_FOLDER_LABEL": config.syncthing.folder_label,
         "CONSUME_SYNCTHING_DEVICE_ID": config.syncthing.device_id,
         "CONSUME_SYNCTHING_API_KEY": config.syncthing.api_key,
-        "CONSUME_SYNCTHING_GUI_ENABLED": str(config.syncthing.gui_enabled).lower(),
-        "CONSUME_SYNCTHING_GUI_USER": config.syncthing.gui_username,
-        "CONSUME_SYNCTHING_GUI_PASSWORD": config.syncthing.gui_password,
-        "CONSUME_SYNCTHING_WEB_UI_PORT": str(config.syncthing.web_ui_port),
         "CONSUME_SYNCTHING_SYNC_PORT": str(config.syncthing.sync_port),
         # Samba
         "CONSUME_SAMBA_ENABLED": str(config.samba.enabled).lower(),
@@ -1394,13 +1329,11 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
     In YOUR Syncthing: Actions → Show ID
     Copy your Device ID (looks like: XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-...)
 
-WEB UI ACCESS (OPTIONAL)
-    ─────────────────────
-    Status: {"ENABLED" if config.gui_enabled else "DISABLED (local only)"}
-    {f"URL: http://{host}:{config.web_ui_port}" if config.gui_enabled else ""}
-    {f"Username: {config.gui_username}" if config.gui_enabled else ""}
-    {f"Password: {config.gui_password}" if config.gui_enabled else ""}
-    {f"Firewall: Allow TCP {config.web_ui_port} for external access" if config.gui_enabled else ""}
+WEB UI ACCESS (TAILSCALE ONLY)
+    ────────────────────────────
+    The Web UI is only accessible via Tailscale for security (no HTTP to public internet).
+    {f"URL: http://{host}:8384" if tailscale_ip else "Not available (Tailscale not connected)"}
+    Note: No authentication is set by default. The Tailscale network provides security.
 
 3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
     ─────────────────────────────────────────────────────────
@@ -1432,7 +1365,7 @@ WEB UI ACCESS (OPTIONAL)
 Server Device ID: {device_id_display}
 Folder Name:      {config.folder_label}
 Sync Port:        {config.sync_port} (TCP/UDP)
-Web UI:           http://{host}:{config.web_ui_port} (for advanced config)
+Web UI:           {f"http://{host}:8384" if tailscale_ip else "localhost:8384 only"}
 
 🔒 SECURITY NOTE
 ────────────────
