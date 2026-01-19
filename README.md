@@ -153,10 +153,20 @@ The installer auto-detects EU vs Global regions.
 
 ### Automated Backups
 
-Configured during installation:
-- Full backups: Weekly (default Sunday 3:30 AM)
-- Incremental: Daily (default midnight)
-- Archive: Optional monthly
+The system uses a tiered backup schedule to balance storage efficiency with recovery flexibility:
+
+| Type        | Default Schedule     | Purpose                              |
+|-------------|----------------------|--------------------------------------|
+| Incremental | Every 6 hours        | Frequent checkpoints, small size     |
+| Full        | Weekly (Sun 03:30)   | Complete snapshot, faster restores   |
+| Archive     | Monthly (1st, 04:00) | Long-term retention                  |
+
+**Retention policy:**
+- All backups kept for 30 days
+- After 30 days, only monthly archives are kept (up to 180 days)
+- Non-archive backups older than 30 days are automatically cleaned up
+
+This means you get granular recovery options for recent work, but older history consolidates to monthly snapshots to save storage.
 
 Backups go to: `pcloud:backups/paperless/{instance_name}/`
 
@@ -241,10 +251,15 @@ HTTP_PORT=8000
 
 RCLONE_REMOTE_NAME=pcloud
 RCLONE_REMOTE_PATH=backups/paperless/paperless
-RETENTION_DAYS=30
 
-CRON_FULL_TIME=30 3 * * 0
-CRON_INCR_TIME=0 0 * * *
+# Backup schedule (cron format: minute hour day month weekday)
+CRON_INCR_TIME=0 */6 * * *    # Every 6 hours
+CRON_FULL_TIME=30 3 * * 0     # Sunday at 03:30
+CRON_ARCHIVE_TIME=0 4 1 * *   # 1st of month at 04:00
+
+# Retention
+RETENTION_DAYS=30             # Keep all backups this long
+RETENTION_MONTHLY_DAYS=180    # Keep monthly archives this long
 ```
 
 ### Multiple Instances
