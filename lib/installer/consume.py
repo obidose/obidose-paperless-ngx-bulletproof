@@ -845,6 +845,44 @@ def restart_syncthing_container(instance_name: str) -> bool:
         return False
 
 
+def recreate_syncthing_container(instance_name: str, config: SyncthingConfig,
+                                  consume_path: Path, config_dir: Path) -> bool:
+    """Recreate Syncthing container with updated settings (including STGUIADDRESS)."""
+    container_name = f"syncthing-{instance_name}"
+    
+    # Stop and remove existing container
+    subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        capture_output=True,
+        check=False
+    )
+    
+    try:
+        # Create new container with STGUIADDRESS for external access
+        result = subprocess.run([
+            "docker", "run", "-d",
+            "--name", container_name,
+            "--hostname", container_name,
+            "-e", "PUID=1000",
+            "-e", "PGID=1000",
+            "-e", "STGUIADDRESS=0.0.0.0:8384",
+            "-v", f"{config_dir}:/var/syncthing/config",
+            "-v", f"{consume_path}:/var/syncthing/data/consume",
+            "-p", f"{config.web_ui_port}:8384",
+            "-p", f"{config.sync_port}:22000/tcp",
+            "-p", f"{config.sync_port}:22000/udp",
+            "-p", f"{config.sync_port + 27}:21027/udp",
+            "--restart", "unless-stopped",
+            "syncthing/syncthing:latest"
+        ], capture_output=True, text=True, check=True)
+        
+        ok(f"Syncthing container recreated: {container_name}")
+        return True
+    except subprocess.CalledProcessError as e:
+        error(f"Failed to recreate container: {e.stderr}")
+        return False
+
+
 # ─── Samba Management ─────────────────────────────────────────────────────────
 
 SAMBA_CONFIG_DIR = Path("/etc/paperless-bulletproof/samba")

@@ -3929,19 +3929,15 @@ class PaperlessManager:
     def _restart_and_fix_syncthing(self, instance: Instance, config) -> None:
         """Restart Syncthing and fix Web UI access."""
         from lib.installer.consume import (
-            restart_syncthing_container, get_syncthing_status, get_syncthing_device_id,
-            fix_syncthing_gui_address
+            recreate_syncthing_container, get_syncthing_status, get_syncthing_device_id
         )
         import time
         
         config_dir = instance.stack_dir / "syncthing-config"
+        consume_path = instance.data_dir / "consume"
         
-        # Fix GUI address in config file first
-        if fix_syncthing_gui_address(config_dir):
-            say("Fixed Web UI to be externally accessible")
-        
-        say("Restarting Syncthing...")
-        restart_syncthing_container(instance.name)
+        say("Recreating Syncthing container with external Web UI access...")
+        recreate_syncthing_container(instance.name, config.syncthing, consume_path, config_dir)
         
         say("Waiting for container to start...")
         time.sleep(5)
