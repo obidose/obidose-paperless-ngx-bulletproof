@@ -4060,7 +4060,7 @@ class PaperlessManager:
         print(guide)
         if not ts_ip:
             print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
-        input("\nPress Enter to continue..."))
+        input("\nPress Enter to continue...")
     
     def _show_sftp_credentials(self, instance: Instance, config) -> None:
         """Show SFTP credentials and connection info."""
