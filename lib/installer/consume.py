@@ -183,6 +183,26 @@ def is_syncthing_available() -> bool:
 def get_syncthing_device_id(instance_name: str) -> Optional[str]:
     """Get the device ID of a running Syncthing container."""
     container_name = f"syncthing-{instance_name}"
+    
+    # Method 1: Try using syncthing CLI
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "syncthing", "cli", "show", "system"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15
+        )
+        if result.returncode == 0 and "myID" in result.stdout:
+            # Parse JSON output
+            import json
+            data = json.loads(result.stdout)
+            if "myID" in data:
+                return data["myID"]
+    except:
+        pass
+    
+    # Method 2: Try the --device-id flag (older syncthing)
     try:
         result = subprocess.run(
             ["docker", "exec", container_name, "syncthing", "--device-id"],
@@ -191,10 +211,31 @@ def get_syncthing_device_id(instance_name: str) -> Optional[str]:
             check=False,
             timeout=10
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        if result.returncode == 0 and result.stdout.strip():
+            device_id = result.stdout.strip()
+            # Validate it looks like a device ID
+            if "-" in device_id and len(device_id) > 20:
+                return device_id
     except:
         pass
+    
+    # Method 3: Parse from config.xml if container volume is accessible
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "cat", "/var/syncthing/config/config.xml"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10
+        )
+        if result.returncode == 0:
+            import re
+            match = re.search(r'<device id="([^"]+)" name="[^"]*" compression="', result.stdout)
+            if match:
+                return match.group(1)
+    except:
+        pass
+    
     return None
 
 
@@ -470,7 +511,27 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
         
         # Wait for it to initialize and get device ID
         import time
-        for _ in range(30):
+        say("Waiting for Syncthing to initialize...")
+        
+        # First, wait for the container to actually be running
+        for attempt in range(10):
+            time.sleep(1)
+            status = get_syncthing_status(instance_name)
+            if status["running"]:
+                break
+            elif status["status"] == "exited":
+                error(f"Syncthing container exited with code {status.get('exit_code', '?')}")
+                # Show last few log lines
+                logs = get_syncthing_logs(instance_name, 10)
+                if logs:
+                    warn("Last log output:")
+                    for line in logs.split("\n")[-5:]:
+                        if line.strip():
+                            print(f"  {line}")
+                return False
+        
+        # Now wait for device ID to become available
+        for attempt in range(30):
             time.sleep(1)
             device_id = get_syncthing_device_id(instance_name)
             if device_id:
@@ -481,11 +542,15 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
                 configure_syncthing_auto_accept(instance_name, config, config_dir)
                 return True
         
-        warn("Syncthing started but could not retrieve device ID")
+        # Container is running but we can't get device ID
+        warn("Syncthing is running but could not retrieve device ID")
+        warn("This may resolve itself - check 'Diagnose' menu for logs")
         return True
         
     except subprocess.CalledProcessError as e:
         error(f"Failed to start Syncthing: {e}")
+        if e.stderr:
+            warn(f"Error: {e.stderr}")
         return False
 
 
@@ -505,25 +570,96 @@ def stop_syncthing_container(instance_name: str) -> bool:
 
 
 def get_syncthing_status(instance_name: str) -> dict:
-    """Get status of Syncthing container."""
+    """Get detailed status of Syncthing container."""
+    container_name = f"syncthing-{instance_name}"
+    result = {
+        "running": False,
+        "status": "not found",
+        "container": container_name,
+        "exit_code": None,
+        "error": None,
+        "uptime": None,
+    }
+    
+    try:
+        # Get container state
+        inspect_result = subprocess.run(
+            ["docker", "inspect", container_name, "--format", 
+             "{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.State.StartedAt}}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if inspect_result.returncode == 0:
+            parts = inspect_result.stdout.strip().split("|")
+            if len(parts) >= 4:
+                status = parts[0]
+                result["status"] = status
+                result["running"] = status == "running"
+                result["exit_code"] = int(parts[1]) if parts[1].isdigit() else None
+                result["error"] = parts[2] if parts[2] else None
+                
+                # Calculate uptime if running
+                if status == "running" and parts[3]:
+                    try:
+                        from datetime import datetime
+                        started = parts[3].split(".")[0].replace("T", " ")
+                        start_time = datetime.fromisoformat(started.replace("Z", ""))
+                        uptime = datetime.utcnow() - start_time
+                        if uptime.total_seconds() < 60:
+                            result["uptime"] = f"{int(uptime.total_seconds())}s"
+                        elif uptime.total_seconds() < 3600:
+                            result["uptime"] = f"{int(uptime.total_seconds() / 60)}m"
+                        else:
+                            result["uptime"] = f"{int(uptime.total_seconds() / 3600)}h"
+                    except:
+                        pass
+        else:
+            result["status"] = "not found"
+            
+    except Exception as e:
+        result["error"] = str(e)
+    
+    return result
+
+
+def get_syncthing_logs(instance_name: str, lines: int = 50) -> str:
+    """Get recent logs from Syncthing container."""
     container_name = f"syncthing-{instance_name}"
     try:
         result = subprocess.run(
-            ["docker", "inspect", container_name, "--format", "{{.State.Status}}"],
+            ["docker", "logs", "--tail", str(lines), container_name],
             capture_output=True,
             text=True,
             check=False
         )
         if result.returncode == 0:
-            status = result.stdout.strip()
-            return {
-                "running": status == "running",
-                "status": status,
-                "container": container_name
-            }
-    except:
-        pass
-    return {"running": False, "status": "not found", "container": container_name}
+            return result.stdout + result.stderr
+        return f"Could not get logs: container '{container_name}' not found"
+    except Exception as e:
+        return f"Error getting logs: {e}"
+
+
+def restart_syncthing_container(instance_name: str) -> bool:
+    """Restart Syncthing container."""
+    container_name = f"syncthing-{instance_name}"
+    try:
+        result = subprocess.run(
+            ["docker", "restart", container_name],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            ok(f"Syncthing container restarted: {container_name}")
+            return True
+        else:
+            error(f"Failed to restart: {result.stderr}")
+            return False
+    except Exception as e:
+        error(f"Failed to restart: {e}")
+        return False
 
 
 # ─── Samba Management ─────────────────────────────────────────────────────────

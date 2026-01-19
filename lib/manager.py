@@ -3590,7 +3590,8 @@ class PaperlessManager:
             start_samba_container, remove_samba_user, add_samba_user, write_samba_share_config, reload_samba_config,
             start_sftp_container, stop_sftp_container,
             generate_syncthing_guide, generate_samba_guide, generate_sftp_guide,
-            load_consume_config, save_consume_config, generate_secure_password
+            load_consume_config, save_consume_config, generate_secure_password,
+            get_syncthing_status, get_syncthing_logs, restart_syncthing_container
         )
         
         while True:
@@ -3606,10 +3607,24 @@ class PaperlessManager:
             print(box_line(f" Consume folder: {instance.data_root / 'consume'}"))
             print(draw_box_divider(box_width))
             
-            # Syncthing status
+            # Syncthing status - show LIVE container state
+            syncthing_live_status = None
             if config.syncthing.enabled:
-                syncthing_status = colorize("✓ ENABLED", Colors.GREEN)
-                syncthing_detail = f"UI: http://localhost:{config.syncthing.web_ui_port}"
+                syncthing_live_status = get_syncthing_status(instance.name)
+                if syncthing_live_status["running"]:
+                    uptime_str = f" (up {syncthing_live_status['uptime']})" if syncthing_live_status.get('uptime') else ""
+                    syncthing_status = colorize(f"✓ RUNNING{uptime_str}", Colors.GREEN)
+                    syncthing_detail = f"UI: http://localhost:{config.syncthing.web_ui_port}"
+                elif syncthing_live_status["status"] == "exited":
+                    exit_code = syncthing_live_status.get('exit_code', '?')
+                    syncthing_status = colorize(f"✗ CRASHED (exit {exit_code})", Colors.RED)
+                    syncthing_detail = "Use option 5 to diagnose"
+                elif syncthing_live_status["status"] == "not found":
+                    syncthing_status = colorize("✗ NOT RUNNING", Colors.RED)
+                    syncthing_detail = "Container not found - try re-enabling"
+                else:
+                    syncthing_status = colorize(f"⚠ {syncthing_live_status['status'].upper()}", Colors.YELLOW)
+                    syncthing_detail = f"Container state: {syncthing_live_status['status']}"
             else:
                 syncthing_status = colorize("○ Disabled", Colors.YELLOW)
                 syncthing_detail = "Secure peer-to-peer sync"
@@ -3641,15 +3656,23 @@ class PaperlessManager:
             print(draw_box_bottom(box_width))
             print()
             
+            # Build options dynamically based on state
             options = [
                 ("1", f"{'Disable' if config.syncthing.enabled else 'Enable'} Syncthing"),
                 ("2", f"{'Disable' if config.samba.enabled else 'Enable'} Samba"),
                 ("3", f"{'Disable' if config.sftp.enabled else 'Enable'} SFTP"),
                 ("", ""),
                 ("4", "View setup guides / credentials"),
+            ]
+            
+            # Add diagnose option if any consume method is enabled
+            if config.syncthing.enabled or config.samba.enabled or config.sftp.enabled:
+                options.append(("5", "Diagnose / View logs"))
+            
+            options.extend([
                 ("", ""),
                 ("0", colorize("◀ Back", Colors.CYAN))
-            ]
+            ])
             
             for key, desc in options:
                 if key:
@@ -3670,8 +3693,131 @@ class PaperlessManager:
                 self._toggle_sftp(instance, config)
             elif choice == "4":
                 self._show_consume_setup_guides(instance, config)
+            elif choice == "5" and (config.syncthing.enabled or config.samba.enabled or config.sftp.enabled):
+                self._diagnose_consume_services(instance, config)
             else:
                 warn("Invalid option")
+    
+    def _diagnose_consume_services(self, instance: Instance, config) -> None:
+        """Show diagnostic information for consume services."""
+        from lib.installer.consume import (
+            get_syncthing_status, get_syncthing_logs, restart_syncthing_container,
+            get_syncthing_device_id, is_samba_available, is_sftp_available
+        )
+        
+        print_header("Consume Services Diagnostics")
+        
+        # Syncthing diagnostics
+        if config.syncthing.enabled:
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SYNCTHING DIAGNOSTICS", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print()
+            
+            status = get_syncthing_status(instance.name)
+            container_name = f"syncthing-{instance.name}"
+            
+            print(f"  Container:     {container_name}")
+            print(f"  Status:        ", end="")
+            if status["running"]:
+                print(colorize(f"RUNNING", Colors.GREEN), end="")
+                if status.get("uptime"):
+                    print(f" (up {status['uptime']})")
+                else:
+                    print()
+            elif status["status"] == "exited":
+                print(colorize(f"EXITED (code {status.get('exit_code', '?')})", Colors.RED))
+            elif status["status"] == "not found":
+                print(colorize("NOT FOUND", Colors.RED))
+            else:
+                print(colorize(status["status"].upper(), Colors.YELLOW))
+            
+            print(f"  Web UI Port:   {config.syncthing.web_ui_port}")
+            print(f"  Sync Port:     {config.syncthing.sync_port}")
+            
+            # Try to get device ID
+            device_id = get_syncthing_device_id(instance.name)
+            if device_id:
+                print(f"  Device ID:     {colorize('Available', Colors.GREEN)}")
+            else:
+                print(f"  Device ID:     {colorize('Not available', Colors.RED)}")
+            
+            print()
+            
+            # Show recent logs
+            print(colorize("  Recent Logs (last 20 lines):", Colors.BOLD))
+            print(colorize("  " + "─" * 50, Colors.CYAN))
+            logs = get_syncthing_logs(instance.name, 20)
+            for line in logs.split("\n")[-20:]:
+                if line.strip():
+                    # Highlight errors
+                    if "error" in line.lower() or "fatal" in line.lower():
+                        print(f"  {colorize(line[:70], Colors.RED)}")
+                    elif "warning" in line.lower():
+                        print(f"  {colorize(line[:70], Colors.YELLOW)}")
+                    else:
+                        print(f"  {line[:70]}")
+            print()
+            
+            # Offer restart option
+            if status["status"] != "not found":
+                if confirm("Would you like to restart Syncthing?", False):
+                    restart_syncthing_container(instance.name)
+                    import time
+                    say("Waiting for container to start...")
+                    time.sleep(5)
+                    
+                    # Check new status
+                    new_status = get_syncthing_status(instance.name)
+                    if new_status["running"]:
+                        ok("Syncthing is now running")
+                        # Try to get device ID
+                        time.sleep(3)
+                        device_id = get_syncthing_device_id(instance.name)
+                        if device_id:
+                            ok(f"Device ID: {device_id}")
+                            self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
+                    else:
+                        error(f"Syncthing failed to start: {new_status['status']}")
+            print()
+        
+        # Samba diagnostics
+        if config.samba.enabled:
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SAMBA DIAGNOSTICS", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print()
+            
+            samba_running = is_samba_available()
+            print(f"  Container:     paperless-samba")
+            print(f"  Status:        ", end="")
+            if samba_running:
+                print(colorize("RUNNING", Colors.GREEN))
+            else:
+                print(colorize("NOT RUNNING", Colors.RED))
+            print(f"  Share Name:    {config.samba.share_name}")
+            print(f"  Username:      {config.samba.username}")
+            print()
+        
+        # SFTP diagnostics
+        if config.sftp.enabled:
+            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize(" SFTP DIAGNOSTICS", Colors.BOLD))
+            print(colorize("═" * 60, Colors.CYAN))
+            print()
+            
+            sftp_running = is_sftp_available()
+            print(f"  Container:     paperless-sftp")
+            print(f"  Status:        ", end="")
+            if sftp_running:
+                print(colorize("RUNNING", Colors.GREEN))
+            else:
+                print(colorize("NOT RUNNING", Colors.RED))
+            print(f"  Port:          {config.sftp.port}")
+            print(f"  Username:      {config.sftp.username}")
+            print()
+        
+        input("\nPress Enter to continue...")
     
     def _toggle_syncthing(self, instance: Instance, config) -> None:
         """Toggle Syncthing for an instance."""
