@@ -515,7 +515,7 @@ class InstanceManager:
 
 def print_header(title: str) -> None:
     """Print a decorative header."""
-    width = max(60, len(title) + 10)
+    width = max(80, len(title) + 10)
     print()
     print(colorize("╔" + "═" * (width - 2) + "╗", Colors.CYAN))
     print(colorize(f"║{title.center(width - 2)}║", Colors.CYAN))
@@ -3591,7 +3591,8 @@ class PaperlessManager:
             start_sftp_container, stop_sftp_container,
             generate_syncthing_guide, generate_samba_guide, generate_sftp_guide,
             load_consume_config, save_consume_config, generate_secure_password,
-            get_syncthing_status, get_syncthing_logs, restart_syncthing_container
+            get_syncthing_status, get_syncthing_logs, restart_syncthing_container,
+            list_syncthing_devices
         )
         
         while True:
@@ -3600,7 +3601,7 @@ class PaperlessManager:
             # Load current config from env file
             config = load_consume_config(instance.env_file)
             
-            box_line, box_width = create_box_helper(68)
+            box_line, box_width = create_box_helper(80)
             print(draw_box_top(box_width))
             print(box_line(f" Configure how documents get into your Paperless consume folder"))
             print(box_line(f""))
@@ -3609,16 +3610,21 @@ class PaperlessManager:
             
             # Syncthing status - show LIVE container state
             syncthing_live_status = None
+            syncthing_device_count = 0
             if config.syncthing.enabled:
                 syncthing_live_status = get_syncthing_status(instance.name)
                 if syncthing_live_status["running"]:
                     uptime_str = f" (up {syncthing_live_status['uptime']})" if syncthing_live_status.get('uptime') else ""
                     syncthing_status = colorize(f"✓ RUNNING{uptime_str}", Colors.GREEN)
-                    syncthing_detail = f"UI: http://localhost:{config.syncthing.web_ui_port}"
+                    # Get device count
+                    config_dir = instance.stack_dir / "syncthing-config"
+                    devices = list_syncthing_devices(instance.name, config.syncthing, config_dir)
+                    syncthing_device_count = len(devices)
+                    syncthing_detail = f"{syncthing_device_count} device(s) configured"
                 elif syncthing_live_status["status"] == "exited":
                     exit_code = syncthing_live_status.get('exit_code', '?')
                     syncthing_status = colorize(f"✗ CRASHED (exit {exit_code})", Colors.RED)
-                    syncthing_detail = "Use option 5 to diagnose"
+                    syncthing_detail = "Use Diagnose option to troubleshoot"
                 elif syncthing_live_status["status"] == "not found":
                     syncthing_status = colorize("✗ NOT RUNNING", Colors.RED)
                     syncthing_detail = "Container not found - try re-enabling"
@@ -3665,9 +3671,15 @@ class PaperlessManager:
                 ("4", "View setup guides / credentials"),
             ]
             
+            # Add Syncthing device management if enabled and running
+            if config.syncthing.enabled and syncthing_live_status and syncthing_live_status.get("running"):
+                options.append(("5", "Add a Syncthing device"))
+                if syncthing_device_count > 0:
+                    options.append(("6", "Manage Syncthing devices"))
+            
             # Add diagnose option if any consume method is enabled
             if config.syncthing.enabled or config.samba.enabled or config.sftp.enabled:
-                options.append(("5", "Diagnose / View logs"))
+                options.append(("7", "Diagnose / View logs"))
             
             options.extend([
                 ("", ""),
@@ -3693,11 +3705,105 @@ class PaperlessManager:
                 self._toggle_sftp(instance, config)
             elif choice == "4":
                 self._show_consume_setup_guides(instance, config)
-            elif choice == "5" and (config.syncthing.enabled or config.samba.enabled or config.sftp.enabled):
+            elif choice == "5" and config.syncthing.enabled and syncthing_live_status and syncthing_live_status.get("running"):
+                self._add_syncthing_device(instance, config)
+            elif choice == "6" and config.syncthing.enabled and syncthing_device_count > 0:
+                self._manage_syncthing_devices(instance, config)
+            elif choice == "7" and (config.syncthing.enabled or config.samba.enabled or config.sftp.enabled):
                 self._diagnose_consume_services(instance, config)
             else:
                 warn("Invalid option")
     
+    def _add_syncthing_device(self, instance: Instance, config) -> None:
+        """Add a new device to Syncthing."""
+        from lib.installer.consume import add_device_to_syncthing
+        
+        print_header("Add Syncthing Device")
+        
+        print("  To add a user's device, you need their Syncthing Device ID.")
+        print("  They can find it in their Syncthing: Actions → Show ID")
+        print()
+        print("  Device IDs look like: XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX")
+        print()
+        
+        device_id = get_input("Paste the Device ID (or Enter to cancel)", "").strip().upper()
+        
+        if not device_id:
+            say("Cancelled")
+            return
+        
+        # Basic validation - should be 7 groups of 7 chars separated by dashes
+        if not (len(device_id) >= 50 and "-" in device_id):
+            error("Invalid Device ID format. Should look like: XXXXXXX-XXXXXXX-XXXXXXX-...")
+            input("\nPress Enter to continue...")
+            return
+        
+        device_name = get_input("Name for this device (e.g., 'John's Laptop')", "User Device")
+        
+        config_dir = instance.stack_dir / "syncthing-config"
+        
+        if add_device_to_syncthing(instance.name, config.syncthing, config_dir, device_id, device_name):
+            print()
+            ok(f"Device '{device_name}' added successfully!")
+            print()
+            say("The user should now:")
+            print("  1. Add THIS server's Device ID to their Syncthing")
+            print("  2. Accept the shared folder when prompted")
+            print()
+            say(f"Server Device ID: {config.syncthing.device_id}")
+        else:
+            error("Failed to add device")
+        
+        input("\nPress Enter to continue...")
+    
+    def _manage_syncthing_devices(self, instance: Instance, config) -> None:
+        """List and manage Syncthing devices."""
+        from lib.installer.consume import list_syncthing_devices, remove_device_from_syncthing
+        
+        while True:
+            print_header("Manage Syncthing Devices")
+            
+            config_dir = instance.stack_dir / "syncthing-config"
+            devices = list_syncthing_devices(instance.name, config.syncthing, config_dir)
+            
+            if not devices:
+                say("No devices configured (other than this server)")
+                input("\nPress Enter to continue...")
+                return
+            
+            print("  Configured devices:")
+            print()
+            for i, device in enumerate(devices, 1):
+                status = colorize("● Connected", Colors.GREEN) if device["connected"] else colorize("○ Disconnected", Colors.YELLOW)
+                print(f"  {colorize(str(i) + ')', Colors.BOLD)} {device['name']}")
+                print(f"      {status}")
+                print(f"      ID: {device['deviceID'][:20]}...")
+                print()
+            
+            print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+            print()
+            
+            choice = get_input("Select device to remove (or 0 to go back)", "0")
+            
+            if choice == "0":
+                return
+            
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(devices):
+                    device = devices[idx]
+                    confirm = get_input(f"Remove '{device['name']}'? [y/N]", "n").lower()
+                    if confirm == "y":
+                        if remove_device_from_syncthing(instance.name, config.syncthing, config_dir, device["deviceID"]):
+                            ok(f"Removed '{device['name']}'")
+                        else:
+                            error("Failed to remove device")
+                        input("\nPress Enter to continue...")
+                else:
+                    warn("Invalid selection")
+            except ValueError:
+                warn("Invalid selection")
+
     def _diagnose_consume_services(self, instance: Instance, config) -> None:
         """Show diagnostic information for consume services."""
         from lib.installer.consume import (
@@ -4060,27 +4166,27 @@ class PaperlessManager:
                     self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
             
             guide = generate_syncthing_guide(instance.name, config.syncthing, local_ip)
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(colorize(" SYNCTHING SETUP", Colors.BOLD))
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(guide)
             print()
         
         if config.samba.enabled:
             any_enabled = True
             guide = generate_samba_guide(instance.name, config.samba, local_ip)
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(colorize(" SAMBA SETUP", Colors.BOLD))
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(guide)
             print()
         
         if config.sftp.enabled:
             any_enabled = True
             guide = generate_sftp_guide(instance.name, config.sftp, local_ip)
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(colorize(" SFTP SETUP", Colors.BOLD))
-            print(colorize("═" * 60, Colors.CYAN))
+            print(colorize("═" * 80, Colors.CYAN))
             print(guide)
             print()
         

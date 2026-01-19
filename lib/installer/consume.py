@@ -255,115 +255,14 @@ def get_syncthing_api_key(config_dir: Path) -> Optional[str]:
     return None
 
 
-def configure_syncthing_auto_accept(instance_name: str, config: SyncthingConfig, 
-                                     config_dir: Path) -> bool:
-    """
-    Configure Syncthing to auto-accept new devices and share the consume folder.
-    
-    This enables the "reversed" workflow where users add the server from their
-    local Syncthing rather than needing access to the server's Web UI.
-    """
-    import time
-    import urllib.request
-    import urllib.error
-    
-    container_name = f"syncthing-{instance_name}"
-    api_base = f"http://localhost:{config.web_ui_port}/rest"
-    
-    # Wait for API to be available
-    api_key = None
-    for attempt in range(30):
-        api_key = get_syncthing_api_key(config_dir)
-        if api_key:
-            break
-        time.sleep(1)
-    
-    if not api_key:
-        warn("Could not get Syncthing API key - auto-accept not configured")
-        return False
-    
-    headers = {
-        "X-API-Key": api_key,
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        # Wait for API to be ready
-        for attempt in range(30):
-            try:
-                req = urllib.request.Request(f"{api_base}/system/status", headers=headers)
-                urllib.request.urlopen(req, timeout=5)
-                break
-            except:
-                time.sleep(1)
-        
-        # Get current config
-        req = urllib.request.Request(f"{api_base}/config", headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as response:
-            current_config = json.loads(response.read().decode())
-        
-        # Enable auto-accept for new devices (they'll be added automatically)
-        # Set defaults for new devices to auto-accept and share the consume folder
-        if "defaults" not in current_config:
-            current_config["defaults"] = {}
-        if "device" not in current_config["defaults"]:
-            current_config["defaults"]["device"] = {}
-        
-        # Auto-accept new devices
-        current_config["defaults"]["device"]["autoAcceptFolders"] = True
-        current_config["defaults"]["device"]["untrusted"] = False
-        
-        # Ensure the consume folder exists in config and is set to share with new devices
-        folder_exists = False
-        for folder in current_config.get("folders", []):
-            if folder.get("id") == config.folder_id:
-                folder_exists = True
-                # Ensure folder is shared with all devices
-                break
-        
-        if not folder_exists:
-            # Add the consume folder
-            current_config.setdefault("folders", []).append({
-                "id": config.folder_id,
-                "label": config.folder_label,
-                "path": "/var/syncthing/data/consume",
-                "type": "sendreceive",
-                "devices": [{"deviceID": config.device_id}] if config.device_id else [],
-                "rescanIntervalS": 60,
-                "fsWatcherEnabled": True,
-                "fsWatcherDelayS": 10,
-                "autoNormalize": True,
-            })
-        
-        # Set GUI to allow remote access (for Tailscale users who can reach it)
-        if "gui" in current_config:
-            current_config["gui"]["address"] = "0.0.0.0:8384"
-        
-        # Push updated config
-        config_data = json.dumps(current_config).encode()
-        req = urllib.request.Request(
-            f"{api_base}/config", 
-            data=config_data, 
-            headers=headers,
-            method="PUT"
-        )
-        urllib.request.urlopen(req, timeout=10)
-        
-        ok("Syncthing configured for auto-accept")
-        return True
-        
-    except Exception as e:
-        warn(f"Could not configure Syncthing auto-accept: {e}")
-        return False
-
-
 def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
                             config_dir: Path, remote_device_id: str, 
                             device_name: str = "User Device") -> bool:
     """
     Add a remote device to Syncthing and share the consume folder with it.
     
-    This can be used if auto-accept doesn't work or for manual setup.
+    This is the secure way to add devices - the admin explicitly adds each device
+    by pasting its Device ID. Both sides must explicitly trust each other.
     """
     import urllib.request
     
@@ -421,6 +320,94 @@ def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
         
     except Exception as e:
         error(f"Failed to add device to Syncthing: {e}")
+        return False
+
+
+def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
+                           config_dir: Path) -> list[dict]:
+    """
+    List all devices currently configured in Syncthing.
+    
+    Returns a list of dicts with 'deviceID', 'name', and 'connected' status.
+    """
+    import urllib.request
+    import urllib.error
+    
+    api_key = get_syncthing_api_key(config_dir)
+    if not api_key:
+        return []
+    
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Get current config for device list
+        req = urllib.request.Request(f"{api_base}/config/devices", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            devices = json.loads(response.read().decode())
+        
+        # Get connection status
+        req = urllib.request.Request(f"{api_base}/system/connections", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            connections = json.loads(response.read().decode())
+        
+        result = []
+        our_device_id = config.device_id
+        
+        for device in devices:
+            device_id = device.get("deviceID", "")
+            # Skip our own device
+            if device_id == our_device_id:
+                continue
+            
+            conn_info = connections.get("connections", {}).get(device_id, {})
+            result.append({
+                "deviceID": device_id,
+                "name": device.get("name", "Unknown"),
+                "connected": conn_info.get("connected", False),
+            })
+        
+        return result
+        
+    except Exception:
+        return []
+
+
+def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
+                                  config_dir: Path, device_id: str) -> bool:
+    """
+    Remove a device from Syncthing.
+    """
+    import urllib.request
+    
+    api_key = get_syncthing_api_key(config_dir)
+    if not api_key:
+        error("Could not get Syncthing API key")
+        return False
+    
+    api_base = f"http://localhost:{config.web_ui_port}/rest"
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Delete device via API
+        req = urllib.request.Request(
+            f"{api_base}/config/devices/{device_id}",
+            headers=headers,
+            method="DELETE"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        
+        ok("Device removed from Syncthing")
+        return True
+        
+    except Exception as e:
+        error(f"Failed to remove device: {e}")
         return False
 
 
@@ -554,9 +541,6 @@ def start_syncthing_container(instance_name: str, config: SyncthingConfig,
             if device_id:
                 config.device_id = device_id
                 ok(f"Syncthing device ID: {device_id}")
-                
-                # Configure auto-accept for incoming connections
-                configure_syncthing_auto_accept(instance_name, config, config_dir)
                 return True
         
         # Container is running but we can't get device ID
@@ -1104,90 +1088,74 @@ def generate_syncthing_guide(instance_name: str, config: SyncthingConfig,
         device_id_display = config.device_id
         device_id_status = "✓ Ready"
     else:
-        device_id_display = "(Server starting up - run guide again in 30 seconds)"
+        device_id_display = "(Server starting up - view guide again in 30 seconds)"
         device_id_status = "⏳ Starting..."
     
     return f"""
-╭──────────────────────────────────────────────────────────────╮
-│                  SYNCTHING SETUP GUIDE                       │
-│                  Instance: {instance_name:<30}│
-╰──────────────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────────────────────────────────╮
+│                           SYNCTHING SETUP GUIDE                                │
+│                           Instance: {instance_name:<40}│
+╰────────────────────────────────────────────────────────────────────────────────╯
 
-┌─────────────────────────────────────────────────────────────┐
-│  📋 SERVER DEVICE ID (copy this):                           │
-│                                                             │
-│  {device_id_display:<55} │
-│                                                             │
-│  Status: {device_id_status:<50}│
-└─────────────────────────────────────────────────────────────┘
+Syncthing requires BOTH sides to add each other (mutual trust for security).
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📋 SERVER DEVICE ID:                                                        │
+│  {device_id_display:<74}│
+│  Status: {device_id_status:<68}│
+└──────────────────────────────────────────────────────────────────────────────┘
 
-1️⃣  INSTALL SYNCTHING ON YOUR COMPUTER/PHONE
-    ─────────────────────────────────────────
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1️⃣  INSTALL SYNCTHING ON YOUR DEVICE
+    ──────────────────────────────────
     Download from: https://syncthing.net/downloads/
+    • Windows/Mac/Linux: Download installer or use package manager
+    • Mobile: Search "Syncthing" in your app store
     
-    • Windows: Download and run the installer
-    • Mac: brew install syncthing  (or download DMG)
-    • Linux: sudo apt install syncthing
-    • Android/iOS: Search "Syncthing" in your app store
-    
-    Then open Syncthing on your device (usually http://localhost:8384)
+    Open Syncthing (usually http://localhost:8384)
 
-2️⃣  ADD THE PAPERLESS SERVER TO YOUR SYNCTHING
-    ───────────────────────────────────────────
-    On YOUR computer/phone's Syncthing:
-    
-    • Click "+ Add Remote Device"
+2️⃣  GET YOUR DEVICE ID
+    ────────────────────
+    In YOUR Syncthing: Actions → Show ID
+    Copy your Device ID (looks like: XXXXXXX-XXXXXXX-XXXXXXX-XXXXXXX-...)
+
+3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
+    ─────────────────────────────────────────────────────────
+    Go back to the Consume menu and select "Add a Syncthing device"
+    Paste YOUR Device ID and give it a name (e.g., "John's Laptop")
+
+4️⃣  ADD THE SERVER TO YOUR SYNCTHING
+    ──────────────────────────────────
+    In YOUR Syncthing: + Add Remote Device
     • Paste the SERVER DEVICE ID shown above
-    • Name it: "Paperless Server" (or anything you like)
+    • Name: "Paperless Server"
     • Click Save
 
-3️⃣  WAIT FOR THE SERVER TO ACCEPT
-    ──────────────────────────────
-    The Paperless server will automatically accept your connection.
-    You should see "Paperless Server" appear as connected (green).
-    
-    ⏱️  This may take 30-60 seconds.
-
-4️⃣  ACCEPT THE SHARED FOLDER
+5️⃣  ACCEPT THE SHARED FOLDER
     ─────────────────────────
-    Once connected, your Syncthing will show a notification:
-    
-    "Paperless Server wants to share folder '{config.folder_label}'"
-    
-    • Click "Add" to accept
-    • Choose where to save files on YOUR device
-      (e.g., ~/Documents/Paperless-Inbox)
+    Your Syncthing will show: "Paperless Server wants to share folder '{config.folder_label}'"
+    • Click "Add"
+    • Choose where to save files (e.g., ~/Documents/Paperless-Inbox)
     • Click Save
 
-5️⃣  START SYNCING!
+6️⃣  START SYNCING!
     ───────────────
-    • Drop PDF/documents into your local folder
-    • They'll automatically sync to Paperless
-    • Paperless will process and delete the originals
+    Drop documents into your local folder → they sync to Paperless automatically!
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📊 CONNECTION DETAILS
-────────────────────
+📊 CONNECTION INFO
+──────────────────
 Server Device ID: {device_id_display}
-Folder ID:        {config.folder_id}
 Folder Name:      {config.folder_label}
 Sync Port:        {config.sync_port} (TCP/UDP)
+Web UI:           http://{host}:{config.web_ui_port} (for advanced config)
 
-💡 TIPS
-───────
-• Make sure port {config.sync_port} is open on the server firewall
-• First sync may take a moment to establish
-• Files are encrypted during transfer
-• No account or cloud service needed!
-
-🔧 TROUBLESHOOTING
-──────────────────
-• "Device ID not found": Wait 30 sec and view guide again
-• "Connection refused": Check firewall allows port {config.sync_port}
-• "Disconnected": Both devices must be online simultaneously
+🔒 SECURITY NOTE
+────────────────
+Both sides must explicitly add each other - this prevents unauthorized access.
+Only share Device IDs with people you trust to upload documents.
 """
 
 
@@ -1197,27 +1165,26 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
     host = tailscale_ip or "your-server-ip"
     
     return f"""
-╭──────────────────────────────────────────────────────────────╮
-│                  SAMBA (SMB) SETUP GUIDE                     │
-│                  Instance: {instance_name:<30}│
-╰──────────────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────────────────────────────────╮
+│                           SAMBA (SMB) SETUP GUIDE                              │
+│                           Instance: {instance_name:<40}│
+╰────────────────────────────────────────────────────────────────────────────────╯
 
-┌─────────────────────────────────────────────────────────────┐
-│  📋 CREDENTIALS (save these):                               │
-│                                                             │
-│  Server:   {host:<47} │
-│  Share:    {config.share_name:<47} │
-│  Username: {config.username:<47} │
-│  Password: {config.password:<47} │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📋 CREDENTIALS (save these):                                                │
+│                                                                              │
+│  Server:   {host:<65}│
+│  Share:    {config.share_name:<65}│
+│  Username: {config.username:<65}│
+│  Password: {config.password:<65}│
+└──────────────────────────────────────────────────────────────────────────────┘
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🪟 WINDOWS - Connect from File Explorer
     ────────────────────────────────────
     1. Open File Explorer
-    2. Click in the address bar and type:
-       \\\\{host}\\{config.share_name}
+    2. Click in the address bar and type: \\\\{host}\\{config.share_name}
     3. Press Enter
     4. When prompted for credentials:
        • Username: {config.username}
@@ -1247,7 +1214,7 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
           sudo mount -t cifs //{host}/{config.share_name} /mnt/paperless \\
             -o username={config.username},password={config.password}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ✅ DONE!
     Drag and drop PDF/documents into the network folder.
@@ -1267,21 +1234,21 @@ def generate_sftp_guide(instance_name: str, config: SFTPConfig,
     host = tailscale_ip or "your-server-ip"
     
     return f"""
-╭──────────────────────────────────────────────────────────────╮
-│                     SFTP SETUP GUIDE                         │
-│                  Instance: {instance_name:<30}│
-╰──────────────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────────────────────────────────╮
+│                            SFTP SETUP GUIDE                                    │
+│                           Instance: {instance_name:<40}│
+╰────────────────────────────────────────────────────────────────────────────────╯
 
-┌─────────────────────────────────────────────────────────────┐
-│  📋 CREDENTIALS (save these):                               │
-│                                                             │
-│  Host:     {host:<47} │
-│  Port:     {config.port:<47} │
-│  Username: {config.username:<47} │
-│  Password: {config.password:<47} │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  📋 CREDENTIALS (save these):                                                │
+│                                                                              │
+│  Host:     {host:<65}│
+│  Port:     {config.port:<65}│
+│  Username: {config.username:<65}│
+│  Password: {config.password:<65}│
+└──────────────────────────────────────────────────────────────────────────────┘
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🪟 WINDOWS - Using WinSCP or FileZilla
     ────────────────────────────────────
@@ -1320,7 +1287,7 @@ def generate_sftp_guide(instance_name: str, config: SFTPConfig,
     • Password: {config.password}
     • Navigate to /consume and upload files
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ✅ DONE!
     Upload PDF/documents to the consume folder.
