@@ -358,10 +358,38 @@ def prompt_core_values() -> None:
 
 
 def get_next_available_port(start_port: int = 8000) -> str:
-    """Find the next available port starting from start_port."""
+    """Find the next available port starting from start_port.
+    
+    Checks both:
+    1. OS-level port availability (socket bind)
+    2. Ports used by existing Paperless instances (from .env files)
+    """
     import socket
+    
+    # Get ports used by existing instances
+    used_ports = set()
+    instances_base = Path("/home/docker")
+    if instances_base.exists():
+        for setup_dir in instances_base.glob("*-setup"):
+            env_file = setup_dir / ".env"
+            if env_file.exists():
+                try:
+                    for line in env_file.read_text().splitlines():
+                        if line.startswith("HTTP_PORT="):
+                            port = line.split("=", 1)[1].strip()
+                            if port.isdigit():
+                                used_ports.add(int(port))
+                except Exception:
+                    pass
+    
     port = start_port
     while port < 65535:
+        # Skip if already used by an instance
+        if port in used_ports:
+            port += 1
+            continue
+        
+        # Check if port is available at OS level
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(('', port))

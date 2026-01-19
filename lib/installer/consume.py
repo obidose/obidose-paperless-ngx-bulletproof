@@ -129,6 +129,69 @@ class ConsumeConfig:
         return methods
 
 
+@dataclass
+class GlobalConsumeConfig:
+    """Global settings for consume services (affects all instances)."""
+    samba_tailscale_only: bool = False  # If True, Samba only accessible via Tailscale
+    sftp_tailscale_only: bool = False   # If True, SFTP only accessible via Tailscale
+    
+    def to_dict(self) -> dict:
+        return {
+            "samba_tailscale_only": self.samba_tailscale_only,
+            "sftp_tailscale_only": self.sftp_tailscale_only,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'GlobalConsumeConfig':
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+GLOBAL_CONSUME_CONFIG_FILE = Path("/etc/paperless-bulletproof/consume-global.conf")
+
+
+def load_global_consume_config() -> GlobalConsumeConfig:
+    """Load global consume configuration."""
+    config = GlobalConsumeConfig()
+    
+    if not GLOBAL_CONSUME_CONFIG_FILE.exists():
+        return config
+    
+    try:
+        for line in GLOBAL_CONSUME_CONFIG_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().lower()
+                if key == "SAMBA_TAILSCALE_ONLY":
+                    config.samba_tailscale_only = value == "true"
+                elif key == "SFTP_TAILSCALE_ONLY":
+                    config.sftp_tailscale_only = value == "true"
+    except Exception:
+        pass
+    
+    return config
+
+
+def save_global_consume_config(config: GlobalConsumeConfig) -> bool:
+    """Save global consume configuration."""
+    try:
+        GLOBAL_CONSUME_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        content = f"""# Global Consume Service Settings
+# These settings affect ALL instances
+
+# Restrict Samba to Tailscale network only (true/false)
+SAMBA_TAILSCALE_ONLY={str(config.samba_tailscale_only).lower()}
+
+# Restrict SFTP to Tailscale network only (true/false)
+SFTP_TAILSCALE_ONLY={str(config.sftp_tailscale_only).lower()}
+"""
+        GLOBAL_CONSUME_CONFIG_FILE.write_text(content)
+        return True
+    except Exception:
+        return False
+
+
 # ─── Helper Functions ─────────────────────────────────────────────────────────
 
 def generate_secure_password(length: int = 16) -> str:
@@ -1015,10 +1078,24 @@ def reload_samba_config() -> bool:
 
 
 def start_samba_container(data_root_base: Path = Path("/home/docker")) -> bool:
-    """Start the shared Samba container."""
+    """Start the shared Samba container.
+    
+    Uses global config to determine if Tailscale-only mode is enabled.
+    """
+    from lib.installer.tailscale import get_ip as get_tailscale_ip
+    
     say("Starting Samba container...")
     
     SAMBA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Check global config for Tailscale-only mode
+    global_config = load_global_consume_config()
+    bind_ip = None
+    if global_config.samba_tailscale_only:
+        bind_ip = get_tailscale_ip()
+        if not bind_ip:
+            error("Tailscale-only mode requires Tailscale to be connected!")
+            return False
     
     # Ensure config file exists
     config_file = SAMBA_CONFIG_DIR / "smb.conf"
@@ -1041,18 +1118,24 @@ def start_samba_container(data_root_base: Path = Path("/home/docker")) -> bool:
         check=False
     )
     
+    # Build port mapping
+    port_mapping = f"{bind_ip}:445:445" if bind_ip else "445:445"
+    
     try:
         result = subprocess.run([
             "docker", "run", "-d",
             "--name", SAMBA_CONTAINER_NAME,
-            "-p", "445:445",
+            "-p", port_mapping,
             "-v", f"{SAMBA_CONFIG_DIR}/smb.conf:/etc/samba/smb.conf:ro",
             "-v", f"{data_root_base}:/home/docker",
             "--restart", "unless-stopped",
             "dperson/samba"
         ], capture_output=True, text=True, check=True)
         
-        ok("Samba container started")
+        if bind_ip:
+            ok(f"Samba container started (Tailscale-only: {bind_ip})")
+        else:
+            ok("Samba container started")
         return True
     except subprocess.CalledProcessError as e:
         error(f"Failed to start Samba: {e}")
@@ -1122,10 +1205,24 @@ def get_sftp_users_string(instances_config: dict[str, ConsumeConfig],
 def start_sftp_container(instances_config: dict[str, ConsumeConfig],
                           data_roots: dict[str, Path],
                           port: int = 2222) -> bool:
-    """Start the shared SFTP container."""
+    """Start the shared SFTP container.
+    
+    Uses global config to determine if Tailscale-only mode is enabled.
+    """
+    from lib.installer.tailscale import get_ip as get_tailscale_ip
+    
     say("Starting SFTP container...")
     
     SFTP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Check global config for Tailscale-only mode
+    global_config = load_global_consume_config()
+    bind_ip = None
+    if global_config.sftp_tailscale_only:
+        bind_ip = get_tailscale_ip()
+        if not bind_ip:
+            error("Tailscale-only mode requires Tailscale to be connected!")
+            return False
     
     # Stop existing container
     subprocess.run(
@@ -1150,10 +1247,13 @@ def start_sftp_container(instances_config: dict[str, ConsumeConfig],
                 username = consume_config.sftp.username
                 volumes.extend(["-v", f"{consume_path}:/home/{username}/consume"])
         
+        # Build port mapping
+        port_mapping = f"{bind_ip}:{port}:22" if bind_ip else f"{port}:22"
+        
         cmd = [
             "docker", "run", "-d",
             "--name", SFTP_CONTAINER_NAME,
-            "-p", f"{port}:22",
+            "-p", port_mapping,
             *volumes,
             "--restart", "unless-stopped",
             "atmoz/sftp",
@@ -1161,7 +1261,10 @@ def start_sftp_container(instances_config: dict[str, ConsumeConfig],
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        ok("SFTP container started")
+        if bind_ip:
+            ok(f"SFTP container started (Tailscale-only: {bind_ip})")
+        else:
+            ok("SFTP container started")
         return True
     except subprocess.CalledProcessError as e:
         error(f"Failed to start SFTP: {e}")

@@ -2898,6 +2898,19 @@ class PaperlessManager:
             else:
                 print(box_line(f" Backups:  {colorize('Disabled', Colors.YELLOW)}"))
             
+            # Show consume methods if any enabled
+            consume_methods_enabled = []
+            if common.cfg.consume_syncthing_enabled == "true":
+                consume_methods_enabled.append("Syncthing")
+            if common.cfg.consume_samba_enabled == "true":
+                consume_methods_enabled.append("Samba")
+            if common.cfg.consume_sftp_enabled == "true":
+                consume_methods_enabled.append("SFTP")
+            
+            if consume_methods_enabled:
+                print(box_line(""))
+                print(box_line(f" Consume:  {', '.join(consume_methods_enabled)}"))
+            
             print(box_line(""))
             print(box_line(f" Admin:    {common.cfg.paperless_admin_user}"))
             print(box_line(f" Timezone: {common.cfg.tz}"))
@@ -3583,7 +3596,7 @@ class PaperlessManager:
     def consume_input_menu(self, instance: Instance) -> None:
         """Configure consume folder input methods (Syncthing, Samba, SFTP)."""
         from lib.installer.consume import (
-            load_consume_config, get_syncthing_status
+            load_consume_config, get_syncthing_status, load_global_consume_config
         )
         
         while True:
@@ -3591,6 +3604,7 @@ class PaperlessManager:
             
             # Load current config from env file
             config = load_consume_config(instance.env_file)
+            global_config = load_global_consume_config()
             
             box_line, box_width = create_box_helper(80)
             print(draw_box_top(box_width))
@@ -3613,16 +3627,22 @@ class PaperlessManager:
                 syncthing_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('Syncthing:', Colors.BOLD)} {syncthing_status}"))
             
-            # Samba status
+            # Samba status (uses global tailscale_only setting)
             if config.samba.enabled:
-                samba_status = colorize("✓ ENABLED", Colors.GREEN)
+                if global_config.samba_tailscale_only:
+                    samba_status = colorize("✓ ENABLED (Tailscale only)", Colors.GREEN)
+                else:
+                    samba_status = colorize("✓ ENABLED", Colors.GREEN)
             else:
                 samba_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('Samba:', Colors.BOLD)} {samba_status}"))
             
-            # SFTP status
+            # SFTP status (uses global tailscale_only setting)
             if config.sftp.enabled:
-                sftp_status = colorize("✓ ENABLED", Colors.GREEN)
+                if global_config.sftp_tailscale_only:
+                    sftp_status = colorize("✓ ENABLED (Tailscale only)", Colors.GREEN)
+                else:
+                    sftp_status = colorize("✓ ENABLED", Colors.GREEN)
             else:
                 sftp_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('SFTP:', Colors.BOLD)} {sftp_status}"))
@@ -3649,6 +3669,10 @@ class PaperlessManager:
                     print(f"  {colorize('6)', Colors.BOLD)} View SFTP credentials")
                 print()
             
+            print(colorize("  ── Settings ──", Colors.CYAN))
+            print(f"  {colorize('7)', Colors.BOLD)} Network access settings (global)")
+            print()
+            
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
             print()
             
@@ -3668,6 +3692,126 @@ class PaperlessManager:
                 self._show_samba_credentials(instance, config)
             elif choice == "6" and config.sftp.enabled:
                 self._show_sftp_credentials(instance, config)
+            elif choice == "7":
+                self._global_consume_settings_menu()
+            else:
+                warn("Invalid option")
+    
+    def _global_consume_settings_menu(self) -> None:
+        """Configure global network access settings for Samba/SFTP."""
+        from lib.installer.consume import (
+            load_global_consume_config, save_global_consume_config,
+            start_samba_container, start_sftp_container, is_samba_available, is_sftp_available
+        )
+        from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
+        
+        while True:
+            print_header("Network Access Settings (Global)")
+            
+            config = load_global_consume_config()
+            ts_ip = get_tailscale_ip()
+            local_ip = self._get_local_ip()
+            
+            box_line, box_width = create_box_helper(80)
+            print(draw_box_top(box_width))
+            print(box_line(f" These settings affect ALL instances using Samba/SFTP"))
+            print(draw_box_divider(box_width))
+            
+            # Network status
+            if ts_ip:
+                print(box_line(f" Tailscale:   {colorize('● Connected', Colors.GREEN)} ({ts_ip})"))
+            elif is_tailscale_installed():
+                print(box_line(f" Tailscale:   {colorize('○ Not connected', Colors.YELLOW)}"))
+            else:
+                print(box_line(f" Tailscale:   {colorize('○ Not installed', Colors.YELLOW)}"))
+            print(box_line(f" External IP: {local_ip}"))
+            print(draw_box_divider(box_width))
+            
+            # Samba access mode
+            if config.samba_tailscale_only:
+                samba_mode = colorize("Tailscale only", Colors.GREEN) + " (most secure)"
+            else:
+                samba_mode = colorize("All networks", Colors.YELLOW) + " (external + Tailscale)"
+            print(box_line(f" Samba:       {samba_mode}"))
+            
+            # SFTP access mode
+            if config.sftp_tailscale_only:
+                sftp_mode = colorize("Tailscale only", Colors.GREEN) + " (most secure)"
+            else:
+                sftp_mode = colorize("All networks", Colors.YELLOW) + " (external + Tailscale)"
+            print(box_line(f" SFTP:        {sftp_mode}"))
+            
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # Menu
+            print(colorize("  ── Access Mode ──", Colors.CYAN))
+            samba_action = "Allow external access" if config.samba_tailscale_only else "Restrict to Tailscale only"
+            sftp_action = "Allow external access" if config.sftp_tailscale_only else "Restrict to Tailscale only"
+            print(f"  {colorize('1)', Colors.BOLD)} Samba: {samba_action}")
+            print(f"  {colorize('2)', Colors.BOLD)} SFTP: {sftp_action}")
+            print()
+            print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                # Toggle Samba tailscale_only
+                new_value = not config.samba_tailscale_only
+                if new_value and not ts_ip:
+                    print()
+                    error("Cannot enable Tailscale-only mode: Tailscale is not connected!")
+                    if not is_tailscale_installed():
+                        say("Install Tailscale first, then try again.")
+                    else:
+                        say("Connect to Tailscale first, then try again.")
+                    input("\nPress Enter to continue...")
+                    continue
+                
+                config.samba_tailscale_only = new_value
+                save_global_consume_config(config)
+                
+                # Restart Samba container if running to apply changes
+                if is_samba_available():
+                    say("Restarting Samba container to apply changes...")
+                    start_samba_container()
+                
+                if new_value:
+                    ok("Samba restricted to Tailscale network only")
+                else:
+                    ok("Samba accessible from all networks")
+                input("\nPress Enter to continue...")
+                
+            elif choice == "2":
+                # Toggle SFTP tailscale_only
+                new_value = not config.sftp_tailscale_only
+                if new_value and not ts_ip:
+                    print()
+                    error("Cannot enable Tailscale-only mode: Tailscale is not connected!")
+                    if not is_tailscale_installed():
+                        say("Install Tailscale first, then try again.")
+                    else:
+                        say("Connect to Tailscale first, then try again.")
+                    input("\nPress Enter to continue...")
+                    continue
+                
+                config.sftp_tailscale_only = new_value
+                save_global_consume_config(config)
+                
+                # Would need to restart SFTP container - but need instance configs
+                # For now just show message
+                if is_sftp_available():
+                    warn("Restart SFTP container manually to apply changes")
+                    say("(Disable and re-enable SFTP from any instance)")
+                
+                if new_value:
+                    ok("SFTP restricted to Tailscale network only")
+                else:
+                    ok("SFTP accessible from all networks")
+                input("\nPress Enter to continue...")
             else:
                 warn("Invalid option")
     
@@ -4051,29 +4195,77 @@ class PaperlessManager:
     
     def _show_samba_credentials(self, instance: Instance, config) -> None:
         """Show Samba credentials and connection info."""
-        from lib.installer.consume import generate_samba_guide
+        from lib.installer.consume import generate_samba_guide, load_global_consume_config
         from lib.installer.tailscale import get_ip as get_tailscale_ip
         
         ts_ip = get_tailscale_ip()
-        display_ip = ts_ip or self._get_local_ip()
-        guide = generate_samba_guide(instance.name, config.samba, display_ip, is_tailscale=bool(ts_ip))
+        local_ip = self._get_local_ip()
+        global_config = load_global_consume_config()
+        
+        # Show appropriate IP based on global tailscale_only setting
+        if global_config.samba_tailscale_only:
+            if ts_ip:
+                display_ip = ts_ip
+                is_tailscale = True
+            else:
+                print()
+                warn("Samba is configured for Tailscale-only, but Tailscale is not connected!")
+                print()
+                display_ip = "tailscale-ip"
+                is_tailscale = True
+        else:
+            display_ip = ts_ip or local_ip
+            is_tailscale = bool(ts_ip)
+        
+        guide = generate_samba_guide(instance.name, config.samba, display_ip, is_tailscale=is_tailscale)
         print(guide)
-        if not ts_ip:
+        
+        # Show both IPs if not tailscale_only and both available
+        if not global_config.samba_tailscale_only and ts_ip:
+            print(f"  Also accessible via external IP: \\\\{local_ip}\\{config.samba.share_name}")
+            print()
+        elif not global_config.samba_tailscale_only and not ts_ip:
             print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
-        input("\nPress Enter to continue...")
+            print()
+        
+        input("Press Enter to continue...")
     
     def _show_sftp_credentials(self, instance: Instance, config) -> None:
         """Show SFTP credentials and connection info."""
-        from lib.installer.consume import generate_sftp_guide
+        from lib.installer.consume import generate_sftp_guide, load_global_consume_config
         from lib.installer.tailscale import get_ip as get_tailscale_ip
         
         ts_ip = get_tailscale_ip()
-        display_ip = ts_ip or self._get_local_ip()
-        guide = generate_sftp_guide(instance.name, config.sftp, display_ip, is_tailscale=bool(ts_ip))
+        local_ip = self._get_local_ip()
+        global_config = load_global_consume_config()
+        
+        # Show appropriate IP based on global tailscale_only setting
+        if global_config.sftp_tailscale_only:
+            if ts_ip:
+                display_ip = ts_ip
+                is_tailscale = True
+            else:
+                print()
+                warn("SFTP is configured for Tailscale-only, but Tailscale is not connected!")
+                print()
+                display_ip = "tailscale-ip"
+                is_tailscale = True
+        else:
+            display_ip = ts_ip or local_ip
+            is_tailscale = bool(ts_ip)
+        
+        guide = generate_sftp_guide(instance.name, config.sftp, display_ip, is_tailscale=is_tailscale)
         print(guide)
-        if not ts_ip:
+        
+        # Show both IPs if not tailscale_only and both available
+        if not global_config.sftp_tailscale_only and ts_ip:
+            print(f"  Also accessible via external IP: sftp://{local_ip}:{config.sftp.port}")
+            print()
+        elif not global_config.sftp_tailscale_only and not ts_ip:
             print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
-        input("\nPress Enter to continue...")
+            print()
+        
+        input("Press Enter to continue...")
 
     def _add_syncthing_device(self, instance: Instance, config) -> None:
         """Add a new device to Syncthing."""
@@ -4216,6 +4408,21 @@ class PaperlessManager:
             
             if confirm("Enable Samba share?", True):
                 try:
+                    from lib.installer.tailscale import get_ip as get_tailscale_ip
+                    from lib.installer.consume import load_global_consume_config
+                    
+                    ts_ip = get_tailscale_ip()
+                    local_ip = self._get_local_ip()
+                    global_config = load_global_consume_config()
+                    
+                    # Check if Tailscale-only mode is enabled globally
+                    if global_config.samba_tailscale_only and not ts_ip:
+                        print()
+                        error("Samba is configured for Tailscale-only, but Tailscale is not connected!")
+                        say("Either connect Tailscale, or change the setting in 'Network access settings'")
+                        input("\nPress Enter to continue...")
+                        return
+                    
                     consume_dir = instance.data_root / "consume"
                     share_name = f"paperless-{instance.name}"
                     username = f"pl-{instance.name}"
@@ -4244,17 +4451,17 @@ class PaperlessManager:
                     self._update_instance_env(instance, "CONSUME_SAMBA_USERNAME", username)
                     self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", password)
                     
-                    from lib.installer.tailscale import get_ip as get_tailscale_ip
-                    ts_ip = get_tailscale_ip()
-                    display_ip = ts_ip or self._get_local_ip()
                     ok(f"Samba share enabled!")
-                    say(f"  Share: \\\\{display_ip}\\{share_name}")
+                    if global_config.samba_tailscale_only:
+                        say(f"  Share: \\\\{ts_ip}\\{share_name} (Tailscale only)")
+                    elif ts_ip:
+                        say(f"  Share: \\\\{ts_ip}\\{share_name} (Tailscale)")
+                        say(f"         \\\\{local_ip}\\{share_name} (External)")
+                    else:
+                        say(f"  Share: \\\\{local_ip}\\{share_name}")
+                        say("  💡 Install Tailscale for secure remote access!")
                     say(f"  Username: {username}")
                     say(f"  Password: {password}")
-                    if ts_ip:
-                        say("  (Using Tailscale IP for secure access)")
-                    else:
-                        say("  💡 Install Tailscale for secure remote access!")
                     say("  Use 'View setup guides' for detailed instructions")
                 except Exception as e:
                     error(f"Failed to enable Samba: {e}")
@@ -4293,6 +4500,21 @@ class PaperlessManager:
             
             if confirm("Enable SFTP access?", True):
                 try:
+                    from lib.installer.tailscale import get_ip as get_tailscale_ip
+                    from lib.installer.consume import load_global_consume_config
+                    
+                    ts_ip = get_tailscale_ip()
+                    local_ip = self._get_local_ip()
+                    global_config = load_global_consume_config()
+                    
+                    # Check if Tailscale-only mode is enabled globally
+                    if global_config.sftp_tailscale_only and not ts_ip:
+                        print()
+                        error("SFTP is configured for Tailscale-only, but Tailscale is not connected!")
+                        say("Either connect Tailscale, or change the setting in 'Network access settings'")
+                        input("\nPress Enter to continue...")
+                        return
+                    
                     consume_dir = instance.data_root / "consume"
                     username = f"pl-{instance.name}"
                     password = generate_secure_password()
@@ -4323,17 +4545,17 @@ class PaperlessManager:
                     self._update_instance_env(instance, "CONSUME_SFTP_USERNAME", username)
                     self._update_instance_env(instance, "CONSUME_SFTP_PASSWORD", password)
                     
-                    from lib.installer.tailscale import get_ip as get_tailscale_ip
-                    ts_ip = get_tailscale_ip()
-                    display_ip = ts_ip or self._get_local_ip()
                     ok(f"SFTP access enabled!")
-                    say(f"  Server: sftp://{display_ip}:{sftp_port}")
+                    if global_config.sftp_tailscale_only:
+                        say(f"  Server: sftp://{ts_ip}:{sftp_port} (Tailscale only)")
+                    elif ts_ip:
+                        say(f"  Server: sftp://{ts_ip}:{sftp_port} (Tailscale)")
+                        say(f"          sftp://{local_ip}:{sftp_port} (External)")
+                    else:
+                        say(f"  Server: sftp://{local_ip}:{sftp_port}")
+                        say("  💡 Install Tailscale for secure remote access!")
                     say(f"  Username: {username}")
                     say(f"  Password: {password}")
-                    if ts_ip:
-                        say("  (Using Tailscale IP for secure access)")
-                    else:
-                        say("  💡 Install Tailscale for secure remote access!")
                     say("  Use 'View setup guides' for detailed instructions")
                 except Exception as e:
                     error(f"Failed to enable SFTP: {e}")
@@ -4542,8 +4764,15 @@ class PaperlessManager:
                 ip = get_ip()
                 port = instance.get_env_value("HTTP_PORT", "8000")
                 
-                # Try to set up Tailscale Serve for HTTPS access
-                if is_serve_available():
+                # Check if instance already has HTTPS via Traefik or Cloudflare
+                has_https = (
+                    instance.get_env_value("ENABLE_TRAEFIK", "no").lower() == "yes" or
+                    instance.get_env_value("ENABLE_CLOUDFLARED", "no").lower() == "yes"
+                )
+                
+                # Only offer Tailscale Serve HTTPS if no other HTTPS is configured
+                # (having multiple HTTPS URLs can confuse Paperless's URL configuration)
+                if not has_https and is_serve_available():
                     hostname = get_hostname()
                     if hostname:
                         print()
@@ -4563,7 +4792,6 @@ class PaperlessManager:
                         ok(f"Tailscale enabled - access via http://{ip}:{port}")
                 else:
                     ok(f"Tailscale enabled - access via http://{ip}:{port}")
-                    say("Tip: Tailscale Serve (HTTPS) requires a paid Tailscale plan")
                 
                 say("Note: Tailscale works alongside other access methods")
         
