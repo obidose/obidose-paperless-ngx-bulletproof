@@ -270,7 +270,9 @@ def run_restore_with_env(
     env["RCLONE_REMOTE_PATH"] = remote_path
     
     if fresh_config:
-        env["FRESH_CONFIG"] = "true"
+        # Tell restore module to keep the .env and docker-compose.yml we just created
+        # (they have the user's chosen ports, network settings, etc.)
+        env["MERGE_CONFIG"] = "yes"
     
     # Build the restore command - pass snapshot via sys.argv as restore module expects
     if snapshot:
