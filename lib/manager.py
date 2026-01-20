@@ -2183,7 +2183,10 @@ class PaperlessManager:
             print(box_line(f" Syncthing:      {st_status}"))
             # Get device ID from config or API
             device_id = consume_config.syncthing.device_id or get_syncthing_device_id(instance.name)
-            print(box_line(f"   Device ID:    {device_id[:20]}..." if device_id else "   Device ID:    (initializing)"))
+            if device_id:
+                print(box_line(f"   Device ID:    {device_id}"))
+            else:
+                print(box_line(f"   Device ID:    (initializing)"))
             print(box_line(f"   GUI Port:     {consume_config.syncthing.gui_port}"))
             print(box_line(f"   Sync Port:    {consume_config.syncthing.sync_port}"))
         else:
