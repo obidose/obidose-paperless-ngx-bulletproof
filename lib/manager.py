@@ -4888,14 +4888,119 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             
             print(draw_box_divider(box_width))
             print(box_line(" Instances:"))
+            
+            # Gather snapshot info for each instance
+            instance_snapshots = {}  # {inst_name: {"latest": ..., "at_backup": ..., "all": [...]}}
             for inst_name, inst_data in system_info["instances"].items():
-                latest = inst_data.get("latest_backup") or "no backup"
-                display = latest[:19] if latest != "no backup" else latest
-                print(box_line(f"   • {inst_name}: {display}"))
+                rclone_path = inst_data.get("env_vars", {}).get("RCLONE_REMOTE_PATH", f"backups/paperless/{inst_name}")
+                at_backup = inst_data.get("latest_backup")
+                
+                try:
+                    result = subprocess.run(
+                        ["rclone", "lsd", f"pcloud:{rclone_path}"],
+                        capture_output=True, text=True, check=False, timeout=10
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        all_snaps = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()])
+                        latest = all_snaps[-1] if all_snaps else None
+                    else:
+                        all_snaps = []
+                        latest = None
+                except:
+                    all_snaps = []
+                    latest = None
+                
+                instance_snapshots[inst_name] = {
+                    "latest": latest,
+                    "at_backup": at_backup,
+                    "all": all_snaps,
+                    "rclone_path": rclone_path,
+                    "selected": latest  # Default to latest
+                }
+                
+                # Display
+                if latest:
+                    if at_backup and at_backup != latest:
+                        print(box_line(f"   • {inst_name}: latest={latest[:16]}, at-backup={at_backup[:16]}"))
+                    else:
+                        print(box_line(f"   • {inst_name}: {latest[:19]}"))
+                else:
+                    print(box_line(f"   • {inst_name}: {colorize('no backups found', Colors.RED)}"))
+            
             print(draw_box_bottom(box_width))
             print()
             
-            if not confirm("Restore this system configuration?", False):
+            # Snapshot selection
+            print(colorize("Snapshot Selection:", Colors.BOLD))
+            print("  1) Use latest snapshot for all instances (recommended)")
+            print("  2) Use snapshot from system backup time")
+            print("  3) Custom - choose snapshot per instance")
+            print("  0) Cancel")
+            print()
+            
+            snap_choice = get_input("Select option", "1")
+            
+            if snap_choice == "0":
+                shutil.rmtree(work)
+                return
+            elif snap_choice == "2":
+                # Use snapshots from backup time
+                for inst_name, snap_info in instance_snapshots.items():
+                    if snap_info["at_backup"] and snap_info["at_backup"] in snap_info["all"]:
+                        snap_info["selected"] = snap_info["at_backup"]
+                    else:
+                        # Fallback to latest if backup-time snapshot no longer exists
+                        if snap_info["at_backup"]:
+                            warn(f"{inst_name}: backup-time snapshot {snap_info['at_backup'][:16]} not found, using latest")
+                ok("Using snapshots from system backup time")
+            elif snap_choice == "3":
+                # Custom selection per instance
+                print()
+                for inst_name, snap_info in instance_snapshots.items():
+                    if not snap_info["all"]:
+                        warn(f"{inst_name}: No backups available, skipping")
+                        continue
+                    
+                    print(f"\n{colorize(inst_name, Colors.BOLD)} - Available snapshots:")
+                    # Show newest first
+                    display_snaps = list(reversed(snap_info["all"]))
+                    for idx, snap in enumerate(display_snaps[:10], 1):  # Show max 10
+                        markers = []
+                        if snap == snap_info["latest"]:
+                            markers.append(colorize("latest", Colors.GREEN))
+                        if snap == snap_info["at_backup"]:
+                            markers.append(colorize("at-backup", Colors.CYAN))
+                        marker_str = f" ({', '.join(markers)})" if markers else ""
+                        print(f"    {idx}) {snap}{marker_str}")
+                    if len(snap_info["all"]) > 10:
+                        print(f"    ... and {len(snap_info['all']) - 10} more")
+                    
+                    say("Tip: Enter 'L' for latest")
+                    choice = get_input(f"Select snapshot for {inst_name} [1-{min(10, len(display_snaps))}, L=latest]", "L")
+                    
+                    if choice.lower() == "l":
+                        snap_info["selected"] = snap_info["latest"]
+                    elif choice.isdigit() and 1 <= int(choice) <= min(10, len(display_snaps)):
+                        snap_info["selected"] = display_snaps[int(choice) - 1]
+                    else:
+                        snap_info["selected"] = snap_info["latest"]
+                        
+                ok("Custom snapshots selected")
+            else:
+                # Default: use latest
+                ok("Using latest snapshots")
+            
+            # Show final selection
+            print()
+            print(colorize("Will restore:", Colors.BOLD))
+            for inst_name, snap_info in instance_snapshots.items():
+                if snap_info["selected"]:
+                    print(f"  • {inst_name}: {snap_info['selected']}")
+                else:
+                    print(f"  • {inst_name}: {colorize('SKIP (no backup)', Colors.RED)}")
+            print()
+            
+            if not confirm("Proceed with restore?", False):
                 shutil.rmtree(work)
                 return
             
@@ -5040,12 +5145,12 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 
                 ok("Consume folder services configuration restored")
             
-            # ─── Restore Each Instance from Latest Backup ─────────────────────
+            # ─── Restore Each Instance from Selected Backup ─────────────────────
             # NOTE: We DON'T restore the registry from backup!
             # Instead, each instance registers itself after successful restoration.
             # This prevents "ghost" entries where registry has instances but files don't exist.
             print()
-            say("Restoring instance data from latest backups...")
+            say("Restoring instance data from selected backups...")
             print()
             
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
@@ -5059,51 +5164,37 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 print(f"\n{colorize('─' * 60, Colors.CYAN)}")
                 say(f"Restoring instance: {colorize(inst_name, Colors.BOLD)}")
                 
+                # Get pre-selected snapshot info
+                snap_info = instance_snapshots.get(inst_name, {})
+                selected_snapshot = snap_info.get("selected")
+                rclone_path = snap_info.get("rclone_path", f"backups/paperless/{inst_name}")
+                
+                if not selected_snapshot:
+                    warn(f"  No snapshot selected for {inst_name}, skipping")
+                    failed_instances.append((inst_name, "No snapshot available"))
+                    continue
+                
                 try:
                     # Get instance paths from backup info
                     stack_dir = Path(inst_data.get("stack_dir", f"/home/docker/{inst_name}-setup"))
                     data_root = Path(inst_data.get("data_root", f"/home/docker/{inst_name}"))
-                    
-                    # Get the rclone remote path from saved env vars, or use default
-                    env_vars = inst_data.get("env_vars", {})
-                    rclone_path = env_vars.get("RCLONE_REMOTE_PATH", f"backups/paperless/{inst_name}")
-                    if not rclone_path:
-                        rclone_path = f"backups/paperless/{inst_name}"
                     remote_base = f"pcloud:{rclone_path}"
                     
-                    # Get latest backup for this instance
-                    result = subprocess.run(
-                        ["rclone", "lsd", remote_base],
-                        capture_output=True, text=True, check=False
-                    )
-                    
-                    if result.returncode != 0 or not result.stdout.strip():
-                        warn(f"  No backups found for {inst_name} at {remote_base}")
-                        failed_instances.append((inst_name, "No backups found"))
-                        continue
-                    
-                    snapshots = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()])
-                    if not snapshots:
-                        warn(f"  No snapshots found for {inst_name}")
-                        failed_instances.append((inst_name, "No snapshots found"))
-                        continue
-                    
-                    latest_snapshot = snapshots[-1]
-                    say(f"  Using latest backup: {latest_snapshot}")
+                    say(f"  Using backup: {selected_snapshot}")
                     
                     # Validate backup actually has required files
                     validation_result = subprocess.run(
-                        ["rclone", "lsf", f"{remote_base}/{latest_snapshot}"],
+                        ["rclone", "lsf", f"{remote_base}/{selected_snapshot}"],
                         capture_output=True, text=True, check=False
                     )
                     if validation_result.returncode != 0 or ".env" not in validation_result.stdout:
-                        warn(f"  Backup {latest_snapshot} appears incomplete or corrupted")
-                        failed_instances.append((inst_name, f"Backup {latest_snapshot} incomplete"))
+                        warn(f"  Backup {selected_snapshot} appears incomplete or corrupted")
+                        failed_instances.append((inst_name, f"Backup {selected_snapshot} incomplete"))
                         continue
                     
                     # Download the .env from the backup to get original settings
                     env_result = subprocess.run(
-                        ["rclone", "cat", f"{remote_base}/{latest_snapshot}/.env"],
+                        ["rclone", "cat", f"{remote_base}/{selected_snapshot}/.env"],
                         capture_output=True, text=True, check=False
                     )
                     
@@ -5146,7 +5237,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         instance_name=inst_name,
                         remote_name="pcloud",
                         remote_path=rclone_path,  # Use the saved path, not hardcoded
-                        snapshot=latest_snapshot,
+                        snapshot=selected_snapshot,
                         fresh_config=True  # Use fresh config since manager wrote it
                     )
                     
