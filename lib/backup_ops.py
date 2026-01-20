@@ -255,6 +255,7 @@ def run_restore_with_env(
     env["STACK_DIR"] = str(stack_dir)
     env["DATA_ROOT"] = str(data_root)
     env["INSTANCE_NAME"] = instance_name
+    env["ENV_FILE"] = str(stack_dir / ".env")  # Critical for _refresh_globals_from_env()
     
     # Load existing .env if available (for things like timezone, etc.)
     env_file = stack_dir / ".env"
