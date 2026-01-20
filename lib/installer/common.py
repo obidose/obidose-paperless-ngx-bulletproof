@@ -358,46 +358,16 @@ def prompt_core_values() -> None:
     cfg.refresh_paths()
 
 
+# Import the canonical port function from lib.instance
+# Do NOT duplicate port checking logic here
 def get_next_available_port(start_port: int = 8000) -> str:
     """Find the next available port starting from start_port.
     
-    Checks both:
-    1. OS-level port availability (socket bind)
-    2. Ports used by existing Paperless instances (from .env files)
+    This is a wrapper that uses the canonical implementation in lib.instance.
+    Returns str for backward compatibility with existing callers.
     """
-    import socket
-    
-    # Get ports used by existing instances
-    used_ports = set()
-    instances_base = Path("/home/docker")
-    if instances_base.exists():
-        for setup_dir in instances_base.glob("*-setup"):
-            env_file = setup_dir / ".env"
-            if env_file.exists():
-                try:
-                    for line in env_file.read_text().splitlines():
-                        if line.startswith("HTTP_PORT="):
-                            port = line.split("=", 1)[1].strip()
-                            if port.isdigit():
-                                used_ports.add(int(port))
-                except Exception:
-                    pass
-    
-    port = start_port
-    while port < 65535:
-        # Skip if already used by an instance
-        if port in used_ports:
-            port += 1
-            continue
-        
-        # Check if port is available at OS level
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('', port))
-                return str(port)
-            except OSError:
-                port += 1
-    return str(start_port)  # Fallback
+    from lib.instance import get_next_available_port as _get_port
+    return str(_get_port(start_port))
 
 
 def prompt_networking() -> None:

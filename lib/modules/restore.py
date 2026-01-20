@@ -234,8 +234,10 @@ def main() -> None:
     if syncthing_config_dir.exists():
         try:
             from lib.installer.consume import (
-                load_consume_config, start_syncthing_container, SyncthingConfig
+                load_consume_config, start_syncthing_container, SyncthingConfig,
+                get_next_available_port
             )
+            from lib.instance import is_port_available
             
             consume_config = load_consume_config(ENV_FILE)
             if consume_config.syncthing.enabled:
@@ -243,15 +245,27 @@ def main() -> None:
                 consume_path = DATA_ROOT / "consume"
                 consume_path.mkdir(parents=True, exist_ok=True)
                 
-                # Create config from env settings
+                # Check for port conflicts and get new ports if needed
+                gui_port = consume_config.syncthing.gui_port
+                sync_port = consume_config.syncthing.sync_port
+                
+                if not is_port_available(gui_port):
+                    gui_port = get_next_available_port(8384)
+                    warn(f"Syncthing GUI port conflict, using {gui_port}")
+                    
+                if not is_port_available(sync_port):
+                    sync_port = get_next_available_port(22000)
+                    warn(f"Syncthing sync port conflict, using {sync_port}")
+                
+                # Create config from env settings (with potentially updated ports)
                 config = SyncthingConfig(
                     enabled=True,
                     folder_id=consume_config.syncthing.folder_id,
                     folder_label=consume_config.syncthing.folder_label,
                     device_id=consume_config.syncthing.device_id,
                     api_key=consume_config.syncthing.api_key,
-                    sync_port=consume_config.syncthing.sync_port,
-                    gui_port=consume_config.syncthing.gui_port,
+                    sync_port=sync_port,
+                    gui_port=gui_port,
                 )
                 
                 if start_syncthing_container(INSTANCE_NAME, config, consume_path, syncthing_config_dir):

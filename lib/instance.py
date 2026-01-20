@@ -223,6 +223,154 @@ class Instance:
         return [(f"{self._mode_to_emoji(mode)} {self._mode_to_label(mode)}", url) for mode, url in urls]
 
 
+# ─── Port Utilities (Canonical Implementation) ───────────────────────────────
+# All port checking should use these functions - do not duplicate elsewhere!
+
+def is_port_available(port: int) -> bool:
+    """Check if a TCP port is available for binding.
+    
+    This is the canonical port availability check. Use this instead of 
+    duplicating socket.bind() checks elsewhere.
+    """
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', port))
+            return True
+    except OSError:
+        return False
+
+
+def is_port_in_use(port: int) -> bool:
+    """Check if a port is already in use. Inverse of is_port_available()."""
+    return not is_port_available(port)
+
+
+def find_available_port(
+    start_port: int, 
+    max_tries: int = 100,
+    used_ports: list[int] | None = None,
+    check_existing_instances: bool = False
+) -> int:
+    """Find an available port starting from start_port.
+    
+    Args:
+        start_port: Port number to start searching from
+        max_tries: Maximum number of ports to try
+        used_ports: Optional list of ports to skip (already allocated)
+        check_existing_instances: If True, also check ports used by existing instances
+        
+    Returns:
+        Available port number, or start_port as fallback
+    """
+    if used_ports is None:
+        used_ports = set()
+    else:
+        used_ports = set(used_ports)
+    
+    # Optionally gather ports from existing instances
+    if check_existing_instances:
+        from pathlib import Path
+        instances_base = Path("/home/docker")
+        if instances_base.exists():
+            for setup_dir in instances_base.glob("*-setup"):
+                env_file = setup_dir / ".env"
+                if env_file.exists():
+                    try:
+                        for line in env_file.read_text().splitlines():
+                            for key in ("HTTP_PORT=", "CONSUME_SYNCTHING_GUI_PORT=", 
+                                       "CONSUME_SYNCTHING_SYNC_PORT=", "CONSUME_SFTP_PORT="):
+                                if line.startswith(key):
+                                    port_val = line.split("=", 1)[1].strip()
+                                    if port_val.isdigit():
+                                        used_ports.add(int(port_val))
+                    except Exception:
+                        pass
+    
+    for port in range(start_port, start_port + max_tries):
+        if port in used_ports:
+            continue
+        if is_port_available(port):
+            return port
+    return start_port  # Fallback
+
+
+def get_next_available_port(start_port: int = 8000, as_string: bool = False) -> int | str:
+    """Find the next available port, checking both OS and existing instances.
+    
+    This is a convenience wrapper that always checks existing instances.
+    For simple OS-level checks, use find_available_port() directly.
+    
+    Args:
+        start_port: Port number to start searching from
+        as_string: If True, return as string (for backward compatibility)
+        
+    Returns:
+        Available port as int or str depending on as_string parameter
+    """
+    port = find_available_port(start_port, check_existing_instances=True)
+    return str(port) if as_string else port
+
+
+def get_local_ip() -> str:
+    """Get the local IP address of this machine.
+    
+    Uses a UDP socket trick to determine the local IP that would be used
+    to reach external hosts, without actually sending any traffic.
+    """
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            # Doesn't actually connect, just determines routing
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+def check_port_conflicts_and_fix(config_dict: dict, warn_func=warn, say_func=say) -> dict:
+    """
+    Check a config dictionary for port conflicts and fix them.
+    
+    Args:
+        config_dict: Dictionary with port settings (HTTP_PORT, CONSUME_SYNCTHING_GUI_PORT, etc.)
+        warn_func: Function to call for warnings
+        say_func: Function to call for info messages
+        
+    Returns:
+        Updated config dictionary with non-conflicting ports
+    """
+    # Check HTTP port
+    http_port = int(config_dict.get("HTTP_PORT", "8000"))
+    if not is_port_available(http_port):
+        new_port = find_available_port(8000)
+        warn_func(f"HTTP port {http_port} in use, using {new_port}")
+        config_dict["HTTP_PORT"] = str(new_port)
+    
+    # Check Syncthing GUI port
+    st_gui_port = int(config_dict.get("CONSUME_SYNCTHING_GUI_PORT", "8384"))
+    if not is_port_available(st_gui_port):
+        new_port = find_available_port(8384)
+        warn_func(f"Syncthing GUI port {st_gui_port} in use, using {new_port}")
+        config_dict["CONSUME_SYNCTHING_GUI_PORT"] = str(new_port)
+    
+    # Check Syncthing sync port
+    st_sync_port = int(config_dict.get("CONSUME_SYNCTHING_SYNC_PORT", "22000"))
+    if not is_port_available(st_sync_port):
+        new_port = find_available_port(22000)
+        warn_func(f"Syncthing sync port {st_sync_port} in use, using {new_port}")
+        config_dict["CONSUME_SYNCTHING_SYNC_PORT"] = str(new_port)
+    
+    # Check SFTP port
+    sftp_port = int(config_dict.get("CONSUME_SFTP_PORT", "2222"))
+    if not is_port_available(sftp_port):
+        new_port = find_available_port(2222)
+        warn_func(f"SFTP port {sftp_port} in use, using {new_port}")
+        config_dict["CONSUME_SFTP_PORT"] = str(new_port)
+    
+    return config_dict
+
+
 # ─── Config Loading Helpers ───────────────────────────────────────────────────
 
 def load_instance_config(instance: Instance) -> None:
@@ -298,15 +446,23 @@ def load_instance_config(instance: Instance) -> None:
     common.cfg.refresh_paths()
 
 
-def load_backup_env_config(backup_env: dict) -> None:
+def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True) -> None:
     """
     Load settings from a backup's .env dict into common.cfg.
     
     Used when restoring from backup where we have parsed the .env contents
     into a dictionary rather than reading from an Instance object.
+    
+    Args:
+        backup_env: Dictionary of environment variables from backup
+        check_port_conflicts: If True, check and fix port conflicts
     """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import common
+    
+    # Check and fix port conflicts before loading
+    if check_port_conflicts:
+        backup_env = check_port_conflicts_and_fix(backup_env.copy())
     
     # Core settings (admin, postgres, etc.)
     common.cfg.tz = backup_env.get("TZ", common.cfg.tz)
@@ -318,7 +474,7 @@ def load_backup_env_config(backup_env: dict) -> None:
     common.cfg.postgres_user = backup_env.get("POSTGRES_USER", "paperless")
     common.cfg.postgres_password = backup_env.get("POSTGRES_PASSWORD", "")
     
-    # Networking
+    # Networking - use potentially updated port
     common.cfg.http_port = backup_env.get("HTTP_PORT", "8000")
     common.cfg.domain = backup_env.get("DOMAIN", "")
     common.cfg.letsencrypt_email = backup_env.get("LETSENCRYPT_EMAIL", "")
@@ -333,7 +489,7 @@ def load_backup_env_config(backup_env: dict) -> None:
     common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
     common.cfg.cron_archive_time = backup_env.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
     
-    # Syncthing
+    # Syncthing - use potentially updated ports
     common.cfg.consume_syncthing_enabled = backup_env.get("CONSUME_SYNCTHING_ENABLED", "false")
     common.cfg.consume_syncthing_folder_id = backup_env.get("CONSUME_SYNCTHING_FOLDER_ID", "")
     common.cfg.consume_syncthing_folder_label = backup_env.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
@@ -348,7 +504,7 @@ def load_backup_env_config(backup_env: dict) -> None:
     common.cfg.consume_samba_username = backup_env.get("CONSUME_SAMBA_USERNAME", "")
     common.cfg.consume_samba_password = backup_env.get("CONSUME_SAMBA_PASSWORD", "")
     
-    # SFTP
+    # SFTP - use potentially updated port
     common.cfg.consume_sftp_enabled = backup_env.get("CONSUME_SFTP_ENABLED", "false")
     common.cfg.consume_sftp_username = backup_env.get("CONSUME_SFTP_USERNAME", "")
     common.cfg.consume_sftp_password = backup_env.get("CONSUME_SFTP_PASSWORD", "")

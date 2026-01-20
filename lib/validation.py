@@ -248,32 +248,6 @@ def get_instance_name_input(prompt: str, default: str = "", existing_instances: 
 
 
 # ─── Network Utilities ────────────────────────────────────────────────────────
-
-def is_port_in_use(port: int) -> bool:
-    """Check if a port is already in use."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(('', port))
-            return False
-        except OSError:
-            return True
-
-
-def find_available_port(start_port: int, max_tries: int = 100) -> int:
-    """Find an available port starting from start_port."""
-    for offset in range(max_tries):
-        port = start_port + offset
-        if not is_port_in_use(port):
-            return port
-    return start_port  # Fall back to original
-
-
-def get_local_ip() -> str:
-    """Get the local IP address of this machine."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            # Doesn't actually connect, just determines routing
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
+# NOTE: Port checking functions are now in lib/instance.py
+# Import them here for backward compatibility with any existing callers
+from lib.instance import is_port_in_use, is_port_available, find_available_port, get_local_ip

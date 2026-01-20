@@ -207,24 +207,15 @@ def generate_folder_id() -> str:
     return str(uuid.uuid4())[:8] + "-" + str(uuid.uuid4())[:4]
 
 
+# Import the canonical port function from lib.instance
+# Do NOT duplicate port checking logic here
 def get_next_available_port(start_port: int, used_ports: Optional[list[int]] = None) -> int:
-    """Find the next available port starting from start_port."""
-    import socket
-    if used_ports is None:
-        used_ports = []
+    """Find the next available port starting from start_port.
     
-    port = start_port
-    while port < 65535:
-        if port in used_ports:
-            port += 1
-            continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('', port))
-                return port
-            except OSError:
-                port += 1
-    return start_port
+    This is a wrapper that uses the canonical implementation in lib.instance.
+    """
+    from lib.instance import find_available_port
+    return find_available_port(start_port, used_ports=used_ports)
 
 
 # ─── Syncthing Management ─────────────────────────────────────────────────────

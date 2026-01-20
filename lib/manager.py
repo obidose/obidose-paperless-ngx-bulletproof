@@ -28,11 +28,11 @@ from lib.ui import (
 from lib.validation import (
     get_input, confirm, is_valid_domain, get_domain_input,
     is_valid_email, get_email_input, is_valid_port, get_port_input,
-    is_valid_instance_name, get_instance_name_input,
-    is_port_in_use, find_available_port, get_local_ip
+    is_valid_instance_name, get_instance_name_input
 )
 from lib.instance import (
-    Instance, InstanceManager, load_instance_config, load_backup_env_config
+    Instance, InstanceManager, load_instance_config, load_backup_env_config,
+    is_port_available, is_port_in_use, find_available_port, get_local_ip
 )
 from lib.health import HealthChecker
 from lib.backup_ops import (
@@ -1776,8 +1776,8 @@ class PaperlessManager:
                 if "1" in consume_methods:
                     # Enable Syncthing config - container will be started on first use
                     common.cfg.consume_syncthing_enabled = "true"
-                    common.cfg.consume_syncthing_sync_port = str(self._find_available_port(22000))
-                    common.cfg.consume_syncthing_gui_port = str(self._find_available_port(8384))
+                    common.cfg.consume_syncthing_sync_port = str(find_available_port(22000))
+                    common.cfg.consume_syncthing_gui_port = str(find_available_port(8384))
                     common.cfg.consume_syncthing_folder_id = f"paperless-{instance_name}"
                     common.cfg.consume_syncthing_folder_label = f"Paperless {instance_name}"
                     ok("Syncthing will be enabled after instance creation")
@@ -1795,7 +1795,7 @@ class PaperlessManager:
                     # Enable SFTP config
                     from lib.installer.consume import generate_secure_password
                     common.cfg.consume_sftp_enabled = "true"
-                    common.cfg.consume_sftp_port = str(self._find_available_port(2222))
+                    common.cfg.consume_sftp_port = str(find_available_port(2222))
                     common.cfg.consume_sftp_username = f"pl-{instance_name}"
                     common.cfg.consume_sftp_password = generate_secure_password()
                     ok("SFTP access will be enabled after instance creation")
@@ -2698,7 +2698,7 @@ class PaperlessManager:
             
             config = load_global_consume_config()
             ts_ip = get_tailscale_ip()
-            local_ip = self._get_local_ip()
+            local_ip = get_local_ip()
             
             box_line, box_width = create_box_helper(80)
             print(draw_box_top(box_width))
@@ -2816,7 +2816,7 @@ class PaperlessManager:
             
             config_dir = instance.stack_dir / "syncthing-config"
             status = get_syncthing_status(instance.name)
-            local_ip = self._get_local_ip()
+            local_ip = get_local_ip()
             
             # ── Live Dashboard ──
             box_line, box_width = create_box_helper(80)
@@ -3044,7 +3044,7 @@ class PaperlessManager:
                 config.syncthing.device_id = device_id
                 self._update_instance_env(instance, "CONSUME_SYNCTHING_DEVICE_ID", device_id)
         
-        guide = generate_syncthing_guide(instance.name, config.syncthing, self._get_local_ip())
+        guide = generate_syncthing_guide(instance.name, config.syncthing, get_local_ip())
         print(guide)
         input("\nPress Enter to continue...")
     
@@ -3206,10 +3206,25 @@ class PaperlessManager:
             shutil.rmtree(config_dir)
             say("Config directory deleted")
         
-        # Generate fresh config
+        # Generate fresh config with unique ports
         consume_dir = instance.data_root / "consume"
-        sync_port = config.syncthing.sync_port
+        
+        # Get a fresh unique sync port if needed (check if current one conflicts)
+        from lib.installer.consume import get_next_available_port
+        sync_port = config.syncthing.sync_port if config.syncthing.sync_port else 22000
         gui_port = config.syncthing.gui_port if config.syncthing.gui_port else 8384
+        
+        # Check if the GUI port is actually available (might be in use by another instance)
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('0.0.0.0', gui_port))
+        except OSError:
+            # Port is in use - get a new one
+            say(f"Port {gui_port} is in use, finding available port...")
+            gui_port = get_next_available_port(8384)
+            say(f"Using port {gui_port} for Syncthing GUI")
+        
         folder_id = generate_folder_id()
         
         syncthing_config = SyncthingConfig(
@@ -3244,7 +3259,7 @@ class PaperlessManager:
         from lib.installer.tailscale import get_ip as get_tailscale_ip
         
         ts_ip = get_tailscale_ip()
-        local_ip = self._get_local_ip()
+        local_ip = get_local_ip()
         global_config = load_global_consume_config()
         
         # Show appropriate IP based on global tailscale_only setting
@@ -3281,7 +3296,7 @@ class PaperlessManager:
         from lib.installer.tailscale import get_ip as get_tailscale_ip
         
         ts_ip = get_tailscale_ip()
-        local_ip = self._get_local_ip()
+        local_ip = get_local_ip()
         global_config = load_global_consume_config()
         
         # Show appropriate IP based on global tailscale_only setting
@@ -3391,8 +3406,8 @@ class PaperlessManager:
                     syncthing_config_dir = instance.stack_dir / "syncthing-config"
                     
                     # Find available sync port and gui port
-                    sync_port = self._find_available_port(22000)
-                    gui_port = self._find_available_port(8384)
+                    sync_port = find_available_port(22000)
+                    gui_port = find_available_port(8384)
                     folder_id = generate_folder_id()
                     
                     syncthing_config = SyncthingConfig(
@@ -3460,7 +3475,7 @@ class PaperlessManager:
                     from lib.installer.consume import load_global_consume_config
                     
                     ts_ip = get_tailscale_ip()
-                    local_ip = self._get_local_ip()
+                    local_ip = get_local_ip()
                     global_config = load_global_consume_config()
                     
                     # Check if Tailscale-only mode is enabled globally
@@ -3552,7 +3567,7 @@ class PaperlessManager:
                     from lib.installer.consume import load_global_consume_config
                     
                     ts_ip = get_tailscale_ip()
-                    local_ip = self._get_local_ip()
+                    local_ip = get_local_ip()
                     global_config = load_global_consume_config()
                     
                     # Check if Tailscale-only mode is enabled globally
@@ -3568,7 +3583,7 @@ class PaperlessManager:
                     password = generate_secure_password()
                     
                     # Find available port
-                    sftp_port = self._find_available_port(2222)
+                    sftp_port = find_available_port(2222)
                     
                     sftp_config = SFTPConfig(
                         enabled=True,
@@ -3610,30 +3625,8 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
-    def _get_local_ip(self) -> str:
-        """Get the local IP address of this machine."""
-        import socket
-        try:
-            # Connect to an external address to determine local IP
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "localhost"
-    
-    def _find_available_port(self, start_port: int, max_tries: int = 100) -> int:
-        """Find an available port starting from start_port."""
-        import socket
-        for port in range(start_port, start_port + max_tries):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("", port))
-                    return port
-            except OSError:
-                continue
-        return start_port  # Fallback
+    # NOTE: _get_local_ip and _find_available_port removed - use imported functions:
+    # from lib.instance import get_local_ip, find_available_port
     
     def _update_instance_env(self, instance: Instance, key: str, value: str) -> bool:
         """Update a single value in the instance's .env file."""

@@ -24,7 +24,9 @@ from lib.validation import (
 )
 from lib.instance import (
     Instance, InstanceManager,
-    load_instance_config, load_backup_env_config
+    load_instance_config, load_backup_env_config,
+    # Port utilities (canonical implementations)
+    is_port_available, is_port_in_use, find_available_port, get_next_available_port, get_local_ip
 )
 from lib.health import HealthChecker
 from lib.backup_ops import BackupManager
