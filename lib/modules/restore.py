@@ -234,28 +234,36 @@ def main() -> None:
     if syncthing_config_dir.exists():
         try:
             from lib.installer.consume import (
-                load_consume_config, start_syncthing_container, SyncthingConfig,
-                get_next_available_port
+                load_consume_config, start_syncthing_container, stop_syncthing_container,
+                SyncthingConfig, get_next_available_port, save_consume_config
             )
             from lib.instance import is_port_available
             
             consume_config = load_consume_config(ENV_FILE)
             if consume_config.syncthing.enabled:
                 say("Restarting Syncthing container...")
+                
+                # Stop the old Syncthing container first (it's not part of docker-compose)
+                # This frees up the port so we can restart on the same port
+                stop_syncthing_container(INSTANCE_NAME)
+                
                 consume_path = DATA_ROOT / "consume"
                 consume_path.mkdir(parents=True, exist_ok=True)
                 
-                # Check for port conflicts and get new ports if needed
+                # Check for port conflicts (only with OTHER instances, not ourselves)
                 gui_port = consume_config.syncthing.gui_port
                 sync_port = consume_config.syncthing.sync_port
+                ports_changed = False
                 
                 if not is_port_available(gui_port):
                     gui_port = get_next_available_port(8384)
                     warn(f"Syncthing GUI port conflict, using {gui_port}")
+                    ports_changed = True
                     
                 if not is_port_available(sync_port):
                     sync_port = get_next_available_port(22000)
                     warn(f"Syncthing sync port conflict, using {sync_port}")
+                    ports_changed = True
                 
                 # Create config from env settings (with potentially updated ports)
                 config = SyncthingConfig(
@@ -267,6 +275,11 @@ def main() -> None:
                     sync_port=sync_port,
                     gui_port=gui_port,
                 )
+                
+                # Save updated ports to .env file if they changed
+                if ports_changed:
+                    consume_config.syncthing = config
+                    save_consume_config(consume_config, ENV_FILE)
                 
                 if start_syncthing_container(INSTANCE_NAME, config, consume_path, syncthing_config_dir):
                     ok("Syncthing container restarted")

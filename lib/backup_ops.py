@@ -109,8 +109,8 @@ class BackupManager:
                     has_docker_versions=has_docker
                 ))
         
-        # Sort by name (which is date-based)
-        snapshots.sort(key=lambda x: x.name)
+        # Sort by name descending (newest first - names are date-based)
+        snapshots.sort(key=lambda x: x.name, reverse=True)
         return snapshots
 
     def fetch_snapshots(self) -> list[tuple[str, str, str]]:

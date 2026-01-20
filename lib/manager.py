@@ -1097,7 +1097,8 @@ class PaperlessManager:
                     if parts:
                         snapshots.append(parts[-1])
                 
-                snapshots = sorted(snapshots)
+                # Sort newest first (date-based names)
+                snapshots = sorted(snapshots, reverse=True)
                 
                 print()
                 print(draw_box_top(box_width))
@@ -1112,15 +1113,16 @@ class PaperlessManager:
                         display = f"{date_part} {time_part}"
                     except:
                         pass
-                    latest_marker = colorize(" (latest)", Colors.GREEN) if idx == len(snapshots) else ""
+                    latest_marker = colorize(" (latest)", Colors.GREEN) if idx == 1 else ""
                     print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD)} {display}{latest_marker}"))
                 print(draw_box_bottom(box_width))
                 print()
                 
-                snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
+                say("Tip: Enter 'L' for latest snapshot")
+                snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}, L=latest]", "L")
                 
-                if snap_choice.lower() == "latest":
-                    snapshot = snapshots[-1]
+                if snap_choice.lower() == "l":
+                    snapshot = snapshots[0]  # Latest is now first
                 elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
                     snapshot = snapshots[int(snap_choice) - 1]
                 else:
@@ -2374,10 +2376,16 @@ class PaperlessManager:
         for idx, (name, mode, parent) in enumerate(snapshots, 1):
             parent_display = parent if mode == "incr" else "-"
             mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN
-            print(f"{idx:<5} {name:<35} {colorize(mode, mode_color):<20} {parent_display}")
+            latest_marker = " (latest)" if idx == 1 else ""
+            print(f"{idx:<5} {name:<35} {colorize(mode, mode_color):<20} {parent_display}{latest_marker}")
         print()
         
-        choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'cancel'", "cancel")
+        say("Tip: Enter 'L' for latest snapshot")
+        choice = get_input(f"Select snapshot [1-{len(snapshots)}, L=latest] or 'cancel'", "cancel")
+        
+        # Handle 'latest' shortcut
+        if choice.lower() == 'l':
+            choice = "1"  # Latest is now first in list
         
         if choice.isdigit() and 1 <= int(choice) <= len(snapshots):
             snapshot = snapshots[int(choice) - 1][0]
@@ -4576,7 +4584,7 @@ WantedBy=multi-user.target
                     "name": inst.name,
                     "stack_dir": str(inst.stack_dir),
                     "data_root": str(inst.data_root),
-                    "running": inst.is_running,
+                    "running": inst.is_running(),  # Call method to get bool, not method object
                     "env_vars": {},
                     "latest_backup": None
                 }
@@ -5787,13 +5795,15 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         """Restore a snapshot to a new instance - uses unified restore method."""
         print("Select snapshot to restore:")
         for idx, (name, mode, parent, created, _) in enumerate(snapshots, 1):
-            print(f"  {idx}) {name} ({mode}, {created})")
+            latest_marker = " (latest)" if idx == 1 else ""
+            print(f"  {idx}) {name} ({mode}, {created}){latest_marker}")
         print()
         
-        choice = get_input(f"Select snapshot [1-{len(snapshots)}] or 'latest'", "latest")
+        say("Tip: Enter 'L' for latest snapshot")
+        choice = get_input(f"Select snapshot [1-{len(snapshots)}, L=latest]", "L")
         
-        if choice == "latest":
-            snapshot_name = snapshots[-1][0]
+        if choice.lower() == "l":
+            snapshot_name = snapshots[0][0]  # Latest is now first
         elif choice.isdigit() and 1 <= int(choice) <= len(snapshots):
             snapshot_name = snapshots[int(choice) - 1][0]
         else:
