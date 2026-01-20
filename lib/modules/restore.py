@@ -257,7 +257,7 @@ def main() -> None:
         try:
             from lib.installer.consume import (
                 load_consume_config, start_syncthing_container, stop_syncthing_container,
-                SyncthingConfig
+                SyncthingConfig, fix_syncthing_gui_address
             )
             
             consume_config = load_consume_config(ENV_FILE)
@@ -276,6 +276,10 @@ def main() -> None:
                 # The ports were working before restore, they'll work after.
                 gui_port = consume_config.syncthing.gui_port
                 sync_port = consume_config.syncthing.sync_port
+                
+                # Fix the GUI address in restored config.xml BEFORE starting container
+                # This ensures Syncthing loads with correct address binding
+                fix_syncthing_gui_address(syncthing_config_dir, gui_port)
                 
                 # Create config from env settings
                 config = SyncthingConfig(
