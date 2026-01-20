@@ -226,13 +226,38 @@ class Instance:
 # ─── Port Utilities (Canonical Implementation) ───────────────────────────────
 # All port checking should use these functions - do not duplicate elsewhere!
 
-def is_port_available(port: int) -> bool:
+def is_port_available(port: int, check_existing_instances: bool = False) -> bool:
     """Check if a TCP port is available for binding.
     
     This is the canonical port availability check. Use this instead of 
     duplicating socket.bind() checks elsewhere.
+    
+    Args:
+        port: Port number to check
+        check_existing_instances: If True, also check ports used by existing instances
     """
     import socket
+    
+    # First check existing instances if requested
+    if check_existing_instances:
+        from pathlib import Path
+        instances_base = Path("/home/docker")
+        if instances_base.exists():
+            for setup_dir in instances_base.glob("*-setup"):
+                env_file = setup_dir / ".env"
+                if env_file.exists():
+                    try:
+                        for line in env_file.read_text().splitlines():
+                            for key in ("HTTP_PORT=", "CONSUME_SYNCTHING_GUI_PORT=", 
+                                       "CONSUME_SYNCTHING_SYNC_PORT=", "CONSUME_SFTP_PORT="):
+                                if line.startswith(key):
+                                    port_val = line.split("=", 1)[1].strip()
+                                    if port_val.isdigit() and int(port_val) == port:
+                                        return False
+                    except Exception:
+                        pass
+    
+    # Then check OS-level availability
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('', port))
@@ -446,7 +471,7 @@ def load_instance_config(instance: Instance) -> None:
     common.cfg.refresh_paths()
 
 
-def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True) -> None:
+def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True, skip_consume_folders: bool = False) -> None:
     """
     Load settings from a backup's .env dict into common.cfg.
     
@@ -456,6 +481,7 @@ def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True) 
     Args:
         backup_env: Dictionary of environment variables from backup
         check_port_conflicts: If True, check and fix port conflicts
+        skip_consume_folders: If True, disable consume folders (for clones)
     """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import common
@@ -489,26 +515,45 @@ def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True) 
     common.cfg.cron_full_time = backup_env.get("CRON_FULL_TIME", "30 3 * * 0")
     common.cfg.cron_archive_time = backup_env.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
     
-    # Syncthing - use potentially updated ports
-    common.cfg.consume_syncthing_enabled = backup_env.get("CONSUME_SYNCTHING_ENABLED", "false")
-    common.cfg.consume_syncthing_folder_id = backup_env.get("CONSUME_SYNCTHING_FOLDER_ID", "")
-    common.cfg.consume_syncthing_folder_label = backup_env.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
-    common.cfg.consume_syncthing_device_id = backup_env.get("CONSUME_SYNCTHING_DEVICE_ID", "")
-    common.cfg.consume_syncthing_api_key = backup_env.get("CONSUME_SYNCTHING_API_KEY", "")
-    common.cfg.consume_syncthing_sync_port = backup_env.get("CONSUME_SYNCTHING_SYNC_PORT", "22000")
-    common.cfg.consume_syncthing_gui_port = backup_env.get("CONSUME_SYNCTHING_GUI_PORT", "8384")
-    
-    # Samba
-    common.cfg.consume_samba_enabled = backup_env.get("CONSUME_SAMBA_ENABLED", "false")
-    common.cfg.consume_samba_share_name = backup_env.get("CONSUME_SAMBA_SHARE_NAME", "")
-    common.cfg.consume_samba_username = backup_env.get("CONSUME_SAMBA_USERNAME", "")
-    common.cfg.consume_samba_password = backup_env.get("CONSUME_SAMBA_PASSWORD", "")
-    
-    # SFTP - use potentially updated port
-    common.cfg.consume_sftp_enabled = backup_env.get("CONSUME_SFTP_ENABLED", "false")
-    common.cfg.consume_sftp_username = backup_env.get("CONSUME_SFTP_USERNAME", "")
-    common.cfg.consume_sftp_password = backup_env.get("CONSUME_SFTP_PASSWORD", "")
-    common.cfg.consume_sftp_port = backup_env.get("CONSUME_SFTP_PORT", "2222")
+    # Consume folder services - skip for clones (they need fresh setup)
+    if skip_consume_folders:
+        # Disable all consume folder services for clones
+        common.cfg.consume_syncthing_enabled = "false"
+        common.cfg.consume_syncthing_folder_id = ""
+        common.cfg.consume_syncthing_folder_label = ""
+        common.cfg.consume_syncthing_device_id = ""
+        common.cfg.consume_syncthing_api_key = ""
+        common.cfg.consume_syncthing_sync_port = "22000"
+        common.cfg.consume_syncthing_gui_port = "8384"
+        common.cfg.consume_samba_enabled = "false"
+        common.cfg.consume_samba_share_name = ""
+        common.cfg.consume_samba_username = ""
+        common.cfg.consume_samba_password = ""
+        common.cfg.consume_sftp_enabled = "false"
+        common.cfg.consume_sftp_username = ""
+        common.cfg.consume_sftp_password = ""
+        common.cfg.consume_sftp_port = "2222"
+    else:
+        # Syncthing - use potentially updated ports
+        common.cfg.consume_syncthing_enabled = backup_env.get("CONSUME_SYNCTHING_ENABLED", "false")
+        common.cfg.consume_syncthing_folder_id = backup_env.get("CONSUME_SYNCTHING_FOLDER_ID", "")
+        common.cfg.consume_syncthing_folder_label = backup_env.get("CONSUME_SYNCTHING_FOLDER_LABEL", "")
+        common.cfg.consume_syncthing_device_id = backup_env.get("CONSUME_SYNCTHING_DEVICE_ID", "")
+        common.cfg.consume_syncthing_api_key = backup_env.get("CONSUME_SYNCTHING_API_KEY", "")
+        common.cfg.consume_syncthing_sync_port = backup_env.get("CONSUME_SYNCTHING_SYNC_PORT", "22000")
+        common.cfg.consume_syncthing_gui_port = backup_env.get("CONSUME_SYNCTHING_GUI_PORT", "8384")
+        
+        # Samba
+        common.cfg.consume_samba_enabled = backup_env.get("CONSUME_SAMBA_ENABLED", "false")
+        common.cfg.consume_samba_share_name = backup_env.get("CONSUME_SAMBA_SHARE_NAME", "")
+        common.cfg.consume_samba_username = backup_env.get("CONSUME_SAMBA_USERNAME", "")
+        common.cfg.consume_samba_password = backup_env.get("CONSUME_SAMBA_PASSWORD", "")
+        
+        # SFTP - use potentially updated port
+        common.cfg.consume_sftp_enabled = backup_env.get("CONSUME_SFTP_ENABLED", "false")
+        common.cfg.consume_sftp_username = backup_env.get("CONSUME_SFTP_USERNAME", "")
+        common.cfg.consume_sftp_password = backup_env.get("CONSUME_SFTP_PASSWORD", "")
+        common.cfg.consume_sftp_port = backup_env.get("CONSUME_SFTP_PORT", "2222")
 
 
 # ─── Instance Manager ─────────────────────────────────────────────────────────

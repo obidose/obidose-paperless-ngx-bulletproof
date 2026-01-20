@@ -190,12 +190,16 @@ def main() -> None:
                     ok(f"Restored {name} data")
             
             # Restore syncthing-config if it exists in backup (consume folder sync config)
+            # BUT skip for clones (MERGE_CONFIG=yes) - clones need fresh consume folder setup
             syncthing_tarfile = next(tmp.glob("syncthing-config.tar*"), None)
             if syncthing_tarfile:
-                syncthing_config_dir = STACK_DIR / "syncthing-config"
-                syncthing_config_dir.mkdir(parents=True, exist_ok=True)
-                extract_tar(syncthing_tarfile, STACK_DIR)
-                ok("Restored syncthing-config")
+                if skip_config:
+                    say("Skipping syncthing-config (clone needs fresh consume folder setup)")
+                else:
+                    syncthing_config_dir = STACK_DIR / "syncthing-config"
+                    syncthing_config_dir.mkdir(parents=True, exist_ok=True)
+                    extract_tar(syncthing_tarfile, STACK_DIR)
+                    ok("Restored syncthing-config")
             
             # Handle docker-compose.yml restoration
             compose_snap = tmp / "compose.snapshot.yml"
@@ -210,12 +214,16 @@ def main() -> None:
                     ok("Restored docker-compose.yml from backup")
             first = False
         else:
-            for name in ["data", "media", "export", "syncthing-config"]:
+            # Incremental snapshots - skip syncthing-config for clones
+            for name in ["data", "media", "export"]:
                 tarfile_path = next(tmp.glob(f"{name}.tar*"), None)
                 if tarfile_path:
-                    # For syncthing-config, extract to STACK_DIR; others to DATA_ROOT
-                    extract_dest = STACK_DIR if name == "syncthing-config" else DATA_ROOT
-                    extract_tar(tarfile_path, extract_dest)
+                    extract_tar(tarfile_path, DATA_ROOT)
+            # Only restore syncthing-config for same-instance restores
+            if not skip_config:
+                syncthing_tarfile = next(tmp.glob("syncthing-config.tar*"), None)
+                if syncthing_tarfile:
+                    extract_tar(syncthing_tarfile, STACK_DIR)
         dump = next(tmp.glob("postgres.sql*"), None)
         if dump:
             final_dump = dump_dir / dump.name
@@ -236,8 +244,9 @@ def main() -> None:
         warn("Docker compose file not found - services not started")
     
     # Restart Syncthing if it was enabled (syncthing-config was restored)
+    # Skip for clones (skip_config=True) - they need fresh consume folder setup
     syncthing_config_dir = STACK_DIR / "syncthing-config"
-    if syncthing_config_dir.exists():
+    if not skip_config and syncthing_config_dir.exists():
         try:
             from lib.installer.consume import (
                 load_consume_config, start_syncthing_container, stop_syncthing_container,

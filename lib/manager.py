@@ -1162,20 +1162,12 @@ class PaperlessManager:
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.installer import common, files, traefik, cloudflared, tailscale
             from lib.installer.common import get_next_available_port
+            from lib.instance import is_port_available, find_available_port
             
             # ─── Detect Conflicts ─────────────────────────────────────────────
-            # Check what ports are in use (use bind() method like get_next_available_port)
+            # Check what ports are in use (checks both OS and existing instances)
             original_port = backup_env.get("HTTP_PORT", "8000")
-            port_conflict = False
-            try:
-                import socket
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(('', int(original_port)))
-                # If we get here, port is available
-                port_conflict = False
-            except OSError:
-                # Port is in use
-                port_conflict = True
+            port_conflict = not is_port_available(int(original_port), check_existing_instances=True)
             
             # Check if instance name conflicts with REGISTERED instances
             original_name = backup_env.get("INSTANCE_NAME", backup_instance)
@@ -1281,7 +1273,8 @@ class PaperlessManager:
             common.cfg.refresh_paths()
             
             # Load settings from backup
-            load_backup_env_config(backup_env)
+            # Skip consume folders for clones - they need fresh setup with new device IDs
+            load_backup_env_config(backup_env, skip_consume_folders=True)
             
             print()
             say(f"Instance '{colorize(new_name, Colors.BOLD)}' paths:")
@@ -1344,27 +1337,21 @@ class PaperlessManager:
             print()
             if port_conflict:
                 warn(f"Port {original_port} is already in use!")
-                available_port = get_next_available_port(int(original_port) + 1)
+                available_port = find_available_port(int(original_port) + 1, check_existing_instances=True)
                 common.cfg.http_port = get_port_input("HTTP port (must change)", str(available_port))
                 
                 # Verify new port isn't also in use
-                while True:
-                    try:
-                        import socket
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(1)
-                        result = sock.connect_ex(('127.0.0.1', int(common.cfg.http_port)))
-                        sock.close()
-                        if result == 0:
-                            warn(f"Port {common.cfg.http_port} is also in use!")
-                            available_port = get_next_available_port(int(common.cfg.http_port) + 1)
-                            common.cfg.http_port = get_port_input("HTTP port", str(available_port))
-                        else:
-                            break
-                    except:
-                        break
+                while not is_port_available(int(common.cfg.http_port), check_existing_instances=True):
+                    warn(f"Port {common.cfg.http_port} is also in use!")
+                    available_port = find_available_port(int(common.cfg.http_port) + 1, check_existing_instances=True)
+                    common.cfg.http_port = get_port_input("HTTP port", str(available_port))
             else:
                 common.cfg.http_port = get_port_input("HTTP port", original_port)
+                # Also verify user-chosen port isn't in use
+                while not is_port_available(int(common.cfg.http_port), check_existing_instances=True):
+                    warn(f"Port {common.cfg.http_port} is in use!")
+                    available_port = find_available_port(int(common.cfg.http_port) + 1, check_existing_instances=True)
+                    common.cfg.http_port = get_port_input("HTTP port", str(available_port))
             
             # Tailscale option
             original_tailscale = backup_env.get("ENABLE_TAILSCALE", "no")
@@ -1479,6 +1466,9 @@ class PaperlessManager:
                 print(box_line(f" Access: {colorize(f'http://localhost:{common.cfg.http_port}', Colors.CYAN)}"))
             print(box_line(""))
             print(box_line(" Your documents and settings have been restored."))
+            print(box_line(""))
+            print(box_line(colorize(" Note:", Colors.YELLOW) + " Consume folders (Syncthing/Samba/SFTP) need to"))
+            print(box_line(" be set up fresh via Manage Instance → Consume Folders."))
             print(draw_box_bottom(box_width))
             
         except KeyboardInterrupt:
