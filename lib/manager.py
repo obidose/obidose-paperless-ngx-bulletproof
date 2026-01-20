@@ -2128,28 +2128,148 @@ class PaperlessManager:
         """View detailed information about an instance."""
         print_header(f"Details: {instance.name}")
         
-        print(f"Name: {instance.name}")
-        print(f"Status: {'Running' if instance.is_running else 'Stopped'}")
-        print(f"Stack Directory: {instance.stack_dir}")
-        print(f"Data Root: {instance.data_root}")
-        print(f"Env File: {instance.env_file}")
-        print(f"Compose File: {instance.compose_file}")
+        box_line, box_width = create_box_helper(80)
+        
+        # ── Basic Info ──
+        print(draw_box_top(box_width))
+        print(box_line(colorize(" INSTANCE OVERVIEW", Colors.BOLD)))
+        print(draw_box_divider(box_width))
+        print(box_line(f" Name:           {instance.name}"))
+        print(box_line(f" Status:         {'● Running' if instance.is_running else '○ Stopped'}"))
+        print(box_line(f" Stack Dir:      {instance.stack_dir}"))
+        print(box_line(f" Data Root:      {instance.data_root}"))
+        print(draw_box_bottom(box_width))
         print()
         
-        # Show access URLs with emojis
+        # ── Access Methods ──
+        print(draw_box_top(box_width))
+        print(box_line(colorize(" ACCESS METHODS", Colors.BOLD)))
+        print(draw_box_divider(box_width))
+        
         access_urls = instance.get_access_urls_formatted()
         if access_urls:
-            print("Access Methods:")
             for mode_label, url in access_urls:
-                print(f"  {mode_label}: {colorize(url, Colors.CYAN)}")
-            print()
+                print(box_line(f" {mode_label}: {colorize(url, Colors.CYAN)}"))
+        else:
+            print(box_line(" No access methods configured"))
         
-        # Show key settings from env file
-        if instance.env_file.exists():
-            print("Settings:")
-            for key in ["PAPERLESS_URL", "POSTGRES_DB", "TZ", "ENABLE_TRAEFIK", "ENABLE_CLOUDFLARED", "ENABLE_TAILSCALE", "DOMAIN", "HTTP_PORT"]:
-                value = instance.get_env_value(key, "not set")
-                print(f"  {key}: {value}")
+        # Tailscale status
+        ts_enabled = instance.get_env_value("ENABLE_TAILSCALE", "no")
+        if ts_enabled == "yes":
+            from lib.installer.tailscale import get_ip as get_tailscale_ip
+            ts_ip = get_tailscale_ip()
+            port = instance.get_env_value("HTTP_PORT", "8000")
+            if ts_ip:
+                print(box_line(f" 🔐 Tailscale: {colorize(f'http://{ts_ip}:{port}', Colors.CYAN)}"))
+        
+        print(draw_box_bottom(box_width))
+        print()
+        
+        # ── Consume Methods ──
+        print(draw_box_top(box_width))
+        print(box_line(colorize(" CONSUME INPUT METHODS", Colors.BOLD)))
+        print(draw_box_divider(box_width))
+        
+        from lib.installer.consume import load_consume_config, get_syncthing_status
+        consume_config = load_consume_config(instance.env_file)
+        
+        # Syncthing
+        if consume_config.syncthing.enabled:
+            status = get_syncthing_status(instance.name)
+            if status["running"]:
+                st_status = colorize("● Running", Colors.GREEN)
+            else:
+                st_status = colorize("○ Stopped", Colors.YELLOW)
+            print(box_line(f" Syncthing:      {st_status}"))
+            print(box_line(f"   Device ID:    {consume_config.syncthing.device_id[:20]}..." if consume_config.syncthing.device_id else "   Device ID:    (initializing)"))
+            print(box_line(f"   GUI Port:     {consume_config.syncthing.gui_port}"))
+            print(box_line(f"   Sync Port:    {consume_config.syncthing.sync_port}"))
+        else:
+            print(box_line(f" Syncthing:      {colorize('○ Disabled', Colors.CYAN)}"))
+        
+        # Samba
+        if consume_config.samba.enabled:
+            print(box_line(f" Samba:          {colorize('✓ Enabled', Colors.GREEN)}"))
+            print(box_line(f"   Share:        {consume_config.samba.share_name}"))
+            print(box_line(f"   Username:     {consume_config.samba.username}"))
+        else:
+            print(box_line(f" Samba:          {colorize('○ Disabled', Colors.CYAN)}"))
+        
+        # SFTP
+        if consume_config.sftp.enabled:
+            print(box_line(f" SFTP:           {colorize('✓ Enabled', Colors.GREEN)}"))
+            print(box_line(f"   Port:         {consume_config.sftp.port}"))
+            print(box_line(f"   Username:     {consume_config.sftp.username}"))
+        else:
+            print(box_line(f" SFTP:           {colorize('○ Disabled', Colors.CYAN)}"))
+        
+        print(draw_box_bottom(box_width))
+        print()
+        
+        # ── Backup Status ──
+        print(draw_box_top(box_width))
+        print(box_line(colorize(" BACKUP STATUS", Colors.BOLD)))
+        print(draw_box_divider(box_width))
+        
+        rclone_remote = instance.get_env_value("RCLONE_REMOTE_NAME", "")
+        rclone_path = instance.get_env_value("RCLONE_REMOTE_PATH", "")
+        
+        if rclone_remote and rclone_path:
+            print(box_line(f" Remote:         {rclone_remote}:{rclone_path}"))
+            
+            # Get snapshot count and size
+            try:
+                snap_count = count_snapshots(f"{rclone_remote}:{rclone_path}")
+                backup_size = get_backup_size(f"{rclone_remote}:{rclone_path}")
+                print(box_line(f" Snapshots:      {snap_count}"))
+                print(box_line(f" Total Size:     {backup_size}"))
+            except:
+                print(box_line(f" Snapshots:      (unable to fetch)"))
+            
+            # Backup schedule from cron
+            backup_schedule = instance.get_env_value("BACKUP_SCHEDULE_INCR", "")
+            if backup_schedule:
+                print(box_line(f" Schedule:       Incremental every {backup_schedule.split()[1]}h"))
+        else:
+            print(box_line(f" {colorize('Not configured', Colors.YELLOW)}"))
+        
+        print(draw_box_bottom(box_width))
+        print()
+        
+        # ── Key Settings ──
+        print(draw_box_top(box_width))
+        print(box_line(colorize(" KEY SETTINGS", Colors.BOLD)))
+        print(draw_box_divider(box_width))
+        
+        settings = [
+            ("PAPERLESS_URL", "Paperless URL"),
+            ("DOMAIN", "Domain"),
+            ("HTTP_PORT", "HTTP Port"),
+            ("TZ", "Timezone"),
+            ("PAPERLESS_ADMIN_USER", "Admin User"),
+            ("POSTGRES_DB", "Database"),
+        ]
+        for key, label in settings:
+            value = instance.get_env_value(key, "not set")
+            # Mask sensitive values
+            print(box_line(f" {label + ':':<16} {value}"))
+        
+        print(draw_box_divider(box_width))
+        print(box_line(colorize(" Network Features:", Colors.BOLD)))
+        
+        features = [
+            ("ENABLE_TRAEFIK", "Traefik (HTTPS)"),
+            ("ENABLE_CLOUDFLARED", "Cloudflare Tunnel"),
+            ("ENABLE_TAILSCALE", "Tailscale"),
+        ]
+        for key, label in features:
+            value = instance.get_env_value(key, "no")
+            if value == "yes":
+                print(box_line(f" {label + ':':<20} {colorize('✓ Enabled', Colors.GREEN)}"))
+            else:
+                print(box_line(f" {label + ':':<20} {colorize('○ Disabled', Colors.CYAN)}"))
+        
+        print(draw_box_bottom(box_width))
         
         input("\nPress Enter to continue...")
     
