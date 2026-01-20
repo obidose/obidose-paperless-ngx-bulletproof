@@ -260,6 +260,7 @@ def main() -> None:
                 SyncthingConfig, fix_syncthing_gui_address, get_next_available_port,
                 save_consume_config
             )
+            from lib.installer.tailscale import get_ip as get_tailscale_ip
             
             consume_config = load_consume_config(ENV_FILE)
             if consume_config.syncthing.enabled:
@@ -276,38 +277,36 @@ def main() -> None:
                 sync_port = consume_config.syncthing.sync_port
                 ports_changed = False
                 
+                # Get Tailscale IP (GUI binds to Tailscale if available, localhost otherwise)
+                tailscale_ip = get_tailscale_ip()
+                
                 # Check for port conflicts with OTHER instances
                 # (Our own container is stopped, so we're checking if another instance took our ports)
-                def is_port_used_by_other_instance(port: int) -> bool:
-                    """Check if port is in use by another instance's Syncthing."""
-                    import subprocess
-                    # Check if any Syncthing container (not ours) is using the port
-                    result = subprocess.run(
-                        ["docker", "ps", "--filter", "name=syncthing-", "--format", "{{.Names}}"],
-                        capture_output=True, text=True, check=False
-                    )
-                    for name in result.stdout.strip().split('\n'):
-                        if name and name != f"syncthing-{INSTANCE_NAME}":
-                            # Check if this container is bound to our port
-                            # With host networking, we need to check the actual process
-                            pass
-                    # Fall back to simple port check - if something is listening, it's in use
+                def is_port_in_use(port: int, hosts: list[str]) -> bool:
+                    """Check if port is in use on any of the given hosts."""
                     import socket
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.settimeout(0.5)
-                            s.connect(('127.0.0.1', port))
-                            return True  # Something is listening
-                    except (socket.error, socket.timeout):
-                        return False
+                    for host in hosts:
+                        try:
+                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                                s.settimeout(0.5)
+                                s.connect((host, port))
+                                return True  # Something is listening
+                        except (socket.error, socket.timeout):
+                            continue
+                    return False
                 
-                if is_port_used_by_other_instance(gui_port):
+                # GUI port can be bound to Tailscale IP or localhost - check both
+                gui_hosts = ["127.0.0.1"]
+                if tailscale_ip:
+                    gui_hosts.append(tailscale_ip)
+                if is_port_in_use(gui_port, gui_hosts):
                     old_port = gui_port
                     gui_port = get_next_available_port(8384)
                     warn(f"Syncthing GUI port {old_port} in use by another instance, using {gui_port}")
                     ports_changed = True
-                    
-                if is_port_used_by_other_instance(sync_port):
+                
+                # Sync port binds to 0.0.0.0, check on localhost
+                if is_port_in_use(sync_port, ["127.0.0.1"]):
                     old_port = sync_port
                     sync_port = get_next_available_port(22000)
                     warn(f"Syncthing sync port {old_port} in use by another instance, using {sync_port}")
