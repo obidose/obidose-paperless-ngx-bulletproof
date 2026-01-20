@@ -75,7 +75,18 @@ def create_box_helper(width: int = 80):
         """Create a properly padded box line with cyan borders."""
         # Strip ANSI codes for length calculation
         clean = re.sub(r'\033\[[0-9;]+m', '', content)
-        padding = width - len(clean)
+        
+        # Account for emoji display width (most emojis are 2 chars wide visually)
+        # Common emojis used in this app
+        wide_emojis = ['🌐', '🔐', '💾', '📋', '🔄', '☁', '●', '○', '✓', '✗', '⚠', '⏳', 'ℹ']
+        emoji_adjustment = 0
+        for emoji in wide_emojis:
+            emoji_adjustment += clean.count(emoji)
+        
+        # Also handle variation selectors (like ☁️ which is ☁ + U+FE0F)
+        emoji_adjustment += clean.count('\ufe0f')
+        
+        padding = width - len(clean) - emoji_adjustment
         if padding < 0:
             truncated = clean[:width-3] + "..."
             return colorize("│", Colors.CYAN) + truncated + colorize("│", Colors.CYAN)

@@ -2237,17 +2237,27 @@ class PaperlessManager:
                             latest = snapshots[0]
                             try:
                                 # Format nicely: "2026-01-20 08:14"
-                                date_part = latest.replace("_", " ").rsplit("-", 1)[0]
-                                print(box_line(f" Last Backup:    {date_part}"))
+                                # Split into date and time parts
+                                if "_" in latest:
+                                    date_str, time_str = latest.split("_", 1)
+                                    # time_str is like "08-14-32", convert to "08:14"
+                                    time_parts = time_str.split("-")
+                                    if len(time_parts) >= 2:
+                                        formatted_time = f"{time_parts[0]}:{time_parts[1]}"
+                                        print(box_line(f" Last Backup:    {date_str} {formatted_time}"))
+                                    else:
+                                        print(box_line(f" Last Backup:    {latest}"))
+                                else:
+                                    print(box_line(f" Last Backup:    {latest}"))
                             except:
                                 print(box_line(f" Last Backup:    {latest}"))
             except:
                 print(box_line(f" Snapshots:      (unable to fetch)"))
             
-            # Backup schedule from env
-            schedule_incr = instance.get_env_value("BACKUP_SCHEDULE_INCR", "")
-            schedule_full = instance.get_env_value("BACKUP_SCHEDULE_FULL", "")
-            schedule_archive = instance.get_env_value("BACKUP_SCHEDULE_ARCHIVE", "")
+            # Backup schedule from env (actual var names are CRON_*_TIME)
+            schedule_incr = instance.get_env_value("CRON_INCR_TIME", "")
+            schedule_full = instance.get_env_value("CRON_FULL_TIME", "")
+            schedule_archive = instance.get_env_value("CRON_ARCHIVE_TIME", "")
             
             if schedule_incr or schedule_full or schedule_archive:
                 print(box_line(f""))
@@ -2288,8 +2298,8 @@ class PaperlessManager:
                         print(box_line(f"   Archive:      {schedule_archive}"))
                 
                 # Retention policy
-                retention = instance.get_env_value("BACKUP_RETENTION_DAYS", "")
-                archive_retention = instance.get_env_value("BACKUP_ARCHIVE_RETENTION_MONTHS", "")
+                retention = instance.get_env_value("RETENTION_DAYS", "")
+                archive_retention = instance.get_env_value("ARCHIVE_RETENTION_MONTHS", "")
                 if retention or archive_retention:
                     retention_str = f"{retention}d" if retention else ""
                     archive_str = f", archives {archive_retention}mo" if archive_retention else ""
