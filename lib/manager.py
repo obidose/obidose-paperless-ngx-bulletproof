@@ -5403,6 +5403,10 @@ WantedBy=multi-user.target
                 common.cfg.postgres_password = instance.get_env_value("POSTGRES_PASSWORD", "")
                 common.cfg.refresh_paths()
                 
+                # Regenerate env file first to ensure all variables are present (including CSRF settings)
+                say("Updating configuration...")
+                files.write_env_file()
+                
                 # Write new compose file
                 files.write_compose_file()
                 ok("docker-compose.yml regenerated")
