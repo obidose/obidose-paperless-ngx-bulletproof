@@ -1484,13 +1484,96 @@ class PaperlessManager:
         except KeyboardInterrupt:
             print()
             say("Restore cancelled")
+            # Offer cleanup if files were created
+            if 'new_name' in dir() and new_name:
+                self._cleanup_failed_restore(new_name, common.cfg if 'common' in dir() else None)
         except Exception as e:
             error(f"Restore failed: {e}")
             import traceback
             traceback.print_exc()
+            # Offer cleanup if files were created
+            if 'new_name' in dir() and new_name:
+                self._cleanup_failed_restore(new_name, common.cfg if 'common' in dir() else None)
         
         input("\nPress Enter to continue...")
     
+    def _cleanup_failed_restore(self, instance_name: str, cfg=None) -> None:
+        """Offer to clean up a failed restore attempt."""
+        print()
+        
+        # Check what was created
+        data_root = Path(cfg.data_root) if cfg else Path(f"/home/docker/{instance_name}")
+        stack_dir = Path(cfg.stack_dir) if cfg else Path(f"/home/docker/{instance_name}-setup")
+        
+        has_data = data_root.exists()
+        has_stack = stack_dir.exists()
+        
+        if not has_data and not has_stack:
+            return  # Nothing to clean up
+        
+        print(draw_box_top(78))
+        box_line, _ = create_box_helper(78)
+        print(box_line(colorize(" Cleanup Options", Colors.BOLD)))
+        print(draw_box_divider(78))
+        print(box_line(f" The restore failed but some files were created:"))
+        if has_data:
+            print(box_line(f"   • Data:  {data_root}"))
+        if has_stack:
+            print(box_line(f"   • Stack: {stack_dir}"))
+        print(draw_box_bottom(78))
+        print()
+        
+        print("  1) Delete partial installation (recommended)")
+        print("  2) Keep files for manual inspection")
+        print()
+        
+        choice = input("Select option [1]: ").strip() or "1"
+        
+        if choice == "1":
+            say("Cleaning up failed restore...")
+            
+            # Stop any containers that might have been started
+            try:
+                import subprocess
+                container_name = f"paperless-{instance_name}"
+                subprocess.run(
+                    ["docker", "compose", "-p", container_name, "down", "-v", "--remove-orphans"],
+                    cwd=str(stack_dir) if has_stack else None,
+                    capture_output=True,
+                    timeout=60
+                )
+            except:
+                pass
+            
+            # Remove directories
+            import shutil
+            if has_data:
+                try:
+                    shutil.rmtree(data_root)
+                    ok(f"Removed {data_root}")
+                except Exception as e:
+                    warn(f"Could not remove {data_root}: {e}")
+            
+            if has_stack:
+                try:
+                    shutil.rmtree(stack_dir)
+                    ok(f"Removed {stack_dir}")
+                except Exception as e:
+                    warn(f"Could not remove {stack_dir}: {e}")
+            
+            # Remove from instance registry if it got registered
+            try:
+                self.instance_manager.remove_instance(instance_name)
+            except:
+                pass
+            
+            ok("Cleanup complete")
+        else:
+            say("Files kept for inspection")
+            say(f"You can manually delete them with:")
+            print(f"  sudo rm -rf {data_root}")
+            print(f"  sudo rm -rf {stack_dir}")
+
     def create_fresh_instance(self) -> None:
         """Create a new fresh instance with guided setup."""
         print_header("Create New Instance")
