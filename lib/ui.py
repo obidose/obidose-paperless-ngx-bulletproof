@@ -66,14 +66,18 @@ def die(msg: str, code: int = 1) -> None:
 # ─── Box Drawing Utilities ────────────────────────────────────────────────────
 
 def create_box_helper(width: int = 80):
-    """Create a box line formatter for the given width."""
+    """Create a box line formatter for the given width.
+    
+    Returns:
+        tuple: (box_line function, width) for compatibility with existing code.
+    """
     def box_line(content: str) -> str:
         """Format a line to fit within the box, handling ANSI codes."""
         # Strip ANSI codes for length calculation
         plain = re.sub(r'\033\[[0-9;]*m', '', content)
         padding = width - 4 - len(plain)
         return f"│ {content}{' ' * max(0, padding)} │"
-    return box_line
+    return box_line, width
 
 
 def draw_box_top(width: int = 80) -> str:
