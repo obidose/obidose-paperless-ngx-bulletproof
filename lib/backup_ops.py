@@ -274,11 +274,12 @@ def run_restore_with_env(
         # (they have the user's chosen ports, network settings, etc.)
         env["MERGE_CONFIG"] = "yes"
     
-    # Build the restore command - pass snapshot via sys.argv as restore module expects
+    # Build the restore command - call _refresh_globals_from_env() to pick up our env vars
+    # This is CRITICAL - without it, the module uses stale globals from a previous import
     if snapshot:
-        restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import main; main()"
+        restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import _refresh_globals_from_env, main; _refresh_globals_from_env(); main()"
     else:
-        restore_cmd = "from lib.modules.restore import main; main()"
+        restore_cmd = "from lib.modules.restore import _refresh_globals_from_env, main; _refresh_globals_from_env(); main()"
     
     # Run the restore module
     result = subprocess.run(

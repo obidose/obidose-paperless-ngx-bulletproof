@@ -101,11 +101,18 @@ def restore_db(dump: Path) -> None:
     subprocess.run(_compose_cmd("up", "-d", "db"), check=True)
     time.sleep(5)
     
-    # Clear existing schema to avoid duplicate key errors
+    # Completely drop and recreate the database to handle corrupted catalogs
+    # Using postgres database to issue DROP/CREATE commands
+    say("Dropping and recreating database...")
     subprocess.run(
-        _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", POSTGRES_DB,
-                     "-c", "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
+        _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", "postgres",
+                     "-c", f"DROP DATABASE IF EXISTS {POSTGRES_DB};"),
         check=False
+    )
+    subprocess.run(
+        _compose_cmd("exec", "-T", "db", "psql", "-U", POSTGRES_USER, "-d", "postgres",
+                     "-c", f"CREATE DATABASE {POSTGRES_DB} OWNER {POSTGRES_USER};"),
+        check=True
     )
     
     # Restore from dump (handle gzipped or plain SQL)
@@ -250,9 +257,8 @@ def main() -> None:
         try:
             from lib.installer.consume import (
                 load_consume_config, start_syncthing_container, stop_syncthing_container,
-                SyncthingConfig, get_next_available_port, save_consume_config
+                SyncthingConfig
             )
-            from lib.instance import is_port_available
             
             consume_config = load_consume_config(ENV_FILE)
             if consume_config.syncthing.enabled:
@@ -265,22 +271,13 @@ def main() -> None:
                 consume_path = DATA_ROOT / "consume"
                 consume_path.mkdir(parents=True, exist_ok=True)
                 
-                # Check for port conflicts (only with OTHER instances, not ourselves)
+                # Use the ports from the config - we just stopped our own container
+                # so any "conflict" is just TIME_WAIT state from our own socket.
+                # The ports were working before restore, they'll work after.
                 gui_port = consume_config.syncthing.gui_port
                 sync_port = consume_config.syncthing.sync_port
-                ports_changed = False
                 
-                if not is_port_available(gui_port):
-                    gui_port = get_next_available_port(8384)
-                    warn(f"Syncthing GUI port conflict, using {gui_port}")
-                    ports_changed = True
-                    
-                if not is_port_available(sync_port):
-                    sync_port = get_next_available_port(22000)
-                    warn(f"Syncthing sync port conflict, using {sync_port}")
-                    ports_changed = True
-                
-                # Create config from env settings (with potentially updated ports)
+                # Create config from env settings
                 config = SyncthingConfig(
                     enabled=True,
                     folder_id=consume_config.syncthing.folder_id,
@@ -290,11 +287,6 @@ def main() -> None:
                     sync_port=sync_port,
                     gui_port=gui_port,
                 )
-                
-                # Save updated ports to .env file if they changed
-                if ports_changed:
-                    consume_config.syncthing = config
-                    save_consume_config(consume_config, ENV_FILE)
                 
                 if start_syncthing_container(INSTANCE_NAME, config, consume_path, syncthing_config_dir):
                     ok("Syncthing container restarted")
