@@ -180,11 +180,14 @@ class BackupManager:
                     k, v = line.split("=", 1)
                     env[k.strip()] = v.strip()
         
+        # Build the restore command - pass snapshot via sys.argv as restore module expects
         if snapshot:
-            env["RESTORE_SNAPSHOT"] = snapshot
+            restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import main; main()"
+        else:
+            restore_cmd = "from lib.modules.restore import main; main()"
         
         result = subprocess.run(
-            ["python3", "-c", "from lib.modules.restore import run_restore; run_restore()"],
+            ["python3", "-c", restore_cmd],
             env=env, cwd="/usr/local/lib/paperless-bulletproof",
             capture_output=False, check=False
         )
@@ -237,15 +240,18 @@ def run_restore_with_env(
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
     
-    if snapshot:
-        env["RESTORE_SNAPSHOT"] = snapshot
-    
     if fresh_config:
         env["FRESH_CONFIG"] = "true"
     
+    # Build the restore command - pass snapshot via sys.argv as restore module expects
+    if snapshot:
+        restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import main; main()"
+    else:
+        restore_cmd = "from lib.modules.restore import main; main()"
+    
     # Run the restore module
     result = subprocess.run(
-        ["python3", "-c", "from lib.modules.restore import run_restore; run_restore()"],
+        ["python3", "-c", restore_cmd],
         env=env, cwd="/usr/local/lib/paperless-bulletproof",
         capture_output=False, check=False
     )
