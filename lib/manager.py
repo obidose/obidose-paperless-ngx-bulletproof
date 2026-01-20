@@ -2217,19 +2217,83 @@ class PaperlessManager:
         if rclone_remote and rclone_path:
             print(box_line(f" Remote:         {rclone_remote}:{rclone_path}"))
             
-            # Get snapshot count and size
+            # Get snapshot count, size, and last backup
             try:
                 snap_count = count_snapshots(f"{rclone_remote}:{rclone_path}")
                 backup_size = get_backup_size(f"{rclone_remote}:{rclone_path}")
                 print(box_line(f" Snapshots:      {snap_count}"))
                 print(box_line(f" Total Size:     {backup_size}"))
+                
+                # Get last backup date from latest snapshot name
+                if snap_count > 0:
+                    result = subprocess.run(
+                        ["rclone", "lsd", f"{rclone_remote}:{rclone_path}"],
+                        capture_output=True, text=True, check=False, timeout=10
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        snapshots = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()], reverse=True)
+                        if snapshots:
+                            # Parse snapshot name like "2026-01-20_08-14-32"
+                            latest = snapshots[0]
+                            try:
+                                # Format nicely: "2026-01-20 08:14"
+                                date_part = latest.replace("_", " ").rsplit("-", 1)[0]
+                                print(box_line(f" Last Backup:    {date_part}"))
+                            except:
+                                print(box_line(f" Last Backup:    {latest}"))
             except:
                 print(box_line(f" Snapshots:      (unable to fetch)"))
             
-            # Backup schedule from cron
-            backup_schedule = instance.get_env_value("BACKUP_SCHEDULE_INCR", "")
-            if backup_schedule:
-                print(box_line(f" Schedule:       Incremental every {backup_schedule.split()[1]}h"))
+            # Backup schedule from env
+            schedule_incr = instance.get_env_value("BACKUP_SCHEDULE_INCR", "")
+            schedule_full = instance.get_env_value("BACKUP_SCHEDULE_FULL", "")
+            schedule_archive = instance.get_env_value("BACKUP_SCHEDULE_ARCHIVE", "")
+            
+            if schedule_incr or schedule_full or schedule_archive:
+                print(box_line(f""))
+                print(box_line(colorize(" Schedule:", Colors.BOLD)))
+                if schedule_incr:
+                    # Parse cron: "0 */6 * * *" -> "Every 6 hours"
+                    parts = schedule_incr.split()
+                    if len(parts) >= 2 and parts[1].startswith("*/"):
+                        hours = parts[1].replace("*/", "")
+                        print(box_line(f"   Incremental:  Every {hours} hours"))
+                    else:
+                        print(box_line(f"   Incremental:  {schedule_incr}"))
+                if schedule_full:
+                    # Parse cron: "30 3 * * 0" -> "Weekly (Sun 03:30)"
+                    parts = schedule_full.split()
+                    if len(parts) >= 5:
+                        minute, hour = parts[0], parts[1]
+                        day_of_week = parts[4] if len(parts) > 4 else "*"
+                        days = {"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed", "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
+                        day_name = days.get(day_of_week, day_of_week)
+                        if day_of_week != "*":
+                            print(box_line(f"   Full:         Weekly ({day_name} {hour.zfill(2)}:{minute.zfill(2)})"))
+                        else:
+                            print(box_line(f"   Full:         Daily ({hour.zfill(2)}:{minute.zfill(2)})"))
+                    else:
+                        print(box_line(f"   Full:         {schedule_full}"))
+                if schedule_archive:
+                    # Parse cron: "0 4 1 * *" -> "Monthly (1st at 04:00)"
+                    parts = schedule_archive.split()
+                    if len(parts) >= 4:
+                        minute, hour, day_of_month = parts[0], parts[1], parts[2]
+                        if day_of_month != "*":
+                            suffix = "th" if 4 <= int(day_of_month) <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(int(day_of_month) % 10, "th")
+                            print(box_line(f"   Archive:      Monthly ({day_of_month}{suffix} at {hour.zfill(2)}:{minute.zfill(2)})"))
+                        else:
+                            print(box_line(f"   Archive:      {schedule_archive}"))
+                    else:
+                        print(box_line(f"   Archive:      {schedule_archive}"))
+                
+                # Retention policy
+                retention = instance.get_env_value("BACKUP_RETENTION_DAYS", "")
+                archive_retention = instance.get_env_value("BACKUP_ARCHIVE_RETENTION_MONTHS", "")
+                if retention or archive_retention:
+                    retention_str = f"{retention}d" if retention else ""
+                    archive_str = f", archives {archive_retention}mo" if archive_retention else ""
+                    print(box_line(f"   Retention:    Keep {retention_str}{archive_str}"))
         else:
             print(box_line(f" {colorize('Not configured', Colors.YELLOW)}"))
         
