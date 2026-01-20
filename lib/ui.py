@@ -76,15 +76,13 @@ def create_box_helper(width: int = 80):
         # Strip ANSI codes for length calculation
         clean = re.sub(r'\033\[[0-9;]+m', '', content)
         
-        # Account for emoji display width (actual emojis are 2 chars wide visually but count as 1-2 in len())
-        # Only include actual wide emojis, NOT simple Unicode symbols like ✓ ○ ● etc.
-        wide_emojis = ['🌐', '🔐', '💾', '📋', '🔄', '☁']
+        # Account for emoji display width
+        # These emojis are single codepoints but display as 2 chars wide
+        # (len=1 but display=2, so we add 1 to adjustment)
+        wide_emojis = ['🌐', '🔐', '💾', '📋', '🔄']
         emoji_adjustment = 0
         for emoji in wide_emojis:
             emoji_adjustment += clean.count(emoji)
-        
-        # Also handle variation selectors (like ☁️ which is ☁ + U+FE0F)
-        emoji_adjustment += clean.count('\ufe0f')
         
         padding = width - len(clean) - emoji_adjustment
         if padding < 0:

@@ -2170,7 +2170,7 @@ class PaperlessManager:
         print(box_line(colorize(" CONSUME INPUT METHODS", Colors.BOLD)))
         print(draw_box_divider(box_width))
         
-        from lib.installer.consume import load_consume_config, get_syncthing_status
+        from lib.installer.consume import load_consume_config, get_syncthing_status, get_syncthing_device_id
         consume_config = load_consume_config(instance.env_file)
         
         # Syncthing
@@ -2181,7 +2181,9 @@ class PaperlessManager:
             else:
                 st_status = colorize("○ Stopped", Colors.YELLOW)
             print(box_line(f" Syncthing:      {st_status}"))
-            print(box_line(f"   Device ID:    {consume_config.syncthing.device_id[:20]}..." if consume_config.syncthing.device_id else "   Device ID:    (initializing)"))
+            # Get device ID from config or API
+            device_id = consume_config.syncthing.device_id or get_syncthing_device_id(instance.name)
+            print(box_line(f"   Device ID:    {device_id[:20]}..." if device_id else "   Device ID:    (initializing)"))
             print(box_line(f"   GUI Port:     {consume_config.syncthing.gui_port}"))
             print(box_line(f"   Sync Port:    {consume_config.syncthing.sync_port}"))
         else:
