@@ -6384,51 +6384,105 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         traefik_email = get_traefik_email() if traefik_was_running else None
         
         try:
-            # Use consolidated instance deletion
-            if instances:
-                say(f"Deleting {len(instances)} instance(s) with all data...")
-                for inst in instances:
-                    try:
-                        self.instance_manager.remove_instance(inst.name, delete_files=True)
-                    except Exception as e:
-                        warn(f"Error deleting {inst.name}: {e}")
+            # ─── STEP 1: Stop ALL containers first (before any file deletion) ───
+            say("Stopping ALL Docker containers...")
+            
+            # Stop Syncthing containers explicitly (they run outside compose)
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", "name=syncthing-", "--format", "{{.Names}}"],
+                capture_output=True, text=True, check=False
+            )
+            for container in result.stdout.splitlines():
+                if container.strip():
+                    subprocess.run(["docker", "stop", container.strip()], 
+                                   capture_output=True, check=False)
+            
+            # Stop Samba/SFTP containers
+            subprocess.run(["docker", "stop", "paperless-samba"], capture_output=True, check=False)
+            subprocess.run(["docker", "stop", "paperless-sftp"], capture_output=True, check=False)
+            
+            # Stop Traefik
+            subprocess.run(["docker", "stop", "traefik"], capture_output=True, check=False)
             
             # Stop all remaining containers
-            say("Stopping all Docker containers...")
             subprocess.run(
                 "docker stop $(docker ps -aq) 2>/dev/null",
-                shell=True,
-                check=False,
-                capture_output=True
+                shell=True, check=False, capture_output=True
             )
             
-            # Remove all containers
-            say("Removing all Docker containers...")
+            # ─── STEP 2: Remove ALL containers ───────────────────────────────
+            say("Removing ALL Docker containers...")
             subprocess.run(
-                "docker rm $(docker ps -aq) 2>/dev/null",
-                shell=True,
-                check=False,
-                capture_output=True
+                "docker rm -f $(docker ps -aq) 2>/dev/null",
+                shell=True, check=False, capture_output=True
             )
             
-            # Remove all networks (except default ones)
+            # ─── STEP 3: Remove ALL Docker volumes ───────────────────────────
+            say("Removing ALL Docker volumes...")
+            # Force remove all volumes (not just unused)
+            result = subprocess.run(
+                ["docker", "volume", "ls", "-q"],
+                capture_output=True, text=True, check=False
+            )
+            for volume in result.stdout.splitlines():
+                if volume.strip():
+                    subprocess.run(["docker", "volume", "rm", "-f", volume.strip()], 
+                                   capture_output=True, check=False)
+            # Also prune for good measure
+            subprocess.run(["docker", "volume", "prune", "-f"], check=False, capture_output=True)
+            
+            # ─── STEP 4: Remove ALL Docker networks (except defaults) ────────
             say("Removing Docker networks...")
             result = subprocess.run(
                 ["docker", "network", "ls", "--format", "{{.Name}}"],
-                capture_output=True,
-                text=True,
-                check=False
+                capture_output=True, text=True, check=False
             )
             for network in result.stdout.splitlines():
-                if network not in ["bridge", "host", "none"]:
-                    subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+                if network.strip() and network not in ["bridge", "host", "none"]:
+                    subprocess.run(["docker", "network", "rm", network], 
+                                   check=False, capture_output=True)
             
-            # Prune volumes
-            say("Pruning Docker volumes...")
-            subprocess.run(["docker", "volume", "prune", "-f"], check=False, capture_output=True)
+            # ─── STEP 5: Clean instance tracking BEFORE directory removal ────
+            # (so remove_instance doesn't try to access deleted dirs)
+            if instances:
+                say(f"Cleaning up {len(instances)} instance(s)...")
+                for inst in instances:
+                    try:
+                        # Remove cloudflared service
+                        service_file = Path(f"/etc/systemd/system/cloudflared-{inst.name}.service")
+                        if service_file.exists():
+                            subprocess.run(["systemctl", "stop", f"cloudflared-{inst.name}"], 
+                                          capture_output=True, check=False)
+                            subprocess.run(["systemctl", "disable", f"cloudflared-{inst.name}"], 
+                                          capture_output=True, check=False)
+                            service_file.unlink()
+                        
+                        # Remove Tailscale serve
+                        try:
+                            port = inst.get_env_value("HTTP_PORT", "8000")
+                            subprocess.run(["tailscale", "serve", "off", f":{port}"],
+                                          capture_output=True, check=False)
+                        except:
+                            pass
+                        
+                        # Remove cron jobs for this instance
+                        try:
+                            result = subprocess.run(["crontab", "-l"],
+                                capture_output=True, text=True, check=False)
+                            if result.returncode == 0:
+                                lines = result.stdout.splitlines()
+                                new_lines = [l for l in lines if inst.name not in l]
+                                if len(new_lines) != len(lines):
+                                    subprocess.run(["crontab", "-"],
+                                        input="\n".join(new_lines) + "\n",
+                                        text=True, check=False)
+                        except:
+                            pass
+                    except Exception as e:
+                        warn(f"Error cleaning up {inst.name}: {e}")
             
-            # Remove any remaining instance directories
-            say("Cleaning remaining instance directories...")
+            # ─── STEP 6: Remove ALL instance directories ─────────────────────
+            say("Removing ALL instance directories...")
             docker_home = Path("/home/docker")
             if docker_home.exists():
                 for item in docker_home.iterdir():
@@ -6449,7 +6503,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     subprocess.run(["rm", "-rf", str(traefik_dir)], check=False, capture_output=True)
                 ok("Traefik removed")
             
-            # Optional: Delete all Cloudflare tunnels
+            # Optional: Delete all Cloudflare tunnels and local configs
             if delete_cloudflared:
                 say("Deleting all Cloudflare tunnels...")
                 sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
@@ -6469,6 +6523,14 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     ok("Cloudflare tunnels deleted")
                 except Exception as e:
                     warn(f"Could not delete tunnels: {e}")
+                
+                # Also remove local cloudflared configs
+                cloudflared_config_dir = Path("/etc/cloudflared")
+                if cloudflared_config_dir.exists():
+                    # Remove paperless-related configs but keep cert.pem (auth)
+                    for config_file in cloudflared_config_dir.glob("*.yml"):
+                        config_file.unlink(missing_ok=True)
+                    say("Cloudflared local configs removed")
             
             # Optional: Disconnect Tailscale
             if delete_tailscale:
@@ -6483,12 +6545,19 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             if delete_backups:
                 warn("Deleting ALL pCloud backups...")
                 try:
+                    # Delete instance backups
                     subprocess.run(
                         ["rclone", "purge", "pcloud:backups/paperless"],
                         check=False,
                         capture_output=True
                     )
-                    ok("All backups deleted")
+                    # Also delete system backups
+                    subprocess.run(
+                        ["rclone", "purge", "pcloud:backups/paperless-system"],
+                        check=False,
+                        capture_output=True
+                    )
+                    ok("All backups deleted (instance + system)")
                 except Exception as e:
                     warn(f"Could not delete backups: {e}")
             
@@ -6503,28 +6572,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             if old_tracking.exists():
                 old_tracking.unlink()
             
-            # Clean up consume folder services (Syncthing, Samba, SFTP)
-            say("Cleaning up consume folder services...")
-            
-            # Stop any remaining Syncthing containers (syncthing-*)
-            result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", "name=syncthing-", "--format", "{{.Names}}"],
-                capture_output=True, text=True, check=False
-            )
-            for container in result.stdout.splitlines():
-                if container.strip():
-                    subprocess.run(["docker", "rm", "-f", container.strip()], 
-                                   capture_output=True, check=False)
-            
-            # Stop shared Samba container
-            subprocess.run(["docker", "rm", "-f", "paperless-samba"], 
-                           capture_output=True, check=False)
-            
-            # Stop shared SFTP container
-            subprocess.run(["docker", "rm", "-f", "paperless-sftp"], 
-                           capture_output=True, check=False)
-            
             # Remove consume service config files
+            say("Removing consume service configs...")
             consume_config_files = [
                 Path("/etc/paperless-bulletproof/consume-global.conf"),
                 Path("/etc/paperless-bulletproof/samba"),
