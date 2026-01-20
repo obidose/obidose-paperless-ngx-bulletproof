@@ -254,6 +254,32 @@ To recover on fresh hardware after complete system failure:
 
 System backup preserves metadata. Instance data comes from the most recent instance backups, not from the backup created at system backup time.
 
+### Cloning an Instance
+
+Create a copy of an instance with all its data:
+
+```bash
+paperless
+→ Manage Instances
+→ Add new instance
+→ Restore from backup
+→ Select source instance and snapshot
+→ Enter new instance name
+→ Configure ports, domain, and access method
+```
+
+The clone process:
+1. Creates new instance with unique name and ports
+2. Restores all documents, media, and settings from snapshot
+3. Refreshes the database to ensure integrity
+4. Detects and avoids port conflicts with other running instances
+5. Skips Syncthing config (requires fresh setup due to unique device IDs)
+
+After cloning:
+- Configure consume folder (Syncthing/Samba/SFTP) via Manage Instance → Consume Folders
+- Both instances run independently with separate databases and backups
+- Port conflicts are automatically detected and resolved
+
 ---
 
 ## Configuration
