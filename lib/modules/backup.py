@@ -64,6 +64,36 @@ REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
 ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
 
 
+def _refresh_globals_from_env():
+    """Re-read all global configuration from environment variables.
+    
+    This is called when running backup via subprocess with custom env vars,
+    to ensure the globals pick up the new values.
+    """
+    global ENV_FILE, INSTANCE_NAME, STACK_DIR, DATA_ROOT, DIR_EXPORT, DIR_MEDIA
+    global DIR_DATA, DIR_SYNCTHING_CONFIG, COMPOSE_FILE, RCLONE_REMOTE_NAME
+    global RCLONE_REMOTE_PATH, RCLONE_ARCHIVE_PATH, POSTGRES_DB, POSTGRES_USER
+    global RETENTION_DAYS, RETENTION_MONTHLY_DAYS, REMOTE, ARCHIVE_REMOTE
+    
+    INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
+    STACK_DIR = Path(os.environ.get("STACK_DIR", str(SCRIPT_DIR)))
+    DATA_ROOT = Path(os.environ.get("DATA_ROOT", f"/home/docker/{INSTANCE_NAME}"))
+    DIR_EXPORT = DATA_ROOT / "export"
+    DIR_MEDIA = DATA_ROOT / "media"
+    DIR_DATA = DATA_ROOT / "data"
+    DIR_SYNCTHING_CONFIG = STACK_DIR / "syncthing-config"
+    COMPOSE_FILE = Path(os.environ.get("COMPOSE_FILE", STACK_DIR / "docker-compose.yml"))
+    RCLONE_REMOTE_NAME = os.environ.get("RCLONE_REMOTE_NAME", "pcloud")
+    RCLONE_REMOTE_PATH = os.environ.get("RCLONE_REMOTE_PATH", f"backups/paperless/{INSTANCE_NAME}")
+    RCLONE_ARCHIVE_PATH = os.environ.get("RCLONE_ARCHIVE_PATH", f"{RCLONE_REMOTE_PATH}/archive")
+    POSTGRES_DB = os.environ.get("POSTGRES_DB", "paperless")
+    POSTGRES_USER = os.environ.get("POSTGRES_USER", "paperless")
+    RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))
+    RETENTION_MONTHLY_DAYS = int(os.environ.get("RETENTION_MONTHLY_DAYS", "180"))
+    REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_REMOTE_PATH}"
+    ARCHIVE_REMOTE = f"{RCLONE_REMOTE_NAME}:{RCLONE_ARCHIVE_PATH}"
+
+
 # ─── Helper Functions ─────────────────────────────────────────────────────────
 
 def list_snapshots() -> list[str]:

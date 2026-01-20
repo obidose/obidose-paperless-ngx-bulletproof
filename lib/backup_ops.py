@@ -135,26 +135,39 @@ class BackupManager:
         """Run a backup operation.
         
         Args:
-            mode: Backup mode - 'incr' for incremental, 'full' for full backup
+            mode: Backup mode - 'incr' for incremental, 'full' for full backup, 'archive' for archive
             
         Returns:
             True if backup succeeded
         """
         say(f"Running {mode} backup for {self.instance.name}...")
         
-        # Use the backup module
-        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-        
         env = os.environ.copy()
-        env_file = self.instance.stack_dir / ".env"
+        
+        # Set critical environment variables that backup module needs
+        env["INSTANCE_NAME"] = self.instance.name
+        env["STACK_DIR"] = str(self.instance.stack_dir)
+        env["DATA_ROOT"] = str(self.instance.data_root)
+        env["RCLONE_REMOTE_NAME"] = self.remote_name
+        env["RCLONE_REMOTE_PATH"] = self.remote_path
+        env["ENV_FILE"] = str(self.instance.env_file)
+        env["COMPOSE_FILE"] = str(self.instance.compose_file)
+        
+        # Also load any additional vars from the .env file
+        env_file = self.instance.env_file
         if env_file.exists():
             for line in env_file.read_text().splitlines():
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip()
+                    # Don't override the critical vars we set above
+                    if k.strip() not in env:
+                        env[k.strip()] = v.strip()
+        
+        # Build backup command - call _refresh_globals_from_env() to pick up our env vars
+        backup_cmd = f"import sys; sys.argv = ['backup.py', '{mode}']; from lib.modules.backup import _refresh_globals_from_env, main; _refresh_globals_from_env(); main()"
         
         result = subprocess.run(
-            ["python3", "-c", f"from lib.modules.backup import run_backup; run_backup('{mode}')"],
+            ["python3", "-c", backup_cmd],
             env=env, cwd="/usr/local/lib/paperless-bulletproof",
             capture_output=False, check=False
         )
