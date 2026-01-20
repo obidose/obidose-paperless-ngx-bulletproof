@@ -2189,7 +2189,7 @@ class PaperlessManager:
                     if "PAPERLESS_CSRF_TRUSTED_ORIGINS" not in compose_content:
                         warn("Docker-compose.yml needs regeneration")
                         if confirm("Regenerate docker-compose.yml now?", True):
-                            self._offer_regenerate_compose(instance)
+                            self._offer_regenerate_compose(instance, skip_confirm=True)
                             return
         except Exception as e:
             # Don't fail health check on repair error
@@ -4261,30 +4261,37 @@ WantedBy=multi-user.target
             warn(f"Failed to create service: {e}")
             return False
     
-    def _offer_regenerate_compose(self, instance: Instance) -> None:
-        """Offer to regenerate docker-compose.yml for the instance."""
-        if confirm("Regenerate docker-compose.yml now?", True):
-            try:
-                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-                from lib.installer import files
-                
-                # Load ALL settings from instance's .env into common.cfg
-                load_instance_config(instance)
-                
-                # Regenerate env file first to ensure all variables are present (including CSRF settings)
-                say("Updating configuration...")
-                files.write_env_file()
-                
-                # Write new compose file
-                files.write_compose_file()
-                ok("docker-compose.yml regenerated")
-                
-                if confirm("Recreate containers now?", True):
-                    self._docker_command(instance, "down")
-                    self._docker_command(instance, "up", "-d")
-                    ok("Containers recreated")
-            except Exception as e:
-                error(f"Failed to regenerate: {e}")
+    def _offer_regenerate_compose(self, instance: Instance, skip_confirm: bool = False) -> None:
+        """Offer to regenerate docker-compose.yml for the instance.
+        
+        Args:
+            instance: The instance to regenerate compose for
+            skip_confirm: If True, skip the initial confirmation prompt
+        """
+        if not skip_confirm and not confirm("Regenerate docker-compose.yml now?", True):
+            return
+        
+        try:
+            sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
+            from lib.installer import files
+            
+            # Load ALL settings from instance's .env into common.cfg
+            load_instance_config(instance)
+            
+            # Regenerate env file first to ensure all variables are present (including CSRF settings)
+            say("Updating configuration...")
+            files.write_env_file()
+            
+            # Write new compose file
+            files.write_compose_file()
+            ok("docker-compose.yml regenerated")
+            
+            if confirm("Recreate containers now?", True):
+                self._docker_command(instance, "down")
+                self._docker_command(instance, "up", "-d")
+                ok("Containers recreated")
+        except Exception as e:
+            error(f"Failed to regenerate: {e}")
 
     def system_backup_menu(self) -> None:
         """System-level backup and restore menu."""

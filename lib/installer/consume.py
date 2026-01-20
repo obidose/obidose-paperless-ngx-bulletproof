@@ -390,7 +390,7 @@ def fix_syncthing_gui_address(config_dir: Path) -> str:
     NEVER binds to 0.0.0.0 to prevent external HTTP access.
     """
     import time
-    import re
+    import xml.etree.ElementTree as ET
     from .tailscale import get_ip as get_tailscale_ip
     
     config_file = config_dir / "config.xml"
@@ -413,38 +413,50 @@ def fix_syncthing_gui_address(config_dir: Path) -> str:
         return desired
     
     try:
-        content = config_file.read_text()
+        # Parse as XML for safe modification
+        tree = ET.parse(config_file)
+        root = tree.getroot()
         changed = False
         
-        # Update GUI listen address inside <gui> block
-        gui_addr_pattern = re.compile(r"(<gui[^>]*>.*?<address>)([^<]*)(</address>)", re.S)
-        match = gui_addr_pattern.search(content)
-        if match:
-            current_addr = match.group(2).strip()
-            if current_addr != desired:
-                content = gui_addr_pattern.sub(r"\1" + desired + r"\3", content, count=1)
+        # Find and update the GUI address
+        gui = root.find('gui')
+        if gui is not None:
+            address = gui.find('address')
+            if address is not None:
+                if address.text != desired:
+                    address.text = desired
+                    changed = True
+            else:
+                # Create address element if missing
+                address = ET.SubElement(gui, 'address')
+                address.text = desired
+                changed = True
+            
+            # Disable host check for Tailscale access (Tailscale IPs are trusted)
+            desired_hostcheck = "true" if tailscale_ip else "false"
+            hostcheck = gui.find('insecureSkipHostcheck')
+            if hostcheck is not None:
+                if hostcheck.text != desired_hostcheck:
+                    hostcheck.text = desired_hostcheck
+                    changed = True
+            else:
+                hostcheck = ET.SubElement(gui, 'insecureSkipHostcheck')
+                hostcheck.text = desired_hostcheck
                 changed = True
         else:
-            warn("GUI address tag not found in config.xml")
-        
-        # Disable host check for Tailscale access (Tailscale IPs are trusted)
-        desired_hostcheck = "true" if tailscale_ip else "false"
-        if f"<insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>" not in content:
-            gui_block_pattern = re.compile(r"(<gui[^>]*>)(.*?)(</gui>)", re.S)
-            gui_match = gui_block_pattern.search(content)
-            if gui_match:
-                gui_inner = gui_match.group(2)
-                if "<insecureSkipHostcheck>" in gui_inner:
-                    gui_inner = re.sub(r"<insecureSkipHostcheck>.*?</insecureSkipHostcheck>",
-                                       f"<insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>",
-                                       gui_inner)
-                else:
-                    gui_inner = gui_inner + f"\n    <insecureSkipHostcheck>{desired_hostcheck}</insecureSkipHostcheck>"
-                content = gui_block_pattern.sub(r"\1" + gui_inner + r"\3", content, count=1)
-                changed = True
+            warn("GUI section not found in config.xml")
         
         if changed:
-            config_file.write_text(content)
+            tree.write(config_file, encoding='unicode', xml_declaration=True)
+        return desired
+    except ET.ParseError as e:
+        warn(f"Config XML is corrupted: {e}")
+        # Try to regenerate by deleting corrupted config
+        try:
+            config_file.unlink()
+            warn("Deleted corrupted config.xml - Syncthing will regenerate it")
+        except:
+            pass
         return desired
     except Exception as e:
         warn(f"Could not fix GUI address: {e}")
