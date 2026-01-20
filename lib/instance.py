@@ -111,7 +111,14 @@ class Instance:
         return ", ".join(modes)
 
     def get_access_urls(self) -> list[tuple[str, str]]:
-        """Get list of (mode, url) tuples for all access methods."""
+        """Get list of (mode, url) tuples for all access methods.
+        
+        URLs are returned in priority order:
+        1. Cloudflare Tunnel (most secure, external access)
+        2. Traefik HTTPS (secure, requires port 443)
+        3. Tailscale (secure, private network)
+        4. Direct HTTP (fallback)
+        """
         urls = []
         port = self.get_env_value("HTTP_PORT", "8000")
         domain = self.get_env_value("DOMAIN", "")
@@ -126,19 +133,15 @@ class Instance:
         except Exception:
             local_ip = "localhost"
         
-        # Direct HTTP always available
-        if "direct" in modes or not modes:
-            urls.append(("Direct HTTP", f"http://{local_ip}:{port}"))
-        
-        # Traefik HTTPS
-        if "traefik" in modes and domain:
-            urls.append(("HTTPS (Traefik)", f"https://{domain}"))
-        
-        # Cloudflare Tunnel
+        # Priority 1: Cloudflare Tunnel (secure tunnel, no exposed ports)
         if "cloudflare" in modes and domain:
             urls.append(("Cloudflare Tunnel", f"https://{domain}"))
         
-        # Tailscale
+        # Priority 2: Traefik HTTPS (SSL termination)
+        if "traefik" in modes and domain:
+            urls.append(("HTTPS (Traefik)", f"https://{domain}"))
+        
+        # Priority 3: Tailscale (private network)
         if "tailscale" in modes:
             try:
                 result = subprocess.run(
@@ -150,9 +153,12 @@ class Instance:
                     status = json_mod.loads(result.stdout)
                     ts_domain = status.get("Self", {}).get("DNSName", "").rstrip(".")
                     if ts_domain:
-                        urls.append(("Tailscale", f"https://{ts_domain}"))
+                        urls.append(("Tailscale", f"https://{ts_domain}:{port}"))
             except Exception:
                 pass
+        
+        # Priority 4: Direct HTTP (always available as fallback)
+        urls.append(("Direct HTTP", f"http://{local_ip}:{port}"))
         
         return urls
 
@@ -163,6 +169,48 @@ class Instance:
             return urls[0][1]
         port = self.get_env_value("HTTP_PORT", "8000")
         return f"http://localhost:{port}"
+
+    def get_access_url_display(self) -> str:
+        """Get the primary access URL with emoji and mode label for display.
+        
+        Returns a rich string like: ☁️  Cloudflare: https://docs.example.com
+        """
+        urls = self.get_access_urls()
+        if not urls:
+            port = self.get_env_value("HTTP_PORT", "8000")
+            return f"🌐 Direct: http://localhost:{port}"
+        
+        mode, url = urls[0]
+        return f"{self._mode_to_emoji(mode)} {self._mode_to_label(mode)}: {url}"
+
+    @staticmethod
+    def _mode_to_emoji(mode: str) -> str:
+        """Get emoji for access mode."""
+        if "Cloudflare" in mode:
+            return "☁️ "
+        elif "Traefik" in mode:
+            return "🛡️"
+        elif "Tailscale" in mode:
+            return "🔐"
+        else:
+            return "🌐"
+
+    @staticmethod
+    def _mode_to_label(mode: str) -> str:
+        """Get short label for access mode."""
+        if "Cloudflare" in mode:
+            return "Cloudflare"
+        elif "Traefik" in mode:
+            return "Traefik"
+        elif "Tailscale" in mode:
+            return "Tailscale"
+        else:
+            return "Direct"
+
+    def get_access_urls_formatted(self) -> list[tuple[str, str]]:
+        """Get list of (formatted_label, url) tuples with emojis for all access methods."""
+        urls = self.get_access_urls()
+        return [(f"{self._mode_to_emoji(mode)} {self._mode_to_label(mode)}", url) for mode, url in urls]
 
 
 # ─── Config Loading Helpers ───────────────────────────────────────────────────

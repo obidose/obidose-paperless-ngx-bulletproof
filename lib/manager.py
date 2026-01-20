@@ -313,15 +313,15 @@ class PaperlessManager:
         print(draw_box_bottom(box_width))
         print()
         
-        # Quick instance list
+        # Quick instance list with rich access info
         if instances:
             print(colorize("Active Instances:", Colors.BOLD))
             for instance in instances[:5]:  # Show max 5
                 status_icon = colorize("●", Colors.GREEN) if instance.is_running else colorize("○", Colors.YELLOW)
-                url = instance.get_access_url()
-                # Format: status icon, name (fixed 25 chars), then URL
-                name_padded = f"{instance.name:<25}"
-                print(f"  {status_icon} {colorize(name_padded, Colors.BOLD)} {url}")
+                access_display = instance.get_access_url_display()
+                # Format: status icon, name (fixed 20 chars), then access method with URL
+                name_padded = f"{instance.name:<20}"
+                print(f"  {status_icon} {colorize(name_padded, Colors.BOLD)} {access_display}")
             
             if len(instances) > 5:
                 print(f"  {colorize(f'... and {len(instances) - 5} more', Colors.CYAN)}")
@@ -809,14 +809,14 @@ class PaperlessManager:
             if instances:
                 for idx, instance in enumerate(instances, 1):
                     status = colorize("Running", Colors.GREEN) if instance.is_running else colorize("Stopped", Colors.YELLOW)
-                    access_urls = instance.get_access_urls()
+                    access_urls = instance.get_access_urls_formatted()
                     print(f"  {idx}) {instance.name} [{status}]")
                     if len(access_urls) == 1:
-                        print(f"      Access: {access_urls[0][0]}: {access_urls[0][1]}")
+                        print(f"      Access: {access_urls[0][0]}: {colorize(access_urls[0][1], Colors.CYAN)}")
                     else:
                         print(f"      Access:")
                         for mode_label, url in access_urls:
-                            print(f"        {mode_label}: {url}")
+                            print(f"        {mode_label}: {colorize(url, Colors.CYAN)}")
                     print(f"      Stack:  {instance.stack_dir}")
                     print(f"      Data:   {instance.data_root}")
                 print()
@@ -2015,7 +2015,6 @@ class PaperlessManager:
             
             status = colorize("● Running", Colors.GREEN) if instance.is_running else colorize("○ Stopped", Colors.YELLOW)
             domain = instance.get_env_value("DOMAIN", "localhost")
-            access_urls = instance.get_access_urls()
             
             box_line, box_width = create_box_helper(80)
             
@@ -2023,7 +2022,8 @@ class PaperlessManager:
             print(box_line(f" Status: {status}"))
             print(box_line(f" Domain: {colorize(domain, Colors.BOLD)}"))
             
-            # Show all access URLs
+            # Show all access URLs with emojis
+            access_urls = instance.get_access_urls_formatted()
             if access_urls:
                 print(box_line(f" Access:"))
                 for mode_label, url in access_urls:
@@ -2134,12 +2134,12 @@ class PaperlessManager:
         print(f"Compose File: {instance.compose_file}")
         print()
         
-        # Show access URLs
-        access_urls = instance.get_access_urls()
+        # Show access URLs with emojis
+        access_urls = instance.get_access_urls_formatted()
         if access_urls:
             print("Access Methods:")
             for mode_label, url in access_urls:
-                print(f"  {mode_label}: {url}")
+                print(f"  {mode_label}: {colorize(url, Colors.CYAN)}")
             print()
         
         # Show key settings from env file
@@ -2528,12 +2528,12 @@ class PaperlessManager:
             print(draw_box_bottom(box_width))
             print()
             
-            # Show active access methods
-            access_urls = instance.get_access_urls()
+            # Show active access methods with emojis
+            access_urls = instance.get_access_urls_formatted()
             if access_urls:
                 print(colorize("Active Access Methods:", Colors.BOLD))
                 for mode_label, url in access_urls:
-                    print(f"  {mode_label}: {url}")
+                    print(f"  {mode_label}: {colorize(url, Colors.CYAN)}")
                 print()
             
             options = [
