@@ -29,6 +29,16 @@ class Instance:
     created_at: str = ""
     labels: dict = field(default_factory=dict)
 
+    @property
+    def env_file(self) -> Path:
+        """Path to the instance's .env file."""
+        return self.stack_dir / ".env"
+
+    @property
+    def compose_file(self) -> Path:
+        """Path to the instance's docker-compose.yml file."""
+        return self.stack_dir / "docker-compose.yml"
+
     def is_running(self) -> bool:
         """Check if the instance containers are running."""
         compose_file = self.stack_dir / "docker-compose.yml"
