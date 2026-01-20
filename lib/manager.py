@@ -2846,12 +2846,13 @@ class PaperlessManager:
             # Web UI access info
             from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
             ts_ip = get_tailscale_ip()
+            gui_port = config.syncthing.gui_port or 8384
             if ts_ip:
-                print(box_line(f" Web UI:     http://{ts_ip}:8384 (Tailscale)"))
+                print(box_line(f" Web UI:     http://{ts_ip}:{gui_port} (Tailscale)"))
             elif is_tailscale_installed():
                 print(box_line(f" Web UI:     {colorize('Tailscale not connected', Colors.YELLOW)}"))
             else:
-                print(box_line(f" Web UI:     localhost only (install Tailscale for remote access)"))
+                print(box_line(f" Web UI:     localhost:{gui_port} (install Tailscale for remote access)"))
             print(box_line(f" Sync Port:  {config.syncthing.sync_port} (TCP/UDP)"))
             
             print(draw_box_divider(box_width))
@@ -3113,10 +3114,11 @@ class PaperlessManager:
             if device_id:
                 say(f"Device ID: {device_id}")
             ts_ip = get_tailscale_ip()
+            gui_port = config.syncthing.gui_port or 8384
             if ts_ip:
-                ok(f"Web UI: http://{ts_ip}:8384 (Tailscale only)")
+                ok(f"Web UI: http://{ts_ip}:{gui_port} (Tailscale only)")
             else:
-                say("Web UI: localhost only (no Tailscale detected)")
+                say(f"Web UI: localhost:{gui_port} (no Tailscale detected)")
         else:
             error(f"Syncthing failed to start: {status['status']}")
         
@@ -3163,13 +3165,14 @@ class PaperlessManager:
         
         # Report status
         all_ok = True
-        for inst, _ in syncthing_instances:
+        for inst, config in syncthing_instances:
             status = get_syncthing_status(inst.name)
             if status["running"]:
+                gui_port = config.syncthing.gui_port or 8384
                 if ts_ip:
-                    ok(f"  {inst.name}: bound to Tailscale ({ts_ip}:8384)")
+                    ok(f"  {inst.name}: bound to Tailscale ({ts_ip}:{gui_port})")
                 else:
-                    ok(f"  {inst.name}: bound to localhost")
+                    ok(f"  {inst.name}: bound to localhost:{gui_port}")
             else:
                 error(f"  {inst.name}: failed to start")
                 all_ok = False

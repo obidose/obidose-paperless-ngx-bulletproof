@@ -1473,18 +1473,18 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
 
 # ─── Setup Guides Generation ─────────────────────────────────────────────────
 
-def _get_webui_access_text(tailscale_ip: Optional[str]) -> str:
+def _get_webui_access_text(tailscale_ip: Optional[str], gui_port: int = 8384) -> str:
     """Generate Web UI access text based on Tailscale availability."""
     if tailscale_ip:
-        return f"""URL: http://{tailscale_ip}:8384 (via Tailscale)
+        return f"""URL: http://{tailscale_ip}:{gui_port} (via Tailscale)
     The Web UI is accessible to devices on your Tailscale network.
     No authentication needed - Tailscale provides the security."""
     else:
-        return """URL: http://localhost:8384 (local access only)
+        return f"""URL: http://localhost:{gui_port} (local access only)
     Without Tailscale, Web UI is bound to localhost for security.
     To access remotely, use SSH port forwarding:
-      ssh -L 8384:localhost:8384 user@server
-    Then open http://localhost:8384 in your browser."""
+      ssh -L {gui_port}:localhost:{gui_port} user@server
+    Then open http://localhost:{gui_port} in your browser."""
 
 
 def generate_syncthing_guide(instance_name: str, config: SyncthingConfig,
@@ -1522,7 +1522,7 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
     • Windows/Mac/Linux: Download installer or use package manager
     • Mobile: Search "Syncthing" in your app store
     
-    Open Syncthing (usually http://localhost:8384)
+    Open Syncthing (usually http://localhost:{config.gui_port})
 
 2️⃣  GET YOUR DEVICE ID
     ────────────────────
@@ -1531,7 +1531,7 @@ Syncthing requires BOTH sides to add each other (mutual trust for security).
 
 WEB UI ACCESS
     ─────────────
-    {_get_webui_access_text(tailscale_ip)}
+    {_get_webui_access_text(tailscale_ip, config.gui_port)}
 
 3️⃣  ADD YOUR DEVICE TO THE SERVER (do this in the app menu)
     ─────────────────────────────────────────────────────────
@@ -1563,16 +1563,16 @@ WEB UI ACCESS
 Server Device ID: {device_id_display}
 Folder Name:      {config.folder_label}
 Sync Port:        {config.sync_port} (TCP/UDP)
-Web UI:           {f"http://{host}:8384 (Tailscale)" if tailscale_ip else "localhost:8384 (SSH tunnel)"}
+Web UI:           {f"http://{host}:{config.gui_port}" + (" (Tailscale)" if tailscale_ip else " (SSH tunnel)")}
 
 🔒 SECURITY NOTE
 ────────────────
 Both sides must explicitly add each other - this prevents unauthorized access.
 Only share Device IDs with people you trust to upload documents.
-{'' if tailscale_ip else '''
+{'' if tailscale_ip else f'''
 💡 Want remote Web UI access? Install Tailscale!
    Run the installer again and select the Tailscale option.
-   Or use SSH: ssh -L 8384:localhost:8384 user@your-server
+   Or use SSH: ssh -L {config.gui_port}:localhost:{config.gui_port} user@your-server
 '''}"""
 
 
