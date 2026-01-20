@@ -5279,12 +5279,24 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             print(f"\n{colorize('─' * 60, Colors.CYAN)}")
             print()
             print(draw_box_top(box_width))
-            print(box_line(f" {colorize('✓ System Restore Complete', Colors.GREEN)}"))
+            
+            # Determine overall status
+            total_instances = len(instances_to_restore)
+            if restored_count == total_instances and total_instances > 0:
+                # All succeeded
+                print(box_line(f" {colorize('✓ System Restore Complete', Colors.GREEN)}"))
+            elif restored_count > 0:
+                # Partial success
+                print(box_line(f" {colorize('⚠ System Restore Partially Complete', Colors.YELLOW)}"))
+            else:
+                # All failed
+                print(box_line(f" {colorize('✗ System Restore Failed', Colors.RED)}"))
             print(draw_box_divider(box_width))
             
             # Instance restoration summary
             print(box_line(f" {colorize('Instance Restoration:', Colors.BOLD)}"))
-            print(box_line(f"   ✓ {restored_count} instance(s) restored successfully"))
+            if restored_count > 0:
+                print(box_line(f"   ✓ {restored_count} instance(s) restored successfully"))
             if failed_instances:
                 print(box_line(f"   ✗ {len(failed_instances)} instance(s) failed:"))
                 for name, reason in failed_instances:
@@ -5297,8 +5309,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 print(box_line("   → Manage Instances → [instance] → Restore snapshot"))
                 print(box_line(""))
             
-            print(box_line(f" {colorize('To start your instances:', Colors.BOLD)}"))
-            print(box_line("   → Manage Instances → [instance] → Container operations → Start"))
+            if restored_count > 0:
+                print(box_line(f" {colorize('To start your instances:', Colors.BOLD)}"))
+                print(box_line("   → Manage Instances → [instance] → Container operations → Start"))
             
             # Consume services note
             if consume_info.get("enabled"):

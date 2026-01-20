@@ -23,9 +23,15 @@ from lib.utils.selftest import run_stack_tests
 # Auto-detect stack directory from script location (restore.py is copied to each instance's stack_dir)
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Look for .env relative to script location first, then fall back to explicit ENV_FILE or legacy default
+# Look for .env in order of priority:
+# 1. Relative to script location (when restore.py is in stack_dir)
+# 2. From STACK_DIR env var (when called via run_restore_with_env)
+# 3. From explicit ENV_FILE env var
+# 4. Legacy default
 if (SCRIPT_DIR / ".env").exists():
     ENV_FILE = SCRIPT_DIR / ".env"
+elif os.environ.get("STACK_DIR") and (Path(os.environ["STACK_DIR"]) / ".env").exists():
+    ENV_FILE = Path(os.environ["STACK_DIR"]) / ".env"
 else:
     ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 
