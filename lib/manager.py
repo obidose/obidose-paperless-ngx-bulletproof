@@ -5372,57 +5372,19 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             remote_path = f"pcloud:backups/paperless/{instance_name}"
             
             try:
-                # Get snapshots
-                result = subprocess.run(
-                    ["rclone", "lsd", remote_path],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
+                # Use shared method from BackupManager to fetch snapshots
+                snapshot_objs = BackupManager.fetch_snapshots_for_path(remote_path)
                 
-                if result.returncode != 0 or not result.stdout.strip():
+                if not snapshot_objs:
                     warn(f"No snapshots found for {instance_name}")
                     input("\nPress Enter to continue...")
                     return
                 
-                # Parse snapshots with metadata
-                snapshots = []
-                for line in result.stdout.splitlines():
-                    parts = line.strip().split()
-                    if not parts:
-                        continue
-                    snap_name = parts[-1]
-                    
-                    # Get manifest info
-                    mode = parent = created = "?"
-                    manifest = subprocess.run(
-                        ["rclone", "cat", f"{remote_path}/{snap_name}/manifest.yaml"],
-                        capture_output=True,
-                        text=True,
-                        check=False
-                    )
-                    if manifest.returncode == 0:
-                        for mline in manifest.stdout.splitlines():
-                            if ":" in mline:
-                                k, v = mline.split(":", 1)
-                                k, v = k.strip(), v.strip()
-                                if k == "mode":
-                                    mode = v
-                                elif k == "parent":
-                                    parent = v
-                                elif k == "created":
-                                    created = v[:19]  # Just date/time
-                    
-                    # Check for docker versions file
-                    has_versions = subprocess.run(
-                        ["rclone", "lsf", f"{remote_path}/{snap_name}/docker-images.txt"],
-                        capture_output=True,
-                        check=False
-                    ).returncode == 0
-                    
-                    snapshots.append((snap_name, mode, parent, created, has_versions))
-                
-                snapshots = sorted(snapshots, key=lambda x: x[0])
+                # Convert Snapshot objects to tuples for existing code
+                snapshots = [
+                    (s.name, s.mode, s.parent, s.created, s.has_docker_versions)
+                    for s in snapshot_objs
+                ]
                 
                 # Display snapshots
                 print(colorize("Available Snapshots:", Colors.BOLD))

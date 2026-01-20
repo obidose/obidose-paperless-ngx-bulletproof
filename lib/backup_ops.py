@@ -20,23 +20,45 @@ if TYPE_CHECKING:
     pass
 
 
+# ─── Snapshot Data Structure ──────────────────────────────────────────────────
+
+from dataclasses import dataclass
+
+@dataclass
+class Snapshot:
+    """Represents a backup snapshot with metadata."""
+    name: str
+    mode: str  # 'full', 'incr', or 'archive'
+    parent: str  # Parent snapshot name for incremental backups
+    created: str  # ISO timestamp
+    has_docker_versions: bool  # Whether docker-images.txt exists
+
+
 class BackupManager:
     """Manages backup and restore operations for a Paperless-NGX instance."""
     
     def __init__(self, instance: Instance):
         self.instance = instance
         self.remote_name = instance.get_env_value("RCLONE_REMOTE_NAME", "pcloud")
-        self.remote_path = instance.get_env_value("RCLONE_REMOTE_PATH", f"backups/paperless/{instance.name}")
+        # Always use the standard backup path structure
+        self.remote_path = f"backups/paperless/{instance.name}"
         self.remote_base = f"{self.remote_name}:{self.remote_path}"
 
-    def fetch_snapshots(self) -> list[tuple[str, str, str]]:
-        """Fetch list of available backup snapshots.
+    @staticmethod
+    def fetch_snapshots_for_path(remote_path: str) -> list[Snapshot]:
+        """Fetch snapshots from a specific remote path.
         
+        This is a static method that can be used without an Instance object,
+        useful for the backup explorer which works with arbitrary paths.
+        
+        Args:
+            remote_path: Full rclone path like 'pcloud:backups/paperless/john'
+            
         Returns:
-            List of tuples: (snapshot_name, date_str, type)
+            List of Snapshot objects sorted by name (oldest first)
         """
         result = subprocess.run(
-            ["rclone", "lsd", self.remote_base],
+            ["rclone", "lsd", remote_path],
             capture_output=True, text=True, check=False
         )
         
@@ -48,28 +70,66 @@ class BackupManager:
             if not line.strip():
                 continue
             parts = line.split()
-            if len(parts) >= 4:
-                name = parts[-1]
-                # Parse snapshot name format: YYYYMMDD-HHMMSS-type
-                try:
-                    if "-" in name:
-                        date_part = name.split("-")[0]
-                        time_part = name.split("-")[1] if len(name.split("-")) > 1 else "000000"
-                        backup_type = name.split("-")[2] if len(name.split("-")) > 2 else "unknown"
-                        
-                        dt = datetime.strptime(f"{date_part}-{time_part}", "%Y%m%d-%H%M%S")
-                        date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                    else:
-                        date_str = name
-                        backup_type = "unknown"
-                    
-                    snapshots.append((name, date_str, backup_type))
-                except ValueError:
-                    snapshots.append((name, name, "unknown"))
+            if len(parts) >= 1:
+                snap_name = parts[-1]
+                
+                # Get manifest info
+                mode = "full"
+                parent = ""
+                created = ""
+                
+                manifest_result = subprocess.run(
+                    ["rclone", "cat", f"{remote_path}/{snap_name}/manifest.yaml"],
+                    capture_output=True, text=True, check=False, timeout=10
+                )
+                
+                if manifest_result.returncode == 0:
+                    for mline in manifest_result.stdout.splitlines():
+                        if ":" in mline:
+                            k, v = mline.split(":", 1)
+                            k, v = k.strip(), v.strip()
+                            if k == "mode":
+                                mode = v
+                            elif k == "parent":
+                                parent = v
+                            elif k == "created":
+                                created = v[:19]  # Just date/time portion
+                
+                # Check for docker versions file
+                has_docker = subprocess.run(
+                    ["rclone", "lsf", f"{remote_path}/{snap_name}/docker-images.txt"],
+                    capture_output=True, check=False
+                ).returncode == 0
+                
+                snapshots.append(Snapshot(
+                    name=snap_name,
+                    mode=mode,
+                    parent=parent,
+                    created=created,
+                    has_docker_versions=has_docker
+                ))
         
-        # Sort by name (which is date-based) descending
-        snapshots.sort(key=lambda x: x[0], reverse=True)
+        # Sort by name (which is date-based)
+        snapshots.sort(key=lambda x: x.name)
         return snapshots
+
+    def fetch_snapshots(self) -> list[tuple[str, str, str]]:
+        """Fetch list of available backup snapshots.
+        
+        Returns:
+            List of tuples: (snapshot_name, mode, parent)
+            where mode is 'full', 'incr', or 'archive'
+        """
+        snapshots = self.fetch_snapshots_for_path(self.remote_base)
+        return [(s.name, s.mode, s.parent) for s in snapshots]
+
+    def fetch_snapshots_detailed(self) -> list[Snapshot]:
+        """Fetch detailed snapshot info including created time and docker versions.
+        
+        Returns:
+            List of Snapshot objects
+        """
+        return self.fetch_snapshots_for_path(self.remote_base)
 
     def run_backup(self, mode: str = "incr") -> bool:
         """Run a backup operation.
