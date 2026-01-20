@@ -1436,15 +1436,13 @@ class PaperlessManager:
             say(f"Restoring data from backup...")
             
             success = run_restore_with_env(
-                snapshot=snapshot,
-                instance_name=new_name,
-                env_file=Path(common.cfg.env_file),
-                compose_file=Path(common.cfg.compose_file),
                 stack_dir=Path(common.cfg.stack_dir),
                 data_root=Path(common.cfg.data_root),
-                rclone_remote_name=remote_name,
-                rclone_remote_path=f"backups/paperless/{backup_instance}",
-                merge_config=True  # Merge backup settings, keep new instance network/paths
+                instance_name=new_name,
+                remote_name=remote_name,
+                remote_path=f"backups/paperless/{backup_instance}",
+                snapshot=snapshot,
+                fresh_config=True  # This is a new instance being restored
             )
             
             if not success:
