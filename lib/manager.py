@@ -243,7 +243,7 @@ class PaperlessManager:
                     backup_mgr = BackupManager(inst)
                     snaps = backup_mgr.fetch_snapshots()
                     if snaps:
-                        latest_backup = snaps[-1][0][:16]  # Just date/time
+                        latest_backup = snaps[0][0][:16]  # First is newest after sorting
                         break
                 
                 backup_status = colorize("✓ Connected", Colors.GREEN)
@@ -4601,7 +4601,7 @@ WantedBy=multi-user.target
                     backup_mgr = BackupManager(inst)
                     snaps = backup_mgr.fetch_snapshots()
                     if snaps:
-                        inst_info["latest_backup"] = snaps[-1][0]
+                        inst_info["latest_backup"] = snaps[0][0]  # First is newest after sorting
                 except:
                     pass
                 
@@ -5141,15 +5141,13 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     # Run the actual restore
                     say(f"  Restoring data...")
                     success = run_restore_with_env(
-                        snapshot=latest_snapshot,
-                        instance_name=inst_name,
-                        env_file=Path(common.cfg.env_file),
-                        compose_file=Path(common.cfg.compose_file),
                         stack_dir=stack_dir,
                         data_root=data_root,
-                        rclone_remote_name="pcloud",
-                        rclone_remote_path=rclone_path,  # Use the saved path, not hardcoded
-                        merge_config=False  # Use the backup's original config
+                        instance_name=inst_name,
+                        remote_name="pcloud",
+                        remote_path=rclone_path,  # Use the saved path, not hardcoded
+                        snapshot=latest_snapshot,
+                        fresh_config=True  # Use fresh config since manager wrote it
                     )
                     
                     if not success:
