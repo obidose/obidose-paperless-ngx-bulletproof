@@ -4753,6 +4753,7 @@ class PaperlessManager:
                 enable_cloudflared = instance.get_env_value("ENABLE_CLOUDFLARED", "no")
                 if enable_traefik == "yes" or enable_cloudflared == "yes":
                     self._update_instance_env(instance, "PAPERLESS_URL", f"https://{new_domain}")
+                    self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", f"https://{new_domain},http://localhost")
                 
                 ok(f"Domain changed to: {new_domain}")
                 warn("Restart containers for changes to take effect")
@@ -4782,6 +4783,7 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "no")
                 port = instance.get_env_value("HTTP_PORT", "8000")
                 self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
+                self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", "http://localhost")
                 ok("Traefik disabled - instance will use direct HTTP")
                 # Regenerate compose file to remove Traefik labels
                 self._offer_regenerate_compose(instance)
@@ -4800,6 +4802,7 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "yes")
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")  # Mutually exclusive
                 self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
+                self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", f"https://{domain},http://localhost")
                 
                 # Stop and remove any existing Cloudflare tunnel service
                 service_name = f"cloudflared-{instance.name}"
@@ -4833,6 +4836,7 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")
                 port = instance.get_env_value("HTTP_PORT", "8000")
                 self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
+                self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", "http://localhost")
                 
                 # Stop and remove tunnel service
                 service_name = f"cloudflared-{instance.name}"
@@ -4865,6 +4869,7 @@ class PaperlessManager:
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "yes")
                 self._update_instance_env(instance, "ENABLE_TRAEFIK", "no")  # Mutually exclusive
                 self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
+                self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", f"https://{domain},http://localhost")
                 
                 # Get the instance port
                 port = int(instance.get_env_value("HTTP_PORT", "8000"))

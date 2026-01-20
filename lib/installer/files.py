@@ -92,10 +92,15 @@ def write_env_file() -> None:
     log(f"Writing {cfg.env_file}")
     if cfg.enable_traefik == "yes":
         paperless_url = f"https://{cfg.domain}"
+        # CSRF trusted origins must include both the domain and localhost for health checks
+        csrf_origins = f"https://{cfg.domain},http://localhost"
     elif cfg.enable_cloudflared == "yes":
         paperless_url = f"https://{cfg.domain}"
+        # CSRF trusted origins must include both the domain and localhost for health checks
+        csrf_origins = f"https://{cfg.domain},http://localhost"
     else:
         paperless_url = f"http://localhost:{cfg.http_port}"
+        csrf_origins = f"http://localhost"
 
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
     content = textwrap.dedent(
@@ -120,6 +125,7 @@ def write_env_file() -> None:
         PAPERLESS_ADMIN_USER={cfg.paperless_admin_user}
         PAPERLESS_ADMIN_PASSWORD={cfg.paperless_admin_password}
         PAPERLESS_URL={paperless_url}
+        PAPERLESS_CSRF_TRUSTED_ORIGINS={csrf_origins}
 
         POSTGRES_VERSION={cfg.postgres_version}
         POSTGRES_DB={cfg.postgres_db}
@@ -225,6 +231,7 @@ def write_compose_file() -> None:
                   PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
                   PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
                   PAPERLESS_URL: ${{PAPERLESS_URL}}
+                  PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
                   PAPERLESS_TIKA_ENABLED: "1"
                   PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
                   PAPERLESS_TIKA_ENDPOINT: http://tika:9998
@@ -300,6 +307,7 @@ def write_compose_file() -> None:
                   PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
                   PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
                   PAPERLESS_URL: ${{PAPERLESS_URL}}
+                  PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
                   PAPERLESS_TIKA_ENABLED: "1"
                   PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
                   PAPERLESS_TIKA_ENDPOINT: http://tika:9998
