@@ -255,16 +255,19 @@ def run_restore_with_env(
     env["STACK_DIR"] = str(stack_dir)
     env["DATA_ROOT"] = str(data_root)
     env["INSTANCE_NAME"] = instance_name
-    env["RCLONE_REMOTE_NAME"] = remote_name
-    env["RCLONE_REMOTE_PATH"] = remote_path
     
-    # Load existing .env if available
+    # Load existing .env if available (for things like timezone, etc.)
     env_file = stack_dir / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
+    
+    # Set these AFTER loading .env to ensure they override any .env values
+    # This is critical when restoring a backup to a new instance name
+    env["RCLONE_REMOTE_NAME"] = remote_name
+    env["RCLONE_REMOTE_PATH"] = remote_path
     
     if fresh_config:
         env["FRESH_CONFIG"] = "true"
