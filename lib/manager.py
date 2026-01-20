@@ -971,7 +971,7 @@ class PaperlessManager:
         print(box_line(f"   {colorize('1)', Colors.BOLD)} {colorize('Create fresh instance', Colors.CYAN)}"))
         print(box_line("      Start with a clean Paperless installation"))
         print(box_line(""))
-        print(box_line(f"   {colorize('2)', Colors.BOLD)} {colorize('Restore from backup', Colors.CYAN)}"))
+        print(box_line(f"   {colorize('2)', Colors.BOLD)} {colorize('Restore from cloud backup', Colors.CYAN)}"))
         print(box_line("      Restore documents and settings from cloud backup"))
         print(draw_box_bottom(box_width))
         print()
@@ -2049,7 +2049,7 @@ class PaperlessManager:
                 ("", colorize("Operations:", Colors.BOLD)),
                 ("3", "  • Update instance " + colorize("(backup + upgrade)", Colors.YELLOW)),
                 ("4", "  • Backup now"),
-                ("5", "  • Restore from backup"),
+                ("5", "  • Restore snapshot"),
                 ("6", "  • Container operations"),
                 ("", ""),
                 ("", colorize("Configuration:", Colors.BOLD)),
@@ -5194,7 +5194,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             # Next steps - only if there were failures or additional config needed
             if failed_instances:
                 print(box_line(f" {colorize('For failed instances:', Colors.YELLOW)}"))
-                print(box_line("   → Manage Instances → [instance] → Restore from backup"))
+                print(box_line("   → Manage Instances → [instance] → Restore snapshot"))
                 print(box_line(""))
             
             print(box_line(f" {colorize('To start your instances:', Colors.BOLD)}"))

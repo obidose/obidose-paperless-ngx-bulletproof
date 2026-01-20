@@ -173,18 +173,31 @@ class BackupManager:
         say(f"Running restore for {self.instance.name}...")
         
         env = os.environ.copy()
-        env_file = self.instance.stack_dir / ".env"
+        
+        # Set critical environment variables that restore module needs
+        env["INSTANCE_NAME"] = self.instance.name
+        env["STACK_DIR"] = str(self.instance.stack_dir)
+        env["DATA_ROOT"] = str(self.instance.data_root)
+        env["RCLONE_REMOTE_NAME"] = self.remote_name
+        env["RCLONE_REMOTE_PATH"] = self.remote_path
+        env["ENV_FILE"] = str(self.instance.env_file)
+        env["COMPOSE_FILE"] = str(self.instance.compose_file)
+        
+        # Also load any additional vars from the .env file
+        env_file = self.instance.env_file
         if env_file.exists():
             for line in env_file.read_text().splitlines():
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip()
+                    # Don't override the critical vars we set above
+                    if k.strip() not in env:
+                        env[k.strip()] = v.strip()
         
-        # Build the restore command - pass snapshot via sys.argv as restore module expects
+        # Build the restore command - call _refresh_globals_from_env() to pick up our env vars
         if snapshot:
-            restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import main; main()"
+            restore_cmd = f"import sys; sys.argv = ['restore.py', '{snapshot}']; from lib.modules.restore import _refresh_globals_from_env, main; _refresh_globals_from_env(); main()"
         else:
-            restore_cmd = "from lib.modules.restore import main; main()"
+            restore_cmd = "from lib.modules.restore import _refresh_globals_from_env, main; _refresh_globals_from_env(); main()"
         
         result = subprocess.run(
             ["python3", "-c", restore_cmd],
