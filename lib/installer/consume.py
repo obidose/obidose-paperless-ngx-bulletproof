@@ -381,10 +381,14 @@ def get_syncthing_api_base(config_dir: Optional[Path] = None, gui_port: int = 83
     return addresses_to_try[0] if addresses_to_try else localhost_url
 
 
-def fix_syncthing_gui_address(config_dir: Path) -> str:
+def fix_syncthing_gui_address(config_dir: Path, gui_port: int = 8384) -> str:
     """
     Fix Syncthing GUI to listen on Tailscale interface only (secure).
     Returns the GUI address that was set.
+    
+    Args:
+        config_dir: Path to Syncthing config directory
+        gui_port: The GUI port for this instance (per-instance, not hardcoded)
     
     If Tailscale is not available, binds to localhost only.
     NEVER binds to 0.0.0.0 to prevent external HTTP access.
@@ -398,9 +402,9 @@ def fix_syncthing_gui_address(config_dir: Path) -> str:
     # Determine the GUI address based on Tailscale availability
     tailscale_ip = get_tailscale_ip()
     if tailscale_ip:
-        desired = f"{tailscale_ip}:8384"
+        desired = f"{tailscale_ip}:{gui_port}"
     else:
-        desired = "127.0.0.1:8384"
+        desired = f"127.0.0.1:{gui_port}"
     
     # Wait for config file to exist (Syncthing generates it on first start)
     for _ in range(30):
@@ -475,9 +479,11 @@ def initialize_syncthing(instance_name: str, config: SyncthingConfig,
     import urllib.error
     
     # Fix the GUI address in config.xml (binds to Tailscale IP for secure access)
-    fix_syncthing_gui_address(config_dir)
+    # Use the per-instance GUI port from config
+    gui_port = config.gui_port if config.gui_port else 8384
+    fix_syncthing_gui_address(config_dir, gui_port)
     
-    api_base = get_syncthing_api_base(config_dir)
+    api_base = get_syncthing_api_base(config_dir, gui_port)
     
     # Wait for API to be available and get API key
     api_key = None
