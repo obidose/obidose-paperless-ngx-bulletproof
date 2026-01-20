@@ -667,9 +667,10 @@ def get_pending_devices(instance_name: str, config: SyncthingConfig,
 def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
                            config_dir: Path) -> list[dict]:
     """
-    List all devices currently configured in Syncthing.
+    List all REMOTE devices currently configured in Syncthing.
     
     Returns a list of dicts with 'deviceID', 'name', and 'connected' status.
+    Excludes the local device (this Syncthing instance itself).
     """
     import urllib.request
     import urllib.error
@@ -685,6 +686,16 @@ def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
     }
     
     try:
+        # First, get our own device ID from the API (most reliable source)
+        req = urllib.request.Request(f"{api_base}/system/status", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            system_status = json.loads(response.read().decode())
+        our_device_id = system_status.get("myID", "")
+        
+        # Fall back to config if API didn't return it
+        if not our_device_id:
+            our_device_id = config.device_id
+        
         # Get current config for device list
         req = urllib.request.Request(f"{api_base}/config/devices", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -696,11 +707,10 @@ def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
             connections = json.loads(response.read().decode())
         
         result = []
-        our_device_id = config.device_id
         
         for device in devices:
             device_id = device.get("deviceID", "")
-            # Skip our own device
+            # Skip our own device - this is the local Syncthing instance
             if device_id == our_device_id:
                 continue
             
