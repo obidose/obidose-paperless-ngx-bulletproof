@@ -66,56 +66,65 @@ def die(msg: str, code: int = 1) -> None:
 # ─── Box Drawing Utilities ────────────────────────────────────────────────────
 
 def create_box_helper(width: int = 80):
-    """Create a box line formatter for the given width.
+    """Create a box line helper with specified inner width.
     
     Returns:
         tuple: (box_line function, width) for compatibility with existing code.
     """
     def box_line(content: str) -> str:
-        """Format a line to fit within the box, handling ANSI codes."""
+        """Create a properly padded box line with cyan borders."""
         # Strip ANSI codes for length calculation
-        plain = re.sub(r'\033\[[0-9;]*m', '', content)
-        padding = width - 4 - len(plain)
-        return f"│ {content}{' ' * max(0, padding)} │"
+        clean = re.sub(r'\033\[[0-9;]+m', '', content)
+        padding = width - len(clean)
+        if padding < 0:
+            truncated = clean[:width-3] + "..."
+            return colorize("│", Colors.CYAN) + truncated + colorize("│", Colors.CYAN)
+        return colorize("│", Colors.CYAN) + content + " " * padding + colorize("│", Colors.CYAN)
     return box_line, width
 
 
 def draw_box_top(width: int = 80) -> str:
-    """Draw the top border of a box."""
-    return "┌" + "─" * (width - 2) + "┐"
+    """Draw box top border with rounded corners in cyan."""
+    return colorize("╭" + "─" * width + "╮", Colors.CYAN)
 
 
 def draw_box_bottom(width: int = 80) -> str:
-    """Draw the bottom border of a box."""
-    return "└" + "─" * (width - 2) + "┘"
+    """Draw box bottom border with rounded corners in cyan."""
+    return colorize("╰" + "─" * width + "╯", Colors.CYAN)
 
 
 def draw_box_divider(width: int = 80) -> str:
-    """Draw a horizontal divider within a box."""
-    return "├" + "─" * (width - 2) + "┤"
+    """Draw box horizontal divider in cyan."""
+    return colorize("├" + "─" * width + "┤", Colors.CYAN)
 
 
 def draw_section_header(title: str, width: int = 80) -> str:
-    """Draw a section header with centered title."""
-    title_len = len(title)
-    left_padding = (width - 4 - title_len) // 2
-    right_padding = width - 4 - title_len - left_padding
-    return "│" + " " * left_padding + colorize(title, Colors.BOLD) + " " * right_padding + "│"
+    """Draw a section header within content area with decorative lines."""
+    padding = width - len(title) - 2
+    left_pad = padding // 2
+    right_pad = padding - left_pad
+    return (colorize("│", Colors.CYAN) + " " + 
+            colorize("─" * left_pad, Colors.CYAN) + 
+            f" {colorize(title, Colors.BOLD)} " + 
+            colorize("─" * right_pad, Colors.CYAN) + " " + 
+            colorize("│", Colors.CYAN))
 
 
 # ─── Menu Utilities ───────────────────────────────────────────────────────────
 
 def print_header(title: str) -> None:
-    """Print a decorative header."""
+    """Print a decorative header box in cyan."""
+    width = max(80, len(title) + 10)
     print()
-    print(colorize("═" * 60, Colors.CYAN))
-    print(colorize(f"  {title}", Colors.BOLD))
-    print(colorize("═" * 60, Colors.CYAN))
+    print(colorize("╔" + "═" * (width - 2) + "╗", Colors.CYAN))
+    print(colorize(f"║{title.center(width - 2)}║", Colors.CYAN))
+    print(colorize("╚" + "═" * (width - 2) + "╝", Colors.CYAN))
     print()
 
 
 def print_menu(options: list[tuple[str, str]], prompt: str = "Choose") -> None:
-    """Print a numbered menu of options."""
-    for key, label in options:
-        print(f"  {colorize(f'{key})', Colors.BOLD)} {label}")
+    """Print a menu with numbered options."""
+    for key, description in options:
+        print(f"  {colorize(key + ')', Colors.BOLD)} {description}")
+    print()
     print()

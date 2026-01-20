@@ -1399,7 +1399,7 @@ class PaperlessManager:
             if common.cfg.enable_cloudflared == "yes":
                 print(box_line(f" Access:  ☁️  https://{common.cfg.domain}"))
             elif common.cfg.enable_traefik == "yes":
-                print(box_line(f" Access:  🔒 https://{common.cfg.domain}"))
+                print(box_line(f" Access:  🛡️ https://{common.cfg.domain}"))
             else:
                 print(box_line(f" Access:  🌐 http://localhost:{common.cfg.http_port}"))
             print(draw_box_bottom(box_width))
@@ -1818,7 +1818,7 @@ class PaperlessManager:
             
             # Access method
             if common.cfg.enable_traefik == "yes":
-                access_str = f"🔒 HTTPS via Traefik → https://{common.cfg.domain}"
+                access_str = f"🛡️ HTTPS via Traefik → https://{common.cfg.domain}"
             elif common.cfg.enable_cloudflared == "yes":
                 access_str = f"☁️  Cloudflare Tunnel → https://{common.cfg.domain}"
             else:
