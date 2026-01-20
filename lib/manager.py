@@ -3271,9 +3271,47 @@ class PaperlessManager:
     
     def health_check(self, instance: Instance) -> None:
         """Run health check on instance."""
+        # Auto-repair missing CSRF settings
+        self._repair_csrf_settings(instance)
+        
         checker = HealthChecker(instance)
         checker.print_report()
         input("\nPress Enter to continue...")
+    
+    def _repair_csrf_settings(self, instance: Instance) -> None:
+        """Auto-repair missing PAPERLESS_CSRF_TRUSTED_ORIGINS settings."""
+        try:
+            # Check if CSRF setting is missing
+            csrf_value = instance.get_env_value("PAPERLESS_CSRF_TRUSTED_ORIGINS", "")
+            
+            if not csrf_value:
+                # Determine the correct CSRF origins based on networking
+                enable_traefik = instance.get_env_value("ENABLE_TRAEFIK", "no")
+                enable_cloudflared = instance.get_env_value("ENABLE_CLOUDFLARED", "no")
+                
+                if enable_traefik == "yes" or enable_cloudflared == "yes":
+                    domain = instance.get_env_value("DOMAIN", "localhost")
+                    csrf_origins = f"https://{domain},http://localhost"
+                else:
+                    csrf_origins = "http://localhost"
+                
+                # Update the .env file
+                say("Repairing missing CSRF settings...")
+                self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", csrf_origins)
+                ok(f"CSRF settings repaired: {csrf_origins}")
+                
+                # Also ensure docker-compose.yml has the reference
+                # Check if compose file already has CSRF reference
+                if instance.compose_file.exists():
+                    compose_content = instance.compose_file.read_text()
+                    if "PAPERLESS_CSRF_TRUSTED_ORIGINS" not in compose_content:
+                        warn("Docker-compose.yml needs regeneration")
+                        if confirm("Regenerate docker-compose.yml now?", True):
+                            self._offer_regenerate_compose(instance)
+                            return
+        except Exception as e:
+            # Don't fail health check on repair error
+            pass
     
     def update_instance(self, instance: Instance) -> None:
         """Update instance with automatic backup and Docker version tracking."""
