@@ -5691,7 +5691,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 need_samba = False
                 need_sftp = False
                 
-                for inst in self.instance_manager.instances:
+                for inst in self.instance_manager.list_instances():
                     try:
                         config = load_consume_config(inst.env_file)
                         instances_config[inst.name] = config
