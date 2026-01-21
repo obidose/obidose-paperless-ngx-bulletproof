@@ -38,15 +38,24 @@ def copy_helper_scripts() -> None:
     else:
         warn(f"Missing module: {src}")
     
-    # Copy entire lib folder structure
+    # Copy entire lib folder structure (only if source exists and is different from dest)
     lib_src = BASE_DIR / "lib"
     lib_dst = lib_dir / "lib"
-    if lib_src.exists():
-        if lib_dst.exists():
-            shutil.rmtree(lib_dst)
-        shutil.copytree(lib_src, lib_dst)
+    
+    # Skip if source and dest are the same (running from installed location)
+    if lib_src.resolve() == lib_dst.resolve():
+        pass  # Already running from installed location
+    elif lib_src.exists():
+        try:
+            if lib_dst.exists():
+                shutil.rmtree(lib_dst)
+            shutil.copytree(lib_src, lib_dst)
+        except Exception as e:
+            warn(f"Could not copy lib folder: {e}")
     else:
-        warn(f"Missing lib folder: {lib_src}")
+        # Check if lib_dst already exists (installed by previous step)
+        if not lib_dst.exists():
+            warn(f"Missing lib folder: {lib_src}")
     
     # Create main symlink
     main_link = Path("/usr/local/bin/paperless")
