@@ -58,9 +58,9 @@ Paperless needs an input folder for document importing. Multiple options are ava
 
 **Syncthing** - Peer-to-peer folder sync. Documents sync automatically from your devices to the consume folder. Each instance runs its own Syncthing container with separate sync credentials.
 
-**Samba** (SMB) - Traditional network file shares. Browse and drag-drop files over your local network or Tailscale connection.
+**Samba** (SMB) - Network file shares with per-instance containers. Each instance gets its own Samba share with unique credentials. Supports Tailscale-only mode for secure remote access.
 
-**SFTP** - Secure file transfer. Import documents via SSH/SFTP with per-instance credentials.
+**SFTP** - Secure file transfer via a shared container with per-instance credentials.
 
 Each instance can enable the consume methods it needs. Syncthing config and folder state are backed up and restored automatically.
 
