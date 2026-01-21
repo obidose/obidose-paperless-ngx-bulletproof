@@ -2036,7 +2036,9 @@ class PaperlessManager:
                         port=samba_port
                     )
                     consume_path = Path(common.cfg.dir_consume)
-                    if start_samba(instance_name, samba_config, consume_path):
+                    puid = int(common.cfg.puid)
+                    pgid = int(common.cfg.pgid)
+                    if start_samba(instance_name, samba_config, consume_path, puid=puid, pgid=pgid):
                         consume_services_started.append(f"Samba (port {samba_port})")
                     else:
                         warn("Failed to start Samba container")
@@ -2518,7 +2520,10 @@ class PaperlessManager:
             if config.samba.enabled:
                 consume_path = instance.data_root / "consume"
                 if not is_samba_running(instance.name):
-                    if start_samba(instance.name, config.samba, consume_path):
+                    # Get PUID/PGID from instance
+                    puid = int(instance.get_env_value("PUID", "1000"))
+                    pgid = int(instance.get_env_value("PGID", "1000"))
+                    if start_samba(instance.name, config.samba, consume_path, puid=puid, pgid=pgid):
                         ok(f"Samba started for {instance.name}")
                     else:
                         warn(f"Failed to start Samba for {instance.name}")
@@ -3139,7 +3144,9 @@ class PaperlessManager:
                         inst_config = load_consume_config(inst.env_file)
                         if inst_config.samba.enabled and is_samba_running(inst.name):
                             consume_path = inst.data_root / "consume"
-                            start_samba(inst.name, inst_config.samba, consume_path)
+                            puid = int(inst.get_env_value("PUID", "1000"))
+                            pgid = int(inst.get_env_value("PGID", "1000"))
+                            start_samba(inst.name, inst_config.samba, consume_path, puid=puid, pgid=pgid)
                     except Exception:
                         pass
                 
@@ -3869,8 +3876,12 @@ class PaperlessManager:
                     # Create new config with auto-assigned port
                     samba_config = create_samba_config(instance.name)
                     
+                    # Get PUID/PGID from instance
+                    puid = int(instance.get_env_value("PUID", "1000"))
+                    pgid = int(instance.get_env_value("PGID", "1000"))
+                    
                     # Start the per-instance Samba container
-                    if start_samba(instance.name, samba_config, consume_dir):
+                    if start_samba(instance.name, samba_config, consume_dir, puid=puid, pgid=pgid):
                         config.samba = samba_config
                         save_consume_config(config, instance.env_file)
                         self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "true")
@@ -5696,7 +5707,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                             need_samba = True
                             say(f"  Starting Samba for {inst.name}...")
                             consume_path = inst.data_root / "consume"
-                            if start_samba(inst.name, config.samba, consume_path):
+                            puid = int(inst.get_env_value("PUID", "1000"))
+                            pgid = int(inst.get_env_value("PGID", "1000"))
+                            if start_samba(inst.name, config.samba, consume_path, puid=puid, pgid=pgid):
                                 samba_started += 1
                             else:
                                 samba_failed.append(inst.name)

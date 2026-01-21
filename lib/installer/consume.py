@@ -1045,6 +1045,28 @@ SAMBA_BASE_PORT = 445  # Standard SMB port
 SAMBA_ALT_PORT_START = 4451  # Start of alternative ports
 
 
+def get_instance_puid_pgid(instance_name: str) -> tuple[int, int]:
+    """Get PUID/PGID from an instance's .env file.
+    
+    Returns:
+        Tuple of (puid, pgid), defaults to (1000, 1000) if not found
+    """
+    env_file = Path(f"/home/docker/{instance_name}-setup/.env")
+    puid, pgid = 1000, 1000
+    
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                if line.startswith("PUID="):
+                    puid = int(line.split("=", 1)[1].strip())
+                elif line.startswith("PGID="):
+                    pgid = int(line.split("=", 1)[1].strip())
+        except Exception:
+            pass
+    
+    return puid, pgid
+
+
 def get_samba_container_name(instance_name: str) -> str:
     """Get the Samba container name for an instance."""
     return f"paperless-samba-{instance_name}"
@@ -1146,7 +1168,7 @@ def create_samba_config(instance_name: str, port: Optional[int] = None) -> Samba
 
 
 def start_samba(instance_name: str, config: SambaConfig, consume_path: Path,
-                network_mode: str = "all") -> bool:
+                network_mode: str = "all", puid: int = 1000, pgid: int = 1000) -> bool:
     """Start a Samba container for an instance.
     
     Uses dockur/samba with simple environment variable configuration.
@@ -1160,6 +1182,8 @@ def start_samba(instance_name: str, config: SambaConfig, consume_path: Path,
             - "all": Bind to all interfaces (0.0.0.0)
             - "local": Bind to localhost only (127.0.0.1)
             - "tailscale": Bind to Tailscale IP only
+        puid: User ID for file ownership (should match Paperless PUID)
+        pgid: Group ID for file ownership (should match Paperless PGID)
             
     Returns:
         True if container started successfully
@@ -1205,8 +1229,8 @@ def start_samba(instance_name: str, config: SambaConfig, consume_path: Path,
         "-e", f"USER={config.username}",
         "-e", f"PASS={config.password}",
         "-e", f"NAME={config.share_name}",
-        "-e", "UID=1000",
-        "-e", "GID=1000",
+        "-e", f"UID={puid}",
+        "-e", f"GID={pgid}",
         "-v", f"{consume_path}:/storage",
         "--restart", "unless-stopped",
         SAMBA_IMAGE,
@@ -1261,10 +1285,11 @@ def stop_samba(instance_name: str) -> bool:
         return False
 
 
-def restart_samba(instance_name: str, config: SambaConfig, consume_path: Path) -> bool:
+def restart_samba(instance_name: str, config: SambaConfig, consume_path: Path,
+                  puid: int = 1000, pgid: int = 1000) -> bool:
     """Restart the Samba container for an instance (e.g., after config change)."""
     stop_samba(instance_name)
-    return start_samba(instance_name, config, consume_path)
+    return start_samba(instance_name, config, consume_path, puid=puid, pgid=pgid)
 
 
 def get_samba_connection_info(instance_name: str, config: SambaConfig) -> dict:
@@ -1381,9 +1406,10 @@ def regenerate_samba_config(instances_config: dict[str, 'ConsumeConfig'],
     for instance_name, consume_config in instances_config.items():
         if consume_config.samba.enabled:
             consume_path = data_roots.get(instance_name, Path(f"/home/docker/{instance_name}")) / "consume"
+            puid, pgid = get_instance_puid_pgid(instance_name)
             
             # Start or restart the container
-            if not start_samba(instance_name, consume_config.samba, consume_path):
+            if not start_samba(instance_name, consume_config.samba, consume_path, puid=puid, pgid=pgid):
                 warn(f"Failed to start Samba for {instance_name}")
                 success = False
         else:
@@ -1416,7 +1442,8 @@ def start_samba_container(data_root_base: Path = Path("/home/docker"),
             password=password,
             port=get_next_available_samba_port(),
         )
-        if not start_samba(instance_name, config, consume_path):
+        puid, pgid = get_instance_puid_pgid(instance_name)
+        if not start_samba(instance_name, config, consume_path, puid=puid, pgid=pgid):
             success = False
     
     return success
