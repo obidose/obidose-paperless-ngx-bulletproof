@@ -157,6 +157,9 @@ def main() -> None:
     #   The manager already created these with user's chosen settings + credentials from backup
     # - MERGE_CONFIG=no: Fully overwrite .env and docker-compose.yml from backup (same instance restore)
     skip_config = os.environ.get("MERGE_CONFIG", "no") == "yes"
+    # RESTORE_SYNCTHING: Override syncthing behavior for system restore
+    # When true, restore syncthing config even if skip_config is true
+    force_syncthing_restore = os.environ.get("RESTORE_SYNCTHING", "no") == "yes"
     if skip_config:
         say("Keeping instance configuration (already configured by manager)")
     
@@ -197,10 +200,11 @@ def main() -> None:
                     ok(f"Restored {name} data")
             
             # Restore syncthing-config if it exists in backup (consume folder sync config)
-            # BUT skip for clones (MERGE_CONFIG=yes) - clones need fresh consume folder setup
+            # Skip for clones (MERGE_CONFIG=yes without RESTORE_SYNCTHING) - clones need fresh setup
+            # But DO restore for system restore (MERGE_CONFIG=yes WITH RESTORE_SYNCTHING=yes)
             syncthing_tarfile = next(tmp.glob("syncthing-config.tar*"), None)
             if syncthing_tarfile:
-                if skip_config:
+                if skip_config and not force_syncthing_restore:
                     say("Skipping syncthing-config (clone needs fresh consume folder setup)")
                 else:
                     syncthing_config_dir = STACK_DIR / "syncthing-config"
@@ -251,9 +255,10 @@ def main() -> None:
         warn("Docker compose file not found - services not started")
     
     # Restart Syncthing if it was enabled (syncthing-config was restored)
-    # Skip for clones (skip_config=True) - they need fresh consume folder setup
+    # Skip for clones (skip_config=True without force_syncthing_restore)
+    # But DO restart for system restore (force_syncthing_restore=True)
     syncthing_config_dir = STACK_DIR / "syncthing-config"
-    if not skip_config and syncthing_config_dir.exists():
+    if (not skip_config or force_syncthing_restore) and syncthing_config_dir.exists():
         try:
             from lib.installer.consume import (
                 load_consume_config, start_syncthing_container, stop_syncthing_container,

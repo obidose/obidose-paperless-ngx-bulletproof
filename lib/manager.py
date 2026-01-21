@@ -5530,7 +5530,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         remote_name="pcloud",
                         remote_path=rclone_path,  # Use the saved path, not hardcoded
                         snapshot=selected_snapshot,
-                        fresh_config=True  # Use fresh config since manager wrote it
+                        fresh_config=True,  # Use fresh config since manager wrote it
+                        restore_syncthing=True  # Restore Syncthing for disaster recovery
                     )
                     
                     if not success:

@@ -228,7 +228,8 @@ def run_restore_with_env(
     remote_name: str,
     remote_path: str,
     snapshot: str = None,
-    fresh_config: bool = False
+    fresh_config: bool = False,
+    restore_syncthing: bool = False
 ) -> bool:
     """
     Run restore operation with explicit environment configuration.
@@ -244,6 +245,8 @@ def run_restore_with_env(
         remote_path: Path on the remote
         snapshot: Specific snapshot to restore (optional)
         fresh_config: Whether this is a fresh config that needs special handling
+        restore_syncthing: Whether to restore Syncthing config even with fresh_config
+                          (used for system restore where we want existing Syncthing setup)
         
     Returns:
         True if restore succeeded
@@ -274,6 +277,11 @@ def run_restore_with_env(
         # Tell restore module to keep the .env and docker-compose.yml we just created
         # (they have the user's chosen ports, network settings, etc.)
         env["MERGE_CONFIG"] = "yes"
+    
+    if restore_syncthing:
+        # Tell restore module to restore Syncthing config even with fresh_config
+        # This is used for system restore where we want the existing Syncthing setup
+        env["RESTORE_SYNCTHING"] = "yes"
     
     # Build the restore command - call _refresh_globals_from_env() to pick up our env vars
     # This is CRITICAL - without it, the module uses stale globals from a previous import
