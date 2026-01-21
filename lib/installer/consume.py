@@ -55,11 +55,12 @@ class SyncthingConfig:
 
 @dataclass
 class SambaConfig:
-    """Samba configuration for an instance."""
+    """Samba configuration for an instance (per-instance container)."""
     enabled: bool = False
     share_name: str = ""
     username: str = ""
     password: str = ""
+    port: int = 445  # SMB port (each instance gets a unique port)
     
     def to_dict(self) -> dict:
         return {
@@ -67,6 +68,7 @@ class SambaConfig:
             "share_name": self.share_name,
             "username": self.username,
             "password": self.password,
+            "port": self.port,
         }
     
     @classmethod
@@ -1028,17 +1030,32 @@ def restart_syncthing_container(instance_name: str) -> bool:
         return False
 
 
-# ─── Samba Management ─────────────────────────────────────────────────────────
+# ─── Samba Management (Per-Instance Containers) ──────────────────────────────
+#
+# Uses dockur/samba - one container per instance for simplicity and isolation.
+# Each instance gets its own container, share, user, and port.
+#
+# Container naming: paperless-samba-{instance_name}
+# Default port: 445 for first instance, then 4451, 4452, etc.
+# Image: dockurr/samba (uses simple env vars: USER, PASS, NAME)
+#
 
-SAMBA_CONFIG_DIR = Path("/etc/paperless-bulletproof/samba")
-SAMBA_CONTAINER_NAME = "paperless-samba"
+SAMBA_IMAGE = "dockurr/samba"
+SAMBA_BASE_PORT = 445  # Standard SMB port
+SAMBA_ALT_PORT_START = 4451  # Start of alternative ports
 
 
-def is_samba_available() -> bool:
-    """Check if Samba container is running."""
+def get_samba_container_name(instance_name: str) -> str:
+    """Get the Samba container name for an instance."""
+    return f"paperless-samba-{instance_name}"
+
+
+def is_samba_running(instance_name: str) -> bool:
+    """Check if Samba container is running for an instance."""
+    container_name = get_samba_container_name(instance_name)
     try:
         result = subprocess.run(
-            ["docker", "inspect", SAMBA_CONTAINER_NAME, "--format", "{{.State.Running}}"],
+            ["docker", "inspect", container_name, "--format", "{{.State.Running}}"],
             capture_output=True,
             text=True,
             check=False
@@ -1048,352 +1065,395 @@ def is_samba_available() -> bool:
         return False
 
 
-def create_samba_config(instance_name: str) -> SambaConfig:
-    """Create a new Samba configuration for an instance."""
+def is_samba_available() -> bool:
+    """DEPRECATED: Use is_samba_running(instance_name) instead.
+    
+    For backwards compatibility, returns True if ANY samba container is running.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "name=paperless-samba-", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except:
+        return False
+
+
+def get_used_samba_ports() -> set[int]:
+    """Get all ports currently used by Samba containers."""
+    used_ports = set()
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "name=paperless-samba-", 
+             "--format", "{{.Ports}}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                # Parse port from "0.0.0.0:445->445/tcp" format
+                if "->445" in line:
+                    import re
+                    match = re.search(r':(\d+)->445', line)
+                    if match:
+                        used_ports.add(int(match.group(1)))
+    except:
+        pass
+    return used_ports
+
+
+def get_next_available_samba_port() -> int:
+    """Get the next available port for a new Samba container."""
+    used_ports = get_used_samba_ports()
+    
+    # Try standard port first
+    if SAMBA_BASE_PORT not in used_ports:
+        return SAMBA_BASE_PORT
+    
+    # Find next available in alt range
+    port = SAMBA_ALT_PORT_START
+    while port in used_ports:
+        port += 1
+        if port > 65535:
+            raise RuntimeError("No available ports for Samba")
+    return port
+
+
+def create_samba_config(instance_name: str, port: Optional[int] = None) -> SambaConfig:
+    """Create a new Samba configuration for an instance.
+    
+    Args:
+        instance_name: The instance name
+        port: Specific port to use, or None to auto-assign
+        
+    Returns:
+        New SambaConfig with generated credentials
+    """
+    if port is None:
+        port = get_next_available_samba_port()
+    
     return SambaConfig(
         enabled=True,
-        share_name=f"{instance_name}-consume",
-        username=f"paperless-{instance_name}",
+        share_name=f"paperless-{instance_name}",
+        username=f"pl-{instance_name}",
         password=generate_secure_password(16),
+        port=port,
     )
 
 
-def write_samba_share_config(instance_name: str, config: SambaConfig, consume_path: Path) -> str:
-    """Generate Samba share configuration block."""
-    return f"""
-[{config.share_name}]
-   path = {consume_path}
-   valid users = {config.username}
-   read only = no
-   browseable = yes
-   guest ok = no
-   force create mode = 0644
-   force directory mode = 0755
-   comment = Paperless {instance_name} consume folder
-"""
-
-
-def regenerate_samba_config(instances_config: dict[str, ConsumeConfig], 
-                            data_roots: dict[str, Path]) -> bool:
-    """Regenerate the complete smb.conf from all instance configurations."""
-    SAMBA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+def start_samba(instance_name: str, config: SambaConfig, consume_path: Path,
+                network_mode: str = "all") -> bool:
+    """Start a Samba container for an instance.
     
-    # Global config
-    config = """[global]
-   workgroup = WORKGROUP
-   server string = Paperless-NGX File Server
-   security = user
-   map to guest = never
-   passdb backend = tdbsam
-   log file = /var/log/samba/log.%m
-   max log size = 50
-   dns proxy = no
-   
-"""
-    
-    # Add share for each instance with Samba enabled
-    for instance_name, consume_config in instances_config.items():
-        if consume_config.samba.enabled:
-            consume_path = data_roots.get(instance_name, Path(f"/home/docker/{instance_name}")) / "consume"
-            config += write_samba_share_config(instance_name, consume_config.samba, consume_path)
-    
-    config_file = SAMBA_CONFIG_DIR / "smb.conf"
-    config_file.write_text(config)
-    
-    return True
-
-
-def add_samba_user(username: str, password: str, verbose: bool = False) -> bool:
-    """Add a user to the Samba container.
+    Uses dockur/samba with simple environment variable configuration.
+    Each instance gets its own isolated container.
     
     Args:
-        username: The username to add
-        password: The password for the user
-        verbose: If True, print detailed error messages
-    
-    Returns:
-        True if user was added successfully, False otherwise
-    """
-    if not is_samba_available():
-        if verbose:
-            warn("Samba container not running")
-        return False
-    
-    try:
-        # Add system user
-        user_result = subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, 
-             "adduser", "-D", "-H", username],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if user_result.returncode != 0 and verbose:
-            # User might already exist, which is fine
-            if "already exists" not in user_result.stderr.lower():
-                warn(f"  Could not add system user {username}: {user_result.stderr.strip()}")
-        
-        # Set Samba password
-        result = subprocess.run(
-            ["docker", "exec", "-i", SAMBA_CONTAINER_NAME,
-             "sh", "-c", f"echo -e '{password}\\n{password}' | smbpasswd -a -s {username}"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode != 0:
-            if verbose:
-                error(f"  Failed to add Samba user {username}: {result.stderr.strip()}")
-            return False
-        
-        if verbose:
-            say(f"  Added Samba user: {username}")
-        
-        # Verify user was actually added by testing authentication
-        # Wait a moment for the password database to sync
-        import time
-        time.sleep(1)
-        
-        if not verify_samba_user_exists(username):
-            if verbose:
-                error(f"  User {username} was not found after adding")
-                error("  This might indicate:")
-                error("    - Samba password database is not persisted")
-                error("    - Container needs to be recreated")
-                say("  Checking current Samba users...")
-                users = list_samba_users()
-                if users:
-                    say(f"  Found users: {', '.join(users)}")
-                else:
-                    error("  No users found in Samba database!")
-            return False
+        instance_name: The instance name
+        config: SambaConfig with credentials and port
+        consume_path: Path to the consume folder to share
+        network_mode: One of:
+            - "all": Bind to all interfaces (0.0.0.0)
+            - "local": Bind to localhost only (127.0.0.1)
+            - "tailscale": Bind to Tailscale IP only
             
-        return True
-        
-    except Exception as e:
-        if verbose:
-            error(f"  Exception adding Samba user {username}: {e}")
-        return False
-
-
-def verify_samba_user_exists(username: str) -> bool:
-    """Check if a Samba user exists in the container's password database.
-    
-    Args:
-        username: The username to check
-        
     Returns:
-        True if user exists in Samba password database, False otherwise
-    """
-    if not is_samba_available():
-        return False
-    
-    try:
-        result = subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, "pdbedit", "-L"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode == 0:
-            # pdbedit -L outputs: username:uid:Full Name
-            return any(line.startswith(f"{username}:") for line in result.stdout.splitlines())
-        
-        return False
-    except Exception:
-        return False
-
-
-def list_samba_users() -> list[str]:
-    """Get list of all Samba users in the container.
-    
-    Returns:
-        List of usernames configured in Samba
-    """
-    if not is_samba_available():
-        return []
-    
-    try:
-        result = subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, "pdbedit", "-L"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode == 0:
-            # Parse username from "username:uid:Full Name" format
-            users = []
-            for line in result.stdout.splitlines():
-                if ':' in line:
-                    users.append(line.split(':')[0])
-            return users
-        
-        return []
-    except Exception:
-        return []
-
-
-def remove_samba_user(username: str) -> bool:
-    """Remove a user from the Samba container."""
-    if not is_samba_available():
-        return True
-    
-    try:
-        subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, "smbpasswd", "-x", username],
-            capture_output=True,
-            check=False
-        )
-        subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, "deluser", username],
-            capture_output=True,
-            check=False
-        )
-        return True
-    except:
-        return False
-
-
-def remove_samba_share(instance_name: str) -> bool:
-    """Remove a Samba share from the config file.
-    
-    Removes the share block for the given instance from smb.conf.
-    """
-    config_file = SAMBA_CONFIG_DIR / "smb.conf"
-    if not config_file.exists():
-        return True
-    
-    try:
-        content = config_file.read_text()
-        lines = content.splitlines()
-        new_lines = []
-        skip_until_next_section = False
-        
-        for line in lines:
-            # Check if we're at the start of a share section
-            if line.strip().startswith('[') and line.strip().endswith(']'):
-                section_name = line.strip()[1:-1]
-                # Check if this is the share we want to remove
-                # Share names are typically {instance}-consume
-                if f"{instance_name}-consume" in section_name or f"Paperless {instance_name}" in section_name:
-                    skip_until_next_section = True
-                    continue
-                else:
-                    skip_until_next_section = False
-            
-            if not skip_until_next_section:
-                new_lines.append(line)
-        
-        config_file.write_text('\n'.join(new_lines))
-        return True
-    except Exception as e:
-        warn(f"Failed to remove Samba share: {e}")
-        return False
-
-
-def reload_samba_config() -> bool:
-    """Reload Samba configuration."""
-    if not is_samba_available():
-        return False
-    
-    try:
-        subprocess.run(
-            ["docker", "exec", SAMBA_CONTAINER_NAME, "smbcontrol", "all", "reload-config"],
-            capture_output=True,
-            check=True
-        )
-        return True
-    except:
-        return False
-
-
-def start_samba_container(data_root_base: Path = Path("/home/docker")) -> bool:
-    """Start the shared Samba container.
-    
-    Uses global config to determine if Tailscale-only mode is enabled.
+        True if container started successfully
     """
     from lib.installer.tailscale import get_ip as get_tailscale_ip
     
-    say("Starting Samba container...")
+    container_name = get_samba_container_name(instance_name)
     
-    SAMBA_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Check global config for Tailscale-only mode
+    # Determine bind address based on network mode
     global_config = load_global_consume_config()
-    bind_ip = None
-    if global_config.samba_tailscale_only:
+    
+    if network_mode == "tailscale" or global_config.samba_tailscale_only:
         bind_ip = get_tailscale_ip()
         if not bind_ip:
             error("Tailscale-only mode requires Tailscale to be connected!")
             return False
+    elif network_mode == "local":
+        bind_ip = "127.0.0.1"
+    else:
+        bind_ip = "0.0.0.0"
     
-    # Ensure config file exists
-    config_file = SAMBA_CONFIG_DIR / "smb.conf"
-    if not config_file.exists():
-        config_file.write_text("""[global]
-   workgroup = WORKGROUP
-   server string = Paperless-NGX File Server
-   security = user
-   map to guest = never
-   passdb backend = tdbsam
-   log file = /var/log/samba/log.%m
-   max log size = 50
-   dns proxy = no
-""")
+    say(f"Starting Samba container for {instance_name}...")
     
-    # Stop existing container
+    # Stop existing container if running
     subprocess.run(
-        ["docker", "rm", "-f", SAMBA_CONTAINER_NAME],
+        ["docker", "rm", "-f", container_name],
         capture_output=True,
         check=False
     )
     
-    # Build port mapping
-    port_mapping = f"{bind_ip}:445:445" if bind_ip else "445:445"
+    # Ensure consume folder exists
+    consume_path.mkdir(parents=True, exist_ok=True)
     
-    # Create persistent directory for Samba's password database
-    # This ensures users persist across container restarts
-    SAMBA_DATA_DIR = SAMBA_CONFIG_DIR / "data"
-    SAMBA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Build port mapping
+    port_mapping = f"{bind_ip}:{config.port}:445"
+    
+    # Build docker command using dockur/samba
+    # dockur/samba uses simple env vars: USER, PASS, NAME, UID, GID
+    docker_cmd = [
+        "docker", "run", "-d",
+        "--name", container_name,
+        "-p", port_mapping,
+        "-e", f"USER={config.username}",
+        "-e", f"PASS={config.password}",
+        "-e", f"NAME={config.share_name}",
+        "-e", "UID=1000",
+        "-e", "GID=1000",
+        "-v", f"{consume_path}:/storage",
+        "--restart", "unless-stopped",
+        SAMBA_IMAGE,
+    ]
     
     try:
-        result = subprocess.run([
-            "docker", "run", "-d",
-            "--name", SAMBA_CONTAINER_NAME,
-            "-p", port_mapping,
-            "-v", f"{SAMBA_CONFIG_DIR}/smb.conf:/etc/samba/smb.conf:ro",
-            "-v", f"{SAMBA_DATA_DIR}:/var/lib/samba:rw",  # Persist password database
-            "-v", f"{data_root_base}:/home/docker",
-            "--restart", "unless-stopped",
-            "dperson/samba"
-        ], capture_output=True, text=True, check=True)
+        result = subprocess.run(docker_cmd, capture_output=True, text=True, check=True)
         
-        if bind_ip:
-            ok(f"Samba container started (Tailscale-only: {bind_ip})")
+        # Wait for container to initialize
+        import time
+        time.sleep(2)
+        
+        # Verify container is running
+        if is_samba_running(instance_name):
+            if bind_ip == "0.0.0.0":
+                ok(f"Samba started for {instance_name} on port {config.port}")
+            else:
+                ok(f"Samba started for {instance_name} on {bind_ip}:{config.port}")
+            return True
         else:
-            ok("Samba container started")
-        return True
+            error(f"Samba container failed to start for {instance_name}")
+            # Get logs for debugging
+            log_result = subprocess.run(
+                ["docker", "logs", "--tail", "20", container_name],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if log_result.stdout:
+                error(f"Container logs: {log_result.stdout}")
+            return False
+            
     except subprocess.CalledProcessError as e:
-        error(f"Failed to start Samba: {e}")
+        error(f"Failed to start Samba for {instance_name}: {e}")
+        if e.stderr:
+            error(f"  {e.stderr}")
         return False
 
 
-def stop_samba_container() -> bool:
-    """Stop the Samba container."""
+def stop_samba(instance_name: str) -> bool:
+    """Stop the Samba container for an instance."""
+    container_name = get_samba_container_name(instance_name)
     try:
         subprocess.run(
-            ["docker", "rm", "-f", SAMBA_CONTAINER_NAME],
+            ["docker", "rm", "-f", container_name],
             capture_output=True,
-            check=True
+            check=False
         )
-        ok("Samba container stopped")
+        ok(f"Samba stopped for {instance_name}")
         return True
     except:
         return False
+
+
+def restart_samba(instance_name: str, config: SambaConfig, consume_path: Path) -> bool:
+    """Restart the Samba container for an instance (e.g., after config change)."""
+    stop_samba(instance_name)
+    return start_samba(instance_name, config, consume_path)
+
+
+def get_samba_connection_info(instance_name: str, config: SambaConfig) -> dict:
+    """Get connection information for an instance's Samba share.
+    
+    Returns dict with connection details for different network scenarios.
+    """
+    from lib.installer.tailscale import get_ip as get_tailscale_ip
+    
+    info = {
+        "share_name": config.share_name,
+        "username": config.username,
+        "password": config.password,
+        "port": config.port,
+        "connections": []
+    }
+    
+    tailscale_ip = get_tailscale_ip()
+    local_ip = None
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except:
+        pass
+    
+    # Build connection strings
+    global_config = load_global_consume_config()
+    
+    if config.port == 445:
+        # Standard port - simpler paths
+        if tailscale_ip:
+            info["connections"].append({
+                "type": "Tailscale",
+                "ip": tailscale_ip,
+                "path": f"\\\\{tailscale_ip}\\{config.share_name}",
+                "smb_path": f"smb://{tailscale_ip}/{config.share_name}",
+            })
+        if local_ip and not global_config.samba_tailscale_only:
+            info["connections"].append({
+                "type": "Local/External",
+                "ip": local_ip,
+                "path": f"\\\\{local_ip}\\{config.share_name}",
+                "smb_path": f"smb://{local_ip}/{config.share_name}",
+            })
+    else:
+        # Non-standard port - need to specify port
+        if tailscale_ip:
+            info["connections"].append({
+                "type": "Tailscale",
+                "ip": tailscale_ip,
+                "port": config.port,
+                "path": f"\\\\{tailscale_ip}:{config.port}\\{config.share_name}",
+                "smb_path": f"smb://{tailscale_ip}:{config.port}/{config.share_name}",
+            })
+        if local_ip and not global_config.samba_tailscale_only:
+            info["connections"].append({
+                "type": "Local/External",
+                "ip": local_ip,
+                "port": config.port,
+                "path": f"\\\\{local_ip}:{config.port}\\{config.share_name}",
+                "smb_path": f"smb://{local_ip}:{config.port}/{config.share_name}",
+            })
+    
+    return info
+
+
+# ─── Backwards Compatibility Wrappers ─────────────────────────────────────────
+# These functions provide compatibility with old code that used shared container
+
+def stop_samba_container() -> bool:
+    """DEPRECATED: Stop all Samba containers.
+    
+    Use stop_samba(instance_name) for per-instance control.
+    """
+    try:
+        # Find all samba containers
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "name=paperless-samba-", 
+             "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for container in result.stdout.strip().split('\n'):
+                subprocess.run(
+                    ["docker", "rm", "-f", container],
+                    capture_output=True,
+                    check=False
+                )
+        return True
+    except:
+        return False
+
+
+def regenerate_samba_config(instances_config: dict[str, 'ConsumeConfig'],
+                            data_roots: dict[str, Path]) -> bool:
+    """Start/restart Samba containers for all instances with Samba enabled.
+    
+    With per-instance containers, this starts a container for each enabled instance.
+    
+    Args:
+        instances_config: Dict mapping instance names to their ConsumeConfig
+        data_roots: Dict mapping instance names to their data root paths
+        
+    Returns:
+        True if all containers started successfully
+    """
+    success = True
+    
+    for instance_name, consume_config in instances_config.items():
+        if consume_config.samba.enabled:
+            consume_path = data_roots.get(instance_name, Path(f"/home/docker/{instance_name}")) / "consume"
+            
+            # Start or restart the container
+            if not start_samba(instance_name, consume_config.samba, consume_path):
+                warn(f"Failed to start Samba for {instance_name}")
+                success = False
+        else:
+            # Stop container if running but disabled
+            if is_samba_running(instance_name):
+                stop_samba(instance_name)
+    
+    return success
+
+
+def start_samba_container(data_root_base: Path = Path("/home/docker"),
+                          users_shares: Optional[dict[str, tuple[str, str, Path]]] = None) -> bool:
+    """DEPRECATED: Old shared container function.
+    
+    Use start_samba(instance_name, config, consume_path) for per-instance containers.
+    This is kept for backwards compatibility with existing code paths.
+    """
+    if users_shares is None:
+        warn("start_samba_container() called without users_shares - no action taken")
+        return True
+    
+    # Start individual containers for each instance
+    success = True
+    for instance_name, (username, password, consume_path) in users_shares.items():
+        # Create config from provided values
+        config = SambaConfig(
+            enabled=True,
+            share_name=f"paperless-{instance_name}",
+            username=username,
+            password=password,
+            port=get_next_available_samba_port(),
+        )
+        if not start_samba(instance_name, config, consume_path):
+            success = False
+    
+    return success
+
+
+def add_samba_user(username: str, password: str, verbose: bool = False) -> bool:
+    """DEPRECATED: With per-instance containers, users are configured at start.
+    
+    This function is a no-op kept for backwards compatibility.
+    """
+    if verbose:
+        say("Note: Samba users are now configured per-instance at container startup")
+    return True
+
+
+def remove_samba_user(username: str) -> bool:
+    """DEPRECATED: With per-instance containers, users are removed with the container.
+    
+    This function is a no-op kept for backwards compatibility.
+    """
+    return True
+
+
+def write_samba_share_config(instance_name: str, config: SambaConfig, 
+                             consume_path: Path) -> str:
+    """DEPRECATED: dockur/samba manages its own config via env vars."""
+    return ""
+
+
+def reload_samba_config() -> bool:
+    """DEPRECATED: Per-instance containers don't need config reload."""
+    return True
+
+
+def remove_samba_share(instance_name: str) -> bool:
+    """DEPRECATED: Use stop_samba(instance_name) instead."""
+    return stop_samba(instance_name)
 
 
 # ─── SFTP Management ──────────────────────────────────────────────────────────
@@ -1580,6 +1640,7 @@ def load_consume_config(instance_env_file: Path) -> ConsumeConfig:
     config.samba.share_name = env_vars.get("CONSUME_SAMBA_SHARE_NAME", "")
     config.samba.username = env_vars.get("CONSUME_SAMBA_USERNAME", "")
     config.samba.password = env_vars.get("CONSUME_SAMBA_PASSWORD", "")
+    config.samba.port = int(env_vars.get("CONSUME_SAMBA_PORT", "445"))
     
     # SFTP
     config.sftp.enabled = env_vars.get("CONSUME_SFTP_ENABLED", "").lower() == "true"
@@ -1612,6 +1673,7 @@ def save_consume_config(config: ConsumeConfig, instance_env_file: Path) -> bool:
         "CONSUME_SAMBA_SHARE_NAME": config.samba.share_name,
         "CONSUME_SAMBA_USERNAME": config.samba.username,
         "CONSUME_SAMBA_PASSWORD": config.samba.password,
+        "CONSUME_SAMBA_PORT": str(config.samba.port),
         # SFTP
         "CONSUME_SFTP_ENABLED": str(config.sftp.enabled).lower(),
         "CONSUME_SFTP_USERNAME": config.sftp.username,
@@ -1757,6 +1819,23 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
                           is_tailscale: bool = False) -> str:
     """Generate setup guide for Samba."""
     host = server_ip or "your-server-ip"
+    port = config.port
+    
+    # Build connection strings based on port
+    if port == 445:
+        # Standard port - simpler paths
+        win_path = f"\\\\{host}\\{config.share_name}"
+        mac_path = f"smb://{host}/{config.share_name}"
+        linux_path = f"//{host}/{config.share_name}"
+        linux_mount_opts = f"-o username={config.username},password={config.password}"
+        firewall_note = f"port {port}"
+    else:
+        # Non-standard port - need to specify port
+        win_path = f"\\\\{host}:{port}\\{config.share_name}"
+        mac_path = f"smb://{host}:{port}/{config.share_name}"
+        linux_path = f"//{host}/{config.share_name}"
+        linux_mount_opts = f"-o username={config.username},password={config.password},port={port}"
+        firewall_note = f"port {port} (non-standard)"
     
     security_note = ""
     if not is_tailscale and server_ip and not server_ip.startswith("100."):
@@ -1765,6 +1844,15 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
 ──────────────────
 You're using a public IP. For secure remote access, consider installing Tailscale!
 This ensures only your devices can access the share.
+"""
+    
+    port_note = ""
+    if port != 445:
+        port_note = f"""
+📝 PORT NOTE
+────────────
+This share uses port {port} instead of the standard SMB port 445.
+Some older systems may not support non-standard SMB ports.
 """
     
     return f"""
@@ -1777,6 +1865,7 @@ This ensures only your devices can access the share.
 │  📋 CREDENTIALS (save these):                                                │
 │                                                                              │
 │  Server:   {host:<65}│
+│  Port:     {str(port):<65}│
 │  Share:    {config.share_name:<65}│
 │  Username: {config.username:<65}│
 │  Password: {config.password:<65}│
@@ -1787,7 +1876,7 @@ This ensures only your devices can access the share.
 🪟 WINDOWS - Connect from File Explorer
     ────────────────────────────────────
     1. Open File Explorer
-    2. Click in the address bar and type: \\\\{host}\\{config.share_name}
+    2. Click in the address bar and type: {win_path}
     3. Press Enter
     4. When prompted for credentials:
        • Username: {config.username}
@@ -1797,25 +1886,25 @@ This ensures only your devices can access the share.
     💡 To add as a permanent drive letter:
        • Right-click "This PC" → "Map network drive"
        • Choose a letter (e.g., P: for Paperless)
-       • Enter: \\\\{host}\\{config.share_name}
+       • Enter: {win_path}
        • Check "Connect using different credentials"
 
 🍎 MAC - Connect from Finder
     ─────────────────────────
     1. Open Finder
     2. Press Cmd+K (or menu: Go → Connect to Server)
-    3. Enter: smb://{host}/{config.share_name}
+    3. Enter: {mac_path}
     4. Click Connect
     5. Enter credentials when prompted
 
 🐧 LINUX - Connect via File Manager
     ─────────────────────────────────
     GUI:  Files → Other Locations → "Connect to Server"
-          Enter: smb://{host}/{config.share_name}
+          Enter: {mac_path}
     
     Terminal:
-          sudo mount -t cifs //{host}/{config.share_name} /mnt/paperless \\
-            -o username={config.username},password={config.password}
+          sudo mount -t cifs {linux_path} /mnt/paperless \\
+            {linux_mount_opts}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1825,10 +1914,10 @@ This ensures only your devices can access the share.
 
 🔧 TROUBLESHOOTING
 ──────────────────
-• "Network path not found": Check server IP and firewall (port 445)
+• "Network path not found": Check server IP and firewall ({firewall_note})
 • "Access denied": Double-check username and password
 • Slow connection: Samba works best on local/Tailscale networks
-{security_note}"""
+{port_note}{security_note}"""
 
 
 def generate_sftp_guide(instance_name: str, config: SFTPConfig,
@@ -1926,7 +2015,7 @@ def get_consume_status(instance_name: str, config: ConsumeConfig) -> dict:
         },
         "samba": {
             "enabled": config.samba.enabled,
-            "available": is_samba_available(),
+            "available": is_samba_running(instance_name) if config.samba.enabled else False,
         },
         "sftp": {
             "enabled": config.sftp.enabled,

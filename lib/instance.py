@@ -288,10 +288,10 @@ def find_available_port(
     Returns:
         Available port number, or start_port as fallback
     """
-    if used_ports is None:
-        used_ports = set()
-    else:
-        used_ports = set(used_ports)
+    # Convert to set for efficient lookups
+    ports_to_skip: set[int] = set()
+    if used_ports is not None:
+        ports_to_skip = set(used_ports)
     
     # Optionally gather ports from existing instances
     if check_existing_instances:
@@ -308,12 +308,12 @@ def find_available_port(
                                 if line.startswith(key):
                                     port_val = line.split("=", 1)[1].strip()
                                     if port_val.isdigit():
-                                        used_ports.add(int(port_val))
+                                        ports_to_skip.add(int(port_val))
                     except Exception:
                         pass
     
     for port in range(start_port, start_port + max_tries):
-        if port in used_ports:
+        if port in ports_to_skip:
             continue
         if is_port_available(port):
             return port
@@ -455,11 +455,12 @@ def load_instance_config(instance: Instance) -> None:
     common.cfg.consume_syncthing_sync_port = instance.get_env_value("CONSUME_SYNCTHING_SYNC_PORT", "22000")
     common.cfg.consume_syncthing_gui_port = instance.get_env_value("CONSUME_SYNCTHING_GUI_PORT", "8384")
     
-    # Samba (consume input)
+    # Samba (consume input) - per-instance container
     common.cfg.consume_samba_enabled = instance.get_env_value("CONSUME_SAMBA_ENABLED", "false")
     common.cfg.consume_samba_share_name = instance.get_env_value("CONSUME_SAMBA_SHARE_NAME", "")
     common.cfg.consume_samba_username = instance.get_env_value("CONSUME_SAMBA_USERNAME", "")
     common.cfg.consume_samba_password = instance.get_env_value("CONSUME_SAMBA_PASSWORD", "")
+    common.cfg.consume_samba_port = instance.get_env_value("CONSUME_SAMBA_PORT", "445")
     
     # SFTP (consume input)
     common.cfg.consume_sftp_enabled = instance.get_env_value("CONSUME_SFTP_ENABLED", "false")
@@ -529,6 +530,7 @@ def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True, 
         common.cfg.consume_samba_share_name = ""
         common.cfg.consume_samba_username = ""
         common.cfg.consume_samba_password = ""
+        common.cfg.consume_samba_port = "445"
         common.cfg.consume_sftp_enabled = "false"
         common.cfg.consume_sftp_username = ""
         common.cfg.consume_sftp_password = ""
@@ -543,11 +545,12 @@ def load_backup_env_config(backup_env: dict, check_port_conflicts: bool = True, 
         common.cfg.consume_syncthing_sync_port = backup_env.get("CONSUME_SYNCTHING_SYNC_PORT", "22000")
         common.cfg.consume_syncthing_gui_port = backup_env.get("CONSUME_SYNCTHING_GUI_PORT", "8384")
         
-        # Samba
+        # Samba - per-instance container
         common.cfg.consume_samba_enabled = backup_env.get("CONSUME_SAMBA_ENABLED", "false")
         common.cfg.consume_samba_share_name = backup_env.get("CONSUME_SAMBA_SHARE_NAME", "")
         common.cfg.consume_samba_username = backup_env.get("CONSUME_SAMBA_USERNAME", "")
         common.cfg.consume_samba_password = backup_env.get("CONSUME_SAMBA_PASSWORD", "")
+        common.cfg.consume_samba_port = backup_env.get("CONSUME_SAMBA_PORT", "445")
         
         # SFTP - use potentially updated port
         common.cfg.consume_sftp_enabled = backup_env.get("CONSUME_SFTP_ENABLED", "false")
@@ -718,8 +721,7 @@ class InstanceManager:
         try:
             from lib.installer.consume import (
                 load_consume_config, stop_syncthing_container,
-                remove_samba_user, remove_samba_share, remove_sftp_user,
-                reload_samba_config
+                stop_samba, remove_sftp_user
             )
             
             config = load_consume_config(instance.env_file)
@@ -729,12 +731,10 @@ class InstanceManager:
                 say(f"Removing Syncthing container for {instance.name}...")
                 stop_syncthing_container(instance.name)
             
-            # Remove Samba share and user
+            # Stop and remove per-instance Samba container
             if config.samba.enabled:
-                say(f"Removing Samba share for {instance.name}...")
-                remove_samba_share(instance.name)
-                remove_samba_user(config.samba.username)
-                reload_samba_config()
+                say(f"Removing Samba container for {instance.name}...")
+                stop_samba(instance.name)
             
             # Remove SFTP user
             if config.sftp.enabled:

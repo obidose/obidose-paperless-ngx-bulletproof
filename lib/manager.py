@@ -1872,12 +1872,13 @@ class PaperlessManager:
                     ok("Syncthing will be enabled after instance creation")
                 
                 if "2" in consume_methods:
-                    # Enable Samba config
-                    from lib.installer.consume import generate_secure_password
+                    # Enable Samba config - per-instance container
+                    from lib.installer.consume import generate_secure_password, get_next_available_samba_port
                     common.cfg.consume_samba_enabled = "true"
                     common.cfg.consume_samba_share_name = f"paperless-{instance_name}"
                     common.cfg.consume_samba_username = f"pl-{instance_name}"
                     common.cfg.consume_samba_password = generate_secure_password()
+                    common.cfg.consume_samba_port = str(get_next_available_samba_port())
                     ok("Samba share will be enabled after instance creation")
                 
                 if "3" in consume_methods:
@@ -2023,23 +2024,22 @@ class PaperlessManager:
                 say("Setting up Samba share...")
                 try:
                     from lib.installer.consume import (
-                        start_samba_container, add_samba_user, write_samba_share_config,
-                        reload_samba_config, is_samba_available, SambaConfig
+                        start_samba, SambaConfig
                     )
+                    # Get samba port from common.cfg
+                    samba_port = int(getattr(common.cfg, "consume_samba_port", "445") or "445")
                     samba_config = SambaConfig(
                         enabled=True,
                         share_name=common.cfg.consume_samba_share_name,
                         username=common.cfg.consume_samba_username,
-                        password=common.cfg.consume_samba_password
+                        password=common.cfg.consume_samba_password,
+                        port=samba_port
                     )
-                    if not is_samba_available():
-                        start_samba_container()
-                        import time
-                        time.sleep(2)  # Wait for container to be ready
-                    add_samba_user(samba_config.username, samba_config.password, verbose=True)
-                    write_samba_share_config(instance_name, samba_config, Path(common.cfg.dir_consume))
-                    reload_samba_config()
-                    consume_services_started.append(f"Samba (\\\\<server>\\{common.cfg.consume_samba_share_name})")
+                    consume_path = Path(common.cfg.dir_consume)
+                    if start_samba(instance_name, samba_config, consume_path):
+                        consume_services_started.append(f"Samba (port {samba_port})")
+                    else:
+                        warn("Failed to start Samba container")
                 except Exception as e:
                     warn(f"Failed to set up Samba: {e}")
             
@@ -2261,7 +2261,7 @@ class PaperlessManager:
         
         from lib.installer.consume import (
             load_consume_config, get_syncthing_status, get_syncthing_device_id,
-            is_samba_available, is_sftp_available
+            is_samba_running, is_sftp_available
         )
         consume_config = load_consume_config(instance.env_file)
         
@@ -2286,14 +2286,15 @@ class PaperlessManager:
         else:
             print(box_line(f" Syncthing:      {colorize('○ Disabled', Colors.CYAN)}"))
         
-        # Samba - check actual container status
+        # Samba - check per-instance container status
         if consume_config.samba.enabled:
-            samba_running = is_samba_available()
+            samba_running = is_samba_running(instance.name)
             if samba_running:
                 print(box_line(f" Samba:          {colorize('● Running', Colors.GREEN)}"))
             else:
                 print(box_line(f" Samba:          {colorize('⚠ Not Running', Colors.YELLOW)}"))
             print(box_line(f"   Share:        {consume_config.samba.share_name}"))
+            print(box_line(f"   Port:         {consume_config.samba.port}"))
             print(box_line(f"   Username:     {consume_config.samba.username}"))
         else:
             print(box_line(f" Samba:          {colorize('○ Disabled', Colors.CYAN)}"))
@@ -2501,55 +2502,35 @@ class PaperlessManager:
     def _ensure_consume_services(self, instance: Instance) -> None:
         """Ensure consume services (Samba/SFTP) are running for an instance.
         
-        This is called after individual instance restore to ensure the shared
-        Samba/SFTP containers are running and configured for this instance.
+        This is called after individual instance restore to ensure the
+        per-instance Samba container and shared SFTP container are running.
         Syncthing is handled by restore.py directly.
         """
         try:
             from lib.installer.consume import (
-                load_consume_config, is_samba_available, is_sftp_available,
-                start_samba_container, add_samba_user, reload_samba_config,
-                regenerate_samba_config, start_sftp_container, restart_sftp_with_config
+                load_consume_config, is_samba_running, is_sftp_available,
+                start_samba, start_sftp_container, restart_sftp_with_config
             )
             
             config = load_consume_config(instance.env_file)
             
-            # Handle Samba
+            # Handle Samba - per-instance container
             if config.samba.enabled:
-                # Collect all instance configs for shared Samba config
-                instances_config = {}
-                data_roots = {}
-                for inst in self.instance_manager.list_instances():
-                    try:
-                        inst_config = load_consume_config(inst.env_file)
-                        instances_config[inst.name] = inst_config
-                        data_roots[inst.name] = inst.data_root
-                    except:
-                        pass
-                
-                # Regenerate Samba config with all instances
-                regenerate_samba_config(instances_config, data_roots)
-                
-                # Start container if needed
-                if not is_samba_available():
-                    start_samba_container()
-                    # Wait for container to be ready
-                    import time
-                    time.sleep(2)
-                
-                # Add user for this instance
-                if not add_samba_user(config.samba.username, config.samba.password, verbose=True):
-                    warn(f"Failed to add Samba user for {instance.name}")
+                consume_path = instance.data_root / "consume"
+                if not is_samba_running(instance.name):
+                    if start_samba(instance.name, config.samba, consume_path):
+                        ok(f"Samba started for {instance.name}")
+                    else:
+                        warn(f"Failed to start Samba for {instance.name}")
                 else:
-                    reload_samba_config()
-                    ok("Samba share configured")
+                    ok(f"Samba already running for {instance.name}")
             
-            # Handle SFTP
+            # Handle SFTP - shared container
             if config.sftp.enabled:
                 # Collect all instance configs for shared SFTP container
                 instances_config = {}
                 data_roots = {}
-                for inst in self.instance_manager.instances:
+                for inst in self.instance_manager.list_instances():
                     try:
                         inst_config = load_consume_config(inst.env_file)
                         instances_config[inst.name] = inst_config
@@ -2966,7 +2947,7 @@ class PaperlessManager:
         """Configure consume folder input methods (Syncthing, Samba, SFTP)."""
         from lib.installer.consume import (
             load_consume_config, get_syncthing_status, load_global_consume_config,
-            is_samba_available, is_sftp_available
+            is_samba_running, is_sftp_available
         )
         
         while True:
@@ -2999,12 +2980,13 @@ class PaperlessManager:
                 syncthing_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('Syncthing:', Colors.BOLD)} {syncthing_status}"))
             
-            # Samba status - check actual container, not just config
+            # Samba status - check per-instance container
             if config.samba.enabled:
-                samba_running = is_samba_available()
+                samba_running = is_samba_running(instance.name)
                 if samba_running:
                     ts_note = " (Tailscale only)" if global_config.samba_tailscale_only else ""
-                    samba_status = colorize(f"✓ RUNNING{ts_note}", Colors.GREEN)
+                    port_note = f" port {config.samba.port}"
+                    samba_status = colorize(f"✓ RUNNING{port_note}{ts_note}", Colors.GREEN)
                 else:
                     samba_status = colorize("⚠ NOT RUNNING", Colors.YELLOW)
             else:
@@ -3077,7 +3059,7 @@ class PaperlessManager:
         """Configure global network access settings for Samba/SFTP."""
         from lib.installer.consume import (
             load_global_consume_config, save_global_consume_config,
-            start_samba_container, start_sftp_container, is_samba_available, is_sftp_available
+            load_consume_config, start_samba, is_samba_running, is_sftp_available
         )
         from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
         
@@ -3150,10 +3132,16 @@ class PaperlessManager:
                 config.samba_tailscale_only = new_value
                 save_global_consume_config(config)
                 
-                # Restart Samba container if running to apply changes
-                if is_samba_available():
-                    say("Restarting Samba container to apply changes...")
-                    start_samba_container()
+                # Restart all Samba containers to apply network binding changes
+                say("Restarting Samba containers to apply changes...")
+                for inst in self.instance_manager.list_instances():
+                    try:
+                        inst_config = load_consume_config(inst.env_file)
+                        if inst_config.samba.enabled and is_samba_running(inst.name):
+                            consume_path = inst.data_root / "consume"
+                            start_samba(inst.name, inst_config.samba, consume_path)
+                    except Exception:
+                        pass
                 
                 if new_value:
                     ok("Samba restricted to Tailscale network only")
@@ -3831,33 +3819,32 @@ class PaperlessManager:
         input("\nPress Enter to continue...")
     
     def _toggle_samba(self, instance: Instance, config) -> None:
-        """Toggle Samba share for an instance."""
+        """Toggle Samba share for an instance (per-instance container)."""
         from lib.installer.consume import (
-            start_samba_container, remove_samba_user, add_samba_user,
-            write_samba_share_config, reload_samba_config, is_samba_available,
+            start_samba, stop_samba, is_samba_running, create_samba_config,
             SambaConfig, save_consume_config, generate_secure_password
         )
         
         if config.samba.enabled:
             # Disable
             print()
-            warn("This will remove the Samba share for this instance.")
+            warn("This will stop the Samba container for this instance.")
             print()
             
             if confirm("Disable Samba share?", False):
                 try:
-                    remove_samba_user(config.samba.username)
+                    stop_samba(instance.name)
                     config.samba.enabled = False
                     save_consume_config(config, instance.env_file)
                     self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "false")
-                    ok("Samba share removed")
+                    ok("Samba share stopped")
                 except Exception as e:
                     error(f"Failed to disable Samba: {e}")
         else:
             # Enable
             print()
             say("Samba provides Windows/macOS compatible file sharing.")
-            say("Users can map the consume folder as a network drive.")
+            say("Each instance gets its own dedicated Samba container.")
             print()
             
             if confirm("Enable Samba share?", True):
@@ -3878,47 +3865,40 @@ class PaperlessManager:
                         return
                     
                     consume_dir = instance.data_root / "consume"
-                    share_name = f"paperless-{instance.name}"
-                    username = f"pl-{instance.name}"
-                    password = generate_secure_password()
                     
-                    samba_config = SambaConfig(
-                        enabled=True,
-                        share_name=share_name,
-                        username=username,
-                        password=password
-                    )
+                    # Create new config with auto-assigned port
+                    samba_config = create_samba_config(instance.name)
                     
-                    # Ensure Samba container is running
-                    if not is_samba_available():
-                        start_samba_container()
-                        import time
-                        time.sleep(2)  # Wait for container to be ready
-                    
-                    # Add user and share
-                    add_samba_user(username, password, verbose=True)
-                    write_samba_share_config(instance.name, samba_config, consume_dir)
-                    reload_samba_config()
-                    
-                    config.samba = samba_config
-                    save_consume_config(config, instance.env_file)
-                    self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "true")
-                    self._update_instance_env(instance, "CONSUME_SAMBA_SHARE_NAME", share_name)
-                    self._update_instance_env(instance, "CONSUME_SAMBA_USERNAME", username)
-                    self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", password)
-                    
-                    ok(f"Samba share enabled!")
-                    if global_config.samba_tailscale_only:
-                        say(f"  Share: \\\\{ts_ip}\\{share_name} (Tailscale only)")
-                    elif ts_ip:
-                        say(f"  Share: \\\\{ts_ip}\\{share_name} (Tailscale)")
-                        say(f"         \\\\{local_ip}\\{share_name} (External)")
+                    # Start the per-instance Samba container
+                    if start_samba(instance.name, samba_config, consume_dir):
+                        config.samba = samba_config
+                        save_consume_config(config, instance.env_file)
+                        self._update_instance_env(instance, "CONSUME_SAMBA_ENABLED", "true")
+                        self._update_instance_env(instance, "CONSUME_SAMBA_SHARE_NAME", samba_config.share_name)
+                        self._update_instance_env(instance, "CONSUME_SAMBA_USERNAME", samba_config.username)
+                        self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", samba_config.password)
+                        self._update_instance_env(instance, "CONSUME_SAMBA_PORT", str(samba_config.port))
+                        
+                        ok(f"Samba share enabled on port {samba_config.port}!")
+                        
+                        # Build connection string based on port
+                        port_suffix = "" if samba_config.port == 445 else f":{samba_config.port}"
+                        
+                        if global_config.samba_tailscale_only and ts_ip:
+                            say(f"  Share: \\\\{ts_ip}{port_suffix}\\{samba_config.share_name} (Tailscale only)")
+                        elif ts_ip:
+                            say(f"  Share: \\\\{ts_ip}{port_suffix}\\{samba_config.share_name} (Tailscale)")
+                            if local_ip:
+                                say(f"         \\\\{local_ip}{port_suffix}\\{samba_config.share_name} (Local)")
+                        elif local_ip:
+                            say(f"  Share: \\\\{local_ip}{port_suffix}\\{samba_config.share_name}")
+                            say("  💡 Install Tailscale for secure remote access!")
+                        
+                        say(f"  Username: {samba_config.username}")
+                        say(f"  Password: {samba_config.password}")
+                        say("  Use 'View setup guides' for detailed instructions")
                     else:
-                        say(f"  Share: \\\\{local_ip}\\{share_name}")
-                        say("  💡 Install Tailscale for secure remote access!")
-                    say(f"  Username: {username}")
-                    say(f"  Password: {password}")
-                    say("  Use 'View setup guides' for detailed instructions")
+                        error("Failed to start Samba container")
                 except Exception as e:
                     error(f"Failed to enable Samba: {e}")
         
@@ -5682,21 +5662,26 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             self.instance_manager.load_instances()
             
             # ─── Start Consume Services (Samba/SFTP) ────────────────────────────
-            # These are shared containers that need to be started after instance restore
+            # Samba: per-instance containers, SFTP: shared container
+            # Initialize these before the block so they're available for the summary
+            need_samba = False
+            need_sftp = False
+            
             if consume_info.get("enabled") and restored_count > 0:
                 print()
                 say("Starting consume folder services...")
                 
                 from lib.installer.consume import (
-                    start_samba_container, start_sftp_container,
-                    is_samba_available, is_sftp_available,
-                    load_consume_config, regenerate_samba_config, add_samba_user,
-                    reload_samba_config
+                    start_samba, is_samba_running,
+                    start_sftp_container, is_sftp_available,
+                    load_consume_config, restart_sftp_with_config
                 )
                 
-                # Collect all instance configs for shared services
+                # Collect all instance configs for SFTP (shared container)
                 instances_config = {}
                 data_roots = {}
+                samba_started = 0
+                samba_failed = []
                 need_samba = False
                 need_sftp = False
                 
@@ -5706,41 +5691,27 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         instances_config[inst.name] = config
                         data_roots[inst.name] = inst.data_root
                         
+                        # Start per-instance Samba container if enabled
                         if config.samba.enabled:
                             need_samba = True
+                            say(f"  Starting Samba for {inst.name}...")
+                            consume_path = inst.data_root / "consume"
+                            if start_samba(inst.name, config.samba, consume_path):
+                                samba_started += 1
+                            else:
+                                samba_failed.append(inst.name)
+                        
                         if config.sftp.enabled:
                             need_sftp = True
                     except Exception as e:
                         warn(f"  Could not load config for {inst.name}: {e}")
                 
-                # Start Samba if any instance needs it
-                if need_samba:
-                    say("Configuring Samba shares...")
-                    # Regenerate complete smb.conf with all instances
-                    regenerate_samba_config(instances_config, data_roots)
-                    
-                    # Start container if needed
-                    if not is_samba_available():
-                        start_samba_container()
-                    
-                    # Wait a moment for container to be fully ready
-                    import time
-                    time.sleep(2)
-                    
-                    # Add users for each instance
-                    failed_users = []
-                    for inst_name, config in instances_config.items():
-                        if config.samba.enabled:
-                            if not add_samba_user(config.samba.username, config.samba.password, verbose=True):
-                                failed_users.append(inst_name)
-                    
-                    if failed_users:
-                        warn(f"  Failed to add Samba users for: {', '.join(failed_users)}")
-                        warn("  Run 'Disable/Enable Samba' for these instances to retry")
-                    
-                    # Reload config
-                    reload_samba_config()
-                    ok("Samba configured")
+                # Report Samba status
+                if samba_started > 0:
+                    ok(f"Samba started for {samba_started} instance(s)")
+                if samba_failed:
+                    warn(f"  Failed to start Samba for: {', '.join(samba_failed)}")
+                    warn("  Run 'Disable/Enable Samba' for these instances to retry")
                 
                 # Start SFTP if any instance needs it
                 if need_sftp:
@@ -5750,7 +5721,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         start_sftp_container(instances_config, data_roots)
                     else:
                         # Restart to pick up new users
-                        from lib.installer.consume import restart_sftp_with_config
                         restart_sftp_with_config(instances_config, data_roots)
                     ok("SFTP configured")
             

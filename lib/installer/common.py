@@ -279,6 +279,7 @@ class Config:
     consume_samba_share_name: str = os.environ.get("CONSUME_SAMBA_SHARE_NAME", "")
     consume_samba_username: str = os.environ.get("CONSUME_SAMBA_USERNAME", "")
     consume_samba_password: str = os.environ.get("CONSUME_SAMBA_PASSWORD", "")
+    consume_samba_port: str = os.environ.get("CONSUME_SAMBA_PORT", "445")
     
     # SFTP (Tailscale + SSH file transfer)
     consume_sftp_enabled: str = os.environ.get("CONSUME_SFTP_ENABLED", "false")
