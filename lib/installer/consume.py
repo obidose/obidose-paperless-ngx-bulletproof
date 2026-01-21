@@ -1103,31 +1103,58 @@ def regenerate_samba_config(instances_config: dict[str, ConsumeConfig],
     return True
 
 
-def add_samba_user(username: str, password: str) -> bool:
-    """Add a user to the Samba container."""
+def add_samba_user(username: str, password: str, verbose: bool = False) -> bool:
+    """Add a user to the Samba container.
+    
+    Args:
+        username: The username to add
+        password: The password for the user
+        verbose: If True, print detailed error messages
+    
+    Returns:
+        True if user was added successfully, False otherwise
+    """
     if not is_samba_available():
-        warn("Samba container not running")
+        if verbose:
+            warn("Samba container not running")
         return False
     
     try:
         # Add system user
-        subprocess.run(
+        user_result = subprocess.run(
             ["docker", "exec", SAMBA_CONTAINER_NAME, 
              "adduser", "-D", "-H", username],
             capture_output=True,
+            text=True,
             check=False
         )
+        
+        if user_result.returncode != 0 and verbose:
+            # User might already exist, which is fine
+            if "already exists" not in user_result.stderr.lower():
+                warn(f"  Could not add system user {username}: {user_result.stderr.strip()}")
         
         # Set Samba password
         result = subprocess.run(
             ["docker", "exec", "-i", SAMBA_CONTAINER_NAME,
              "sh", "-c", f"echo -e '{password}\\n{password}' | smbpasswd -a -s {username}"],
             capture_output=True,
+            text=True,
             check=False
         )
         
-        return result.returncode == 0
-    except:
+        if result.returncode != 0:
+            if verbose:
+                error(f"  Failed to add Samba user {username}: {result.stderr.strip()}")
+            return False
+        
+        if verbose:
+            say(f"  Added Samba user: {username}")
+        return True
+        
+    except Exception as e:
+        if verbose:
+            error(f"  Exception adding Samba user {username}: {e}")
         return False
 
 

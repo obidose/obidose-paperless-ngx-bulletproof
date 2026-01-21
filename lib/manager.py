@@ -2034,7 +2034,9 @@ class PaperlessManager:
                     )
                     if not is_samba_available():
                         start_samba_container()
-                    add_samba_user(samba_config.username, samba_config.password)
+                        import time
+                        time.sleep(2)  # Wait for container to be ready
+                    add_samba_user(samba_config.username, samba_config.password, verbose=True)
                     write_samba_share_config(instance_name, samba_config, Path(common.cfg.dir_consume))
                     reload_samba_config()
                     consume_services_started.append(f"Samba (\\\\<server>\\{common.cfg.consume_samba_share_name})")
@@ -2517,7 +2519,7 @@ class PaperlessManager:
                 # Collect all instance configs for shared Samba config
                 instances_config = {}
                 data_roots = {}
-                for inst in self.instance_manager.instances:
+                for inst in self.instance_manager.list_instances():
                     try:
                         inst_config = load_consume_config(inst.env_file)
                         instances_config[inst.name] = inst_config
@@ -2531,11 +2533,16 @@ class PaperlessManager:
                 # Start container if needed
                 if not is_samba_available():
                     start_samba_container()
+                    # Wait for container to be ready
+                    import time
+                    time.sleep(2)
                 
                 # Add user for this instance
-                add_samba_user(config.samba.username, config.samba.password)
-                reload_samba_config()
-                ok("Samba share configured")
+                if not add_samba_user(config.samba.username, config.samba.password, verbose=True):
+                    warn(f"Failed to add Samba user for {instance.name}")
+                else:
+                    reload_samba_config()
+                    ok("Samba share configured")
             
             # Handle SFTP
             if config.sftp.enabled:
@@ -3885,9 +3892,11 @@ class PaperlessManager:
                     # Ensure Samba container is running
                     if not is_samba_available():
                         start_samba_container()
+                        import time
+                        time.sleep(2)  # Wait for container to be ready
                     
                     # Add user and share
-                    add_samba_user(username, password)
+                    add_samba_user(username, password, verbose=True)
                     write_samba_share_config(instance.name, samba_config, consume_dir)
                     reload_samba_config()
                     
@@ -5714,10 +5723,20 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     if not is_samba_available():
                         start_samba_container()
                     
+                    # Wait a moment for container to be fully ready
+                    import time
+                    time.sleep(2)
+                    
                     # Add users for each instance
+                    failed_users = []
                     for inst_name, config in instances_config.items():
                         if config.samba.enabled:
-                            add_samba_user(config.samba.username, config.samba.password)
+                            if not add_samba_user(config.samba.username, config.samba.password, verbose=True):
+                                failed_users.append(inst_name)
+                    
+                    if failed_users:
+                        warn(f"  Failed to add Samba users for: {', '.join(failed_users)}")
+                        warn("  Run 'Disable/Enable Samba' for these instances to retry")
                     
                     # Reload config
                     reload_samba_config()
