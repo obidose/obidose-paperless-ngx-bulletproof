@@ -3027,13 +3027,14 @@ class PaperlessManager:
                 if config.syncthing.enabled:
                     print(f"  {colorize('4)', Colors.BOLD)} Manage Syncthing →")
                 if config.samba.enabled:
-                    print(f"  {colorize('5)', Colors.BOLD)} View Samba credentials")
+                    print(f"  {colorize('5)', Colors.BOLD)} Manage Samba →")
                 if config.sftp.enabled:
                     print(f"  {colorize('6)', Colors.BOLD)} View SFTP credentials")
                 print()
             
-            print(colorize("  ── Settings ──", Colors.CYAN))
-            print(f"  {colorize('7)', Colors.BOLD)} Network access settings (global)")
+            # SFTP is the only global service now
+            print(colorize("  ── Global Settings ──", Colors.CYAN))
+            print(f"  {colorize('7)', Colors.BOLD)} SFTP network access (affects all instances)")
             print()
             
             print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
@@ -3052,11 +3053,11 @@ class PaperlessManager:
             elif choice == "4" and config.syncthing.enabled:
                 self._manage_syncthing_menu(instance, config)
             elif choice == "5" and config.samba.enabled:
-                self._show_samba_credentials(instance, config)
+                self._manage_samba_menu(instance, config)
             elif choice == "6" and config.sftp.enabled:
                 self._show_sftp_credentials(instance, config)
             elif choice == "7":
-                self._global_consume_settings_menu()
+                self._sftp_network_settings_menu()
             else:
                 warn("Invalid option")
     
@@ -3639,6 +3640,353 @@ class PaperlessManager:
         
         input("\nPress Enter to continue...")
     
+    def _manage_samba_menu(self, instance: Instance, config) -> None:
+        """Samba management submenu with live status dashboard."""
+        from lib.installer.consume import (
+            is_samba_running, restart_samba, stop_samba, start_samba,
+            generate_samba_guide, load_global_consume_config, save_global_consume_config,
+            get_samba_container_name, get_instance_puid_pgid
+        )
+        from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
+        
+        while True:
+            print_header(f"Manage Samba: {instance.name}")
+            
+            ts_ip = get_tailscale_ip()
+            local_ip = get_local_ip()
+            global_config = load_global_consume_config()
+            container_name = get_samba_container_name(instance.name)
+            
+            # ── Live Dashboard ──
+            box_line, box_width = create_box_helper(80)
+            print(draw_box_top(box_width))
+            print(box_line(colorize(" SAMBA STATUS DASHBOARD", Colors.BOLD)))
+            print(draw_box_divider(box_width))
+            
+            # Container status
+            running = is_samba_running(instance.name)
+            if running:
+                # Get uptime if possible
+                try:
+                    result = subprocess.run(
+                        ["docker", "inspect", "--format", "{{.State.StartedAt}}", container_name],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        from datetime import datetime
+                        started = result.stdout.strip()[:19]
+                        started_dt = datetime.fromisoformat(started.replace('T', ' '))
+                        uptime = datetime.now() - started_dt
+                        uptime_str = f"{uptime.days}d {uptime.seconds // 3600}h" if uptime.days else f"{uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m"
+                        container_status = colorize(f"● Running (uptime: {uptime_str})", Colors.GREEN)
+                    else:
+                        container_status = colorize("● Running", Colors.GREEN)
+                except:
+                    container_status = colorize("● Running", Colors.GREEN)
+            else:
+                container_status = colorize("✗ Stopped", Colors.RED)
+            print(box_line(f" Container:  {container_status}"))
+            
+            # Port
+            port = config.samba.port or 445
+            print(box_line(f" Port:       {port}"))
+            
+            # Network binding
+            if global_config.samba_tailscale_only:
+                bind_mode = colorize("Tailscale only", Colors.GREEN) + " (most secure)"
+            else:
+                bind_mode = colorize("All networks", Colors.YELLOW) + " (external + Tailscale)"
+            print(box_line(f" Binding:    {bind_mode}"))
+            
+            print(draw_box_divider(box_width))
+            
+            # Connection info
+            print(box_line(colorize(" CONNECTION INFO", Colors.BOLD)))
+            share_name = config.samba.share_name or f"paperless-{instance.name}"
+            port_suffix = "" if port == 445 else f":{port}"
+            
+            if global_config.samba_tailscale_only:
+                if ts_ip:
+                    print(box_line(f" Share:      \\\\{ts_ip}{port_suffix}\\{share_name}"))
+                else:
+                    print(box_line(f" Share:      {colorize('Tailscale not connected!', Colors.RED)}"))
+            else:
+                if ts_ip:
+                    print(box_line(f" Share:      \\\\{ts_ip}{port_suffix}\\{share_name} (Tailscale)"))
+                if local_ip:
+                    label = "             " if ts_ip else " Share:      "
+                    print(box_line(f"{label}\\\\{local_ip}{port_suffix}\\{share_name} (Local)"))
+            
+            print(box_line(f" Username:   {config.samba.username}"))
+            print(box_line(f" Password:   {config.samba.password}"))
+            
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # Menu options
+            print(colorize("  ── Actions ──", Colors.CYAN))
+            print(f"  {colorize('1)', Colors.BOLD)} View setup guide")
+            print(f"  {colorize('2)', Colors.BOLD)} Regenerate password")
+            print(f"  {colorize('3)', Colors.BOLD)} Restart container")
+            print(f"  {colorize('4)', Colors.BOLD)} View logs")
+            print()
+            print(colorize("  ── Network ──", Colors.CYAN))
+            if global_config.samba_tailscale_only:
+                print(f"  {colorize('5)', Colors.BOLD)} Allow external access (currently Tailscale-only)")
+            else:
+                print(f"  {colorize('5)', Colors.BOLD)} Restrict to Tailscale only (currently all networks)")
+            print()
+            print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self._show_samba_guide(instance, config)
+            elif choice == "2":
+                self._regenerate_samba_password(instance, config)
+            elif choice == "3":
+                self._restart_samba(instance, config)
+            elif choice == "4":
+                self._view_samba_logs(instance, config)
+            elif choice == "5":
+                self._toggle_samba_network_mode(instance, config, global_config)
+            else:
+                warn("Invalid option")
+    
+    def _show_samba_guide(self, instance: Instance, config) -> None:
+        """Show Samba setup guide."""
+        from lib.installer.consume import generate_samba_guide, load_global_consume_config
+        from lib.installer.tailscale import get_ip as get_tailscale_ip
+        
+        ts_ip = get_tailscale_ip()
+        local_ip = get_local_ip()
+        global_config = load_global_consume_config()
+        
+        # Show appropriate IP based on global tailscale_only setting
+        if global_config.samba_tailscale_only:
+            if ts_ip:
+                display_ip = ts_ip
+                is_tailscale = True
+            else:
+                print()
+                warn("Samba is configured for Tailscale-only, but Tailscale is not connected!")
+                print()
+                display_ip = "tailscale-ip"
+                is_tailscale = True
+        else:
+            display_ip = ts_ip or local_ip
+            is_tailscale = bool(ts_ip)
+        
+        guide = generate_samba_guide(instance.name, config.samba, display_ip, is_tailscale=is_tailscale)
+        print(guide)
+        
+        # Show both IPs if not tailscale_only and both available
+        if not global_config.samba_tailscale_only and ts_ip:
+            port_suffix = "" if config.samba.port == 445 else f":{config.samba.port}"
+            print(f"  Also accessible via external IP: \\\\{local_ip}{port_suffix}\\{config.samba.share_name}")
+            print()
+        elif not global_config.samba_tailscale_only and not ts_ip:
+            print(colorize("  💡 Install Tailscale for secure remote access!", Colors.CYAN))
+            print()
+        
+        input("Press Enter to continue...")
+    
+    def _regenerate_samba_password(self, instance: Instance, config) -> None:
+        """Regenerate Samba password."""
+        from lib.installer.consume import (
+            generate_secure_password, save_consume_config, restart_samba,
+            get_instance_puid_pgid
+        )
+        
+        print()
+        warn("This will generate a new password.")
+        say("You'll need to update any saved credentials on client devices.")
+        print()
+        
+        if confirm("Regenerate Samba password?", False):
+            new_password = generate_secure_password()
+            config.samba.password = new_password
+            save_consume_config(config, instance.env_file)
+            self._update_instance_env(instance, "CONSUME_SAMBA_PASSWORD", new_password)
+            
+            # Restart container to apply new password
+            consume_path = instance.data_root / "consume"
+            puid, pgid = get_instance_puid_pgid(instance.name)
+            restart_samba(instance.name, config.samba, consume_path, puid=puid, pgid=pgid)
+            
+            print()
+            ok("Password regenerated!")
+            say(f"New password: {new_password}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _restart_samba(self, instance: Instance, config) -> None:
+        """Restart Samba container."""
+        from lib.installer.consume import restart_samba, get_instance_puid_pgid
+        
+        say("Restarting Samba container...")
+        consume_path = instance.data_root / "consume"
+        puid, pgid = get_instance_puid_pgid(instance.name)
+        
+        if restart_samba(instance.name, config.samba, consume_path, puid=puid, pgid=pgid):
+            ok("Samba container restarted")
+        else:
+            error("Failed to restart Samba")
+        
+        input("\nPress Enter to continue...")
+    
+    def _view_samba_logs(self, instance: Instance, config) -> None:
+        """View Samba container logs."""
+        from lib.installer.consume import get_samba_container_name
+        
+        print_header("Samba Logs")
+        
+        container_name = get_samba_container_name(instance.name)
+        try:
+            result = subprocess.run(
+                ["docker", "logs", "--tail", "50", container_name],
+                capture_output=True, text=True
+            )
+            logs = result.stdout + result.stderr
+            for line in logs.split("\n"):
+                if line.strip():
+                    if "error" in line.lower() or "failed" in line.lower():
+                        print(colorize(line, Colors.RED))
+                    elif "warning" in line.lower():
+                        print(colorize(line, Colors.YELLOW))
+                    else:
+                        print(line)
+        except Exception as e:
+            error(f"Could not get logs: {e}")
+        
+        input("\nPress Enter to continue...")
+    
+    def _toggle_samba_network_mode(self, instance: Instance, config, global_config) -> None:
+        """Toggle Samba network binding (Tailscale-only vs all networks)."""
+        from lib.installer.consume import (
+            save_global_consume_config, is_samba_running, start_samba,
+            get_instance_puid_pgid, load_consume_config
+        )
+        from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
+        
+        ts_ip = get_tailscale_ip()
+        new_value = not global_config.samba_tailscale_only
+        
+        if new_value and not ts_ip:
+            print()
+            error("Cannot enable Tailscale-only mode: Tailscale is not connected!")
+            if not is_tailscale_installed():
+                say("Install Tailscale first, then try again.")
+            else:
+                say("Connect to Tailscale first, then try again.")
+            input("\nPress Enter to continue...")
+            return
+        
+        global_config.samba_tailscale_only = new_value
+        save_global_consume_config(global_config)
+        
+        # Restart all Samba containers to apply network binding changes
+        say("Restarting Samba containers to apply changes...")
+        for inst in self.instance_manager.list_instances():
+            try:
+                inst_config = load_consume_config(inst.env_file)
+                if inst_config.samba.enabled and is_samba_running(inst.name):
+                    consume_path = inst.data_root / "consume"
+                    puid, pgid = get_instance_puid_pgid(inst.name)
+                    start_samba(inst.name, inst_config.samba, consume_path, puid=puid, pgid=pgid)
+            except Exception:
+                pass
+        
+        if new_value:
+            ok("Samba restricted to Tailscale network only")
+        else:
+            ok("Samba accessible from all networks")
+        input("\nPress Enter to continue...")
+    
+    def _sftp_network_settings_menu(self) -> None:
+        """SFTP network access settings (global - affects all instances)."""
+        from lib.installer.consume import load_global_consume_config, save_global_consume_config, is_sftp_available
+        from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
+        
+        while True:
+            print_header("SFTP Network Settings (Global)")
+            
+            ts_ip = get_tailscale_ip()
+            config = load_global_consume_config()
+            
+            # Current status dashboard
+            box_line, box_width = create_box_helper(70)
+            print(draw_box_top(box_width))
+            print(box_line(colorize(" SFTP NETWORK SETTINGS", Colors.BOLD)))
+            print(draw_box_divider(box_width))
+            
+            # Tailscale status
+            if ts_ip:
+                ts_status = colorize(f"● Connected ({ts_ip})", Colors.GREEN)
+            elif is_tailscale_installed():
+                ts_status = colorize("○ Installed but not connected", Colors.YELLOW)
+            else:
+                ts_status = colorize("✗ Not installed", Colors.RED)
+            print(box_line(f" Tailscale:   {ts_status}"))
+            
+            # SFTP access mode
+            if config.sftp_tailscale_only:
+                sftp_mode = colorize("Tailscale only", Colors.GREEN) + " (most secure)"
+            else:
+                sftp_mode = colorize("All networks", Colors.YELLOW) + " (external + Tailscale)"
+            print(box_line(f" SFTP:        {sftp_mode}"))
+            
+            print(draw_box_divider(box_width))
+            print(box_line(" Note: SFTP is a shared container serving all instances."))
+            print(box_line(" Changing this setting affects SFTP for ALL instances."))
+            print(draw_box_bottom(box_width))
+            print()
+            
+            # Menu
+            print(colorize("  ── Access Mode ──", Colors.CYAN))
+            sftp_action = "Allow external access" if config.sftp_tailscale_only else "Restrict to Tailscale only"
+            print(f"  {colorize('1)', Colors.BOLD)} {sftp_action}")
+            print()
+            print(f"  {colorize('0)', Colors.BOLD)} {colorize('◀ Back', Colors.CYAN)}")
+            print()
+            
+            choice = get_input("Select option", "")
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                # Toggle SFTP tailscale_only
+                new_value = not config.sftp_tailscale_only
+                if new_value and not ts_ip:
+                    print()
+                    error("Cannot enable Tailscale-only mode: Tailscale is not connected!")
+                    if not is_tailscale_installed():
+                        say("Install Tailscale first, then try again.")
+                    else:
+                        say("Connect to Tailscale first, then try again.")
+                    input("\nPress Enter to continue...")
+                    continue
+                
+                config.sftp_tailscale_only = new_value
+                save_global_consume_config(config)
+                
+                # Would need to restart SFTP container - but need instance configs
+                # For now just show message
+                if is_sftp_available():
+                    warn("Restart SFTP container manually to apply changes")
+                    say("(Disable and re-enable SFTP from any instance)")
+                
+                if new_value:
+                    ok("SFTP restricted to Tailscale network only")
+                else:
+                    ok("SFTP accessible from all networks")
+                input("\nPress Enter to continue...")
+            else:
+                warn("Invalid option")
+
     def _show_samba_credentials(self, instance: Instance, config) -> None:
         """Show Samba credentials and connection info."""
         from lib.installer.consume import generate_samba_guide, load_global_consume_config

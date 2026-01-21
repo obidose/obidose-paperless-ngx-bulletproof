@@ -1046,25 +1046,30 @@ SAMBA_ALT_PORT_START = 4451  # Start of alternative ports
 
 
 def get_instance_puid_pgid(instance_name: str) -> tuple[int, int]:
-    """Get PUID/PGID from an instance's .env file.
+    """Get the UID/GID that Paperless actually runs as.
+    
+    Paperless-NGX uses USERMAP_UID/USERMAP_GID (not PUID/PGID) with a default of 1000.
+    This is critical for Samba file permissions - files must be owned by the
+    same UID that Paperless runs as, or Paperless won't be able to process them.
     
     Returns:
-        Tuple of (puid, pgid), defaults to (1000, 1000) if not found
+        Tuple of (uid, gid), defaults to (1000, 1000) which is Paperless default
     """
     env_file = Path(f"/home/docker/{instance_name}-setup/.env")
-    puid, pgid = 1000, 1000
+    uid, gid = 1000, 1000  # Paperless-NGX default
     
     if env_file.exists():
         try:
             for line in env_file.read_text().splitlines():
-                if line.startswith("PUID="):
-                    puid = int(line.split("=", 1)[1].strip())
-                elif line.startswith("PGID="):
-                    pgid = int(line.split("=", 1)[1].strip())
+                # Paperless-NGX uses USERMAP_UID/USERMAP_GID (not PUID/PGID)
+                if line.startswith("USERMAP_UID="):
+                    uid = int(line.split("=", 1)[1].strip())
+                elif line.startswith("USERMAP_GID="):
+                    gid = int(line.split("=", 1)[1].strip())
         except Exception:
             pass
     
-    return puid, pgid
+    return uid, gid
 
 
 def get_samba_container_name(instance_name: str) -> str:
@@ -1854,15 +1859,19 @@ def generate_samba_guide(instance_name: str, config: SambaConfig,
         win_path = f"\\\\{host}\\{config.share_name}"
         mac_path = f"smb://{host}/{config.share_name}"
         linux_path = f"//{host}/{config.share_name}"
-        linux_mount_opts = f"-o username={config.username},password={config.password}"
+        linux_mount_opts = f"username={config.username},password={config.password}"
         firewall_note = f"port {port}"
     else:
         # Non-standard port - need to specify port
         win_path = f"\\\\{host}:{port}\\{config.share_name}"
         mac_path = f"smb://{host}:{port}/{config.share_name}"
         linux_path = f"//{host}/{config.share_name}"
-        linux_mount_opts = f"-o username={config.username},password={config.password},port={port}"
+        linux_mount_opts = f"username={config.username},password={config.password},port={port}"
         firewall_note = f"port {port} (non-standard)"
+    
+    # Full mount command with proper permissions for writing
+    linux_mount_cmd = f"""sudo mount -t cifs {linux_path} /mnt/paperless \\
+            -o {linux_mount_opts},uid=$(id -u),gid=$(id -g),file_mode=0664,dir_mode=0775"""
     
     security_note = ""
     if not is_tailscale and server_ip and not server_ip.startswith("100."):
@@ -1924,14 +1933,18 @@ Some older systems may not support non-standard SMB ports.
     4. Click Connect
     5. Enter credentials when prompted
 
-🐧 LINUX - Connect via File Manager
-    ─────────────────────────────────
-    GUI:  Files → Other Locations → "Connect to Server"
+🐧 LINUX - Connect via File Manager or Terminal
+    ────────────────────────────────────────────
+    GUI (Nautilus/Dolphin/etc):
+          Files → Other Locations → "Connect to Server"
           Enter: {mac_path}
     
-    Terminal:
-          sudo mount -t cifs {linux_path} /mnt/paperless \\
-            {linux_mount_opts}
+    Terminal mount (recommended for scripts):
+          sudo mkdir -p /mnt/paperless
+          {linux_mount_cmd}
+    
+    💡 The uid/gid/mode options ensure you can write files as your user.
+       Add to /etc/fstab for persistent mounts.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1943,6 +1956,7 @@ Some older systems may not support non-standard SMB ports.
 ──────────────────
 • "Network path not found": Check server IP and firewall ({firewall_note})
 • "Access denied": Double-check username and password
+• "Permission denied" on Linux: Use the mount options shown above
 • Slow connection: Samba works best on local/Tailscale networks
 {port_note}{security_note}"""
 
