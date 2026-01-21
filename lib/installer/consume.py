@@ -1151,10 +1151,23 @@ def add_samba_user(username: str, password: str, verbose: bool = False) -> bool:
         if verbose:
             say(f"  Added Samba user: {username}")
         
-        # Verify user was actually added
+        # Verify user was actually added by testing authentication
+        # Wait a moment for the password database to sync
+        import time
+        time.sleep(1)
+        
         if not verify_samba_user_exists(username):
             if verbose:
-                error(f"  User {username} was not found after adding (check container logs)")
+                error(f"  User {username} was not found after adding")
+                error("  This might indicate:")
+                error("    - Samba password database is not persisted")
+                error("    - Container needs to be recreated")
+                say("  Checking current Samba users...")
+                users = list_samba_users()
+                if users:
+                    say(f"  Found users: {', '.join(users)}")
+                else:
+                    error("  No users found in Samba database!")
             return False
             
         return True
@@ -1342,12 +1355,18 @@ def start_samba_container(data_root_base: Path = Path("/home/docker")) -> bool:
     # Build port mapping
     port_mapping = f"{bind_ip}:445:445" if bind_ip else "445:445"
     
+    # Create persistent directory for Samba's password database
+    # This ensures users persist across container restarts
+    SAMBA_DATA_DIR = SAMBA_CONFIG_DIR / "data"
+    SAMBA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
     try:
         result = subprocess.run([
             "docker", "run", "-d",
             "--name", SAMBA_CONTAINER_NAME,
             "-p", port_mapping,
             "-v", f"{SAMBA_CONFIG_DIR}/smb.conf:/etc/samba/smb.conf:ro",
+            "-v", f"{SAMBA_DATA_DIR}:/var/lib/samba:rw",  # Persist password database
             "-v", f"{data_root_base}:/home/docker",
             "--restart", "unless-stopped",
             "dperson/samba"
