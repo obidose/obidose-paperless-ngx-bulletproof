@@ -5423,27 +5423,29 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             say("Restoring instance data from selected backups...")
             print()
             
-            # CRITICAL: Ensure the library is installed BEFORE any restore operations
-            # After a nuke, /usr/local/lib/paperless-bulletproof/lib may not exist
+            # CRITICAL: Ensure the library is installed/updated BEFORE any restore operations
+            # ALWAYS update to ensure we have the latest code (fixes bug where old lib persists)
             lib_install_dir = Path("/usr/local/lib/paperless-bulletproof/lib")
-            if not lib_install_dir.exists():
-                say("Installing library (required for restore operations)...")
-                # Find where we're running from and copy lib folder
-                current_lib = Path(__file__).resolve().parent
-                lib_install_dir.parent.mkdir(parents=True, exist_ok=True)
-                import shutil
-                if current_lib.exists():
-                    shutil.copytree(current_lib, lib_install_dir)
-                    # Also copy paperless.py
-                    paperless_src = current_lib.parent / "paperless.py"
-                    paperless_dst = lib_install_dir.parent / "paperless.py"
-                    if paperless_src.exists():
-                        shutil.copy2(paperless_src, paperless_dst)
-                        paperless_dst.chmod(0o755)
-                    ok("Library installed")
-                else:
-                    error(f"Cannot find source library at {current_lib}")
-                    raise Exception("Library installation failed - cannot proceed with restore")
+            say("Updating library (required for restore operations)...")
+            # Find where we're running from and copy lib folder
+            current_lib = Path(__file__).resolve().parent
+            lib_install_dir.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            if current_lib.exists():
+                # Remove old library if it exists (ensures clean update)
+                if lib_install_dir.exists():
+                    shutil.rmtree(lib_install_dir)
+                shutil.copytree(current_lib, lib_install_dir)
+                # Also copy paperless.py
+                paperless_src = current_lib.parent / "paperless.py"
+                paperless_dst = lib_install_dir.parent / "paperless.py"
+                if paperless_src.exists():
+                    shutil.copy2(paperless_src, paperless_dst)
+                    paperless_dst.chmod(0o755)
+                ok("Library updated")
+            else:
+                error(f"Cannot find source library at {current_lib}")
+                raise Exception("Library installation failed - cannot proceed with restore")
             
             sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
             from lib.installer import common, files
