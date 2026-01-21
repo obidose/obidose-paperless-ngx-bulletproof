@@ -210,6 +210,18 @@ def main() -> None:
                     syncthing_config_dir = STACK_DIR / "syncthing-config"
                     syncthing_config_dir.mkdir(parents=True, exist_ok=True)
                     extract_tar(syncthing_tarfile, STACK_DIR)
+                    
+                    # CRITICAL: Set ownership to match Syncthing container (UID 1000)
+                    # This ensures the container can read its config.xml with device/folder settings
+                    try:
+                        subprocess.run(
+                            ["chown", "-R", "1000:1000", str(syncthing_config_dir)],
+                            capture_output=True,
+                            check=True
+                        )
+                    except subprocess.CalledProcessError as e:
+                        warn(f"Could not set syncthing-config ownership: {e}")
+                    
                     ok("Restored syncthing-config")
             
             # Handle docker-compose.yml restoration

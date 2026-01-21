@@ -1150,12 +1150,78 @@ def add_samba_user(username: str, password: str, verbose: bool = False) -> bool:
         
         if verbose:
             say(f"  Added Samba user: {username}")
+        
+        # Verify user was actually added
+        if not verify_samba_user_exists(username):
+            if verbose:
+                error(f"  User {username} was not found after adding (check container logs)")
+            return False
+            
         return True
         
     except Exception as e:
         if verbose:
             error(f"  Exception adding Samba user {username}: {e}")
         return False
+
+
+def verify_samba_user_exists(username: str) -> bool:
+    """Check if a Samba user exists in the container's password database.
+    
+    Args:
+        username: The username to check
+        
+    Returns:
+        True if user exists in Samba password database, False otherwise
+    """
+    if not is_samba_available():
+        return False
+    
+    try:
+        result = subprocess.run(
+            ["docker", "exec", SAMBA_CONTAINER_NAME, "pdbedit", "-L"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0:
+            # pdbedit -L outputs: username:uid:Full Name
+            return any(line.startswith(f"{username}:") for line in result.stdout.splitlines())
+        
+        return False
+    except Exception:
+        return False
+
+
+def list_samba_users() -> list[str]:
+    """Get list of all Samba users in the container.
+    
+    Returns:
+        List of usernames configured in Samba
+    """
+    if not is_samba_available():
+        return []
+    
+    try:
+        result = subprocess.run(
+            ["docker", "exec", SAMBA_CONTAINER_NAME, "pdbedit", "-L"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0:
+            # Parse username from "username:uid:Full Name" format
+            users = []
+            for line in result.stdout.splitlines():
+                if ':' in line:
+                    users.append(line.split(':')[0])
+            return users
+        
+        return []
+    except Exception:
+        return []
 
 
 def remove_samba_user(username: str) -> bool:
