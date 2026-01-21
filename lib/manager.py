@@ -3075,7 +3075,8 @@ class PaperlessManager:
         """Configure global network access settings for Samba/SFTP."""
         from lib.installer.consume import (
             load_global_consume_config, save_global_consume_config,
-            load_consume_config, start_samba, is_samba_running, is_sftp_available
+            load_consume_config, start_samba, is_samba_running, is_sftp_available,
+            get_instance_puid_pgid
         )
         from lib.installer.tailscale import get_ip as get_tailscale_ip, is_tailscale_installed
         
@@ -3155,8 +3156,7 @@ class PaperlessManager:
                         inst_config = load_consume_config(inst.env_file)
                         if inst_config.samba.enabled and is_samba_running(inst.name):
                             consume_path = inst.data_root / "consume"
-                            puid = int(inst.get_env_value("PUID", "1000"))
-                            pgid = int(inst.get_env_value("PGID", "1000"))
+                            puid, pgid = get_instance_puid_pgid(inst.name)
                             start_samba(inst.name, inst_config.samba, consume_path, puid=puid, pgid=pgid)
                     except Exception:
                         pass
@@ -4234,9 +4234,9 @@ class PaperlessManager:
                     # Create new config with auto-assigned port
                     samba_config = create_samba_config(instance.name)
                     
-                    # Get PUID/PGID from instance
-                    puid = int(instance.get_env_value("PUID", "1000"))
-                    pgid = int(instance.get_env_value("PGID", "1000"))
+                    # Get UID/GID that Paperless actually uses (not PUID from env)
+                    from lib.installer.consume import get_instance_puid_pgid
+                    puid, pgid = get_instance_puid_pgid(instance.name)
                     
                     # Start the per-instance Samba container
                     if start_samba(instance.name, samba_config, consume_dir, puid=puid, pgid=pgid):
@@ -6043,7 +6043,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 from lib.installer.consume import (
                     start_samba, is_samba_running,
                     start_sftp_container, is_sftp_available,
-                    load_consume_config, restart_sftp_with_config
+                    load_consume_config, restart_sftp_with_config,
+                    get_instance_puid_pgid
                 )
                 
                 # Collect all instance configs for SFTP (shared container)
@@ -6065,8 +6066,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                             need_samba = True
                             say(f"  Starting Samba for {inst.name}...")
                             consume_path = inst.data_root / "consume"
-                            puid = int(inst.get_env_value("PUID", "1000"))
-                            pgid = int(inst.get_env_value("PGID", "1000"))
+                            puid, pgid = get_instance_puid_pgid(inst.name)
                             if start_samba(inst.name, config.samba, consume_path, puid=puid, pgid=pgid):
                                 samba_started += 1
                             else:
