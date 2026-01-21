@@ -1152,6 +1152,43 @@ def remove_samba_user(username: str) -> bool:
         return False
 
 
+def remove_samba_share(instance_name: str) -> bool:
+    """Remove a Samba share from the config file.
+    
+    Removes the share block for the given instance from smb.conf.
+    """
+    config_file = SAMBA_CONFIG_DIR / "smb.conf"
+    if not config_file.exists():
+        return True
+    
+    try:
+        content = config_file.read_text()
+        lines = content.splitlines()
+        new_lines = []
+        skip_until_next_section = False
+        
+        for line in lines:
+            # Check if we're at the start of a share section
+            if line.strip().startswith('[') and line.strip().endswith(']'):
+                section_name = line.strip()[1:-1]
+                # Check if this is the share we want to remove
+                # Share names are typically {instance}-consume
+                if f"{instance_name}-consume" in section_name or f"Paperless {instance_name}" in section_name:
+                    skip_until_next_section = True
+                    continue
+                else:
+                    skip_until_next_section = False
+            
+            if not skip_until_next_section:
+                new_lines.append(line)
+        
+        config_file.write_text('\n'.join(new_lines))
+        return True
+    except Exception as e:
+        warn(f"Failed to remove Samba share: {e}")
+        return False
+
+
 def reload_samba_config() -> bool:
     """Reload Samba configuration."""
     if not is_samba_available():
@@ -1374,6 +1411,23 @@ def stop_sftp_container() -> bool:
         return True
     except:
         return False
+
+
+def remove_sftp_user(username: str) -> bool:
+    """Mark an SFTP user for removal.
+    
+    Note: SFTP users are configured at container startup. This function
+    doesn't actually remove the user immediately - it will take effect
+    the next time the SFTP container is restarted. For immediate effect,
+    call restart_sftp_with_config() after calling this for all instances.
+    
+    In practice, when deleting an instance, the instance's .env is deleted
+    which means the user won't be included next time the container starts.
+    """
+    # The user will be removed automatically when the instance is deleted
+    # because the .env file (which contains SFTP credentials) is deleted.
+    # The SFTP container reads user list from all instance configs at startup.
+    return True
 
 
 def restart_sftp_with_config(instances_config: dict[str, ConsumeConfig],

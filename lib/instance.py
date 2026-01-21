@@ -659,6 +659,9 @@ class InstanceManager:
                     capture_output=True, check=False
                 )
             
+            # Clean up consume services (Syncthing, Samba, SFTP)
+            self._cleanup_consume_services(instance)
+            
             # Remove cloudflared service if it exists
             service_file = Path(f"/etc/systemd/system/cloudflared-{name}.service")
             if service_file.exists():
@@ -709,6 +712,37 @@ class InstanceManager:
         del self.instances[name]
         self.save_instances()
         ok(f"Instance '{name}' removed")
+    
+    def _cleanup_consume_services(self, instance: 'Instance') -> None:
+        """Clean up consume services (Syncthing, Samba, SFTP) for an instance."""
+        try:
+            from lib.installer.consume import (
+                load_consume_config, stop_syncthing_container,
+                remove_samba_user, remove_samba_share, remove_sftp_user,
+                reload_samba_config
+            )
+            
+            config = load_consume_config(instance.env_file)
+            
+            # Stop and remove Syncthing container
+            if config.syncthing.enabled:
+                say(f"Removing Syncthing container for {instance.name}...")
+                stop_syncthing_container(instance.name)
+            
+            # Remove Samba share and user
+            if config.samba.enabled:
+                say(f"Removing Samba share for {instance.name}...")
+                remove_samba_share(instance.name)
+                remove_samba_user(config.samba.username)
+                reload_samba_config()
+            
+            # Remove SFTP user
+            if config.sftp.enabled:
+                say(f"Removing SFTP user for {instance.name}...")
+                remove_sftp_user(config.sftp.username)
+                
+        except Exception as e:
+            warn(f"Could not fully clean up consume services: {e}")
 
     def get_instance(self, name: str) -> Optional[Instance]:
         """Get an instance by name."""

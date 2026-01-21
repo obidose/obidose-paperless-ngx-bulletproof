@@ -1422,6 +1422,9 @@ class PaperlessManager:
             # Restore data
             say(f"Restoring data from backup...")
             
+            # Determine if this is a clone (different name) or same-name restore
+            is_clone = new_name != backup_instance
+            
             success = run_restore_with_env(
                 stack_dir=Path(common.cfg.stack_dir),
                 data_root=Path(common.cfg.data_root),
@@ -1429,7 +1432,8 @@ class PaperlessManager:
                 remote_name=remote_name,
                 remote_path=f"backups/paperless/{backup_instance}",
                 snapshot=snapshot,
-                fresh_config=True  # This is a new instance being restored
+                fresh_config=True,  # Manager wrote config files
+                restore_syncthing=not is_clone  # Restore Syncthing for same-name restore
             )
             
             if not success:
@@ -1453,6 +1457,12 @@ class PaperlessManager:
                 Path(common.cfg.data_root)
             )
             
+            # For same-name restores, ensure consume services are set up
+            # For clones, user needs to configure consume services fresh
+            restored_instance = self.instance_manager.get_instance(new_name)
+            if not is_clone and restored_instance:
+                self._ensure_consume_services(restored_instance)
+            
             # Success message
             print()
             print(draw_box_top(box_width))
@@ -1466,9 +1476,15 @@ class PaperlessManager:
                 print(box_line(f" Access: {colorize(f'http://localhost:{common.cfg.http_port}', Colors.CYAN)}"))
             print(box_line(""))
             print(box_line(" Your documents and settings have been restored."))
-            print(box_line(""))
-            print(box_line(colorize(" Note:", Colors.YELLOW) + " Consume folders (Syncthing/Samba/SFTP) need to"))
-            print(box_line(" be set up fresh via Manage Instance → Consume Folders."))
+            
+            # Different message for clone vs same-name restore
+            if is_clone:
+                print(box_line(""))
+                print(box_line(colorize(" Note:", Colors.YELLOW) + " Consume folders (Syncthing/Samba/SFTP) need to"))
+                print(box_line(" be set up fresh via Manage Instance → Consume Folders."))
+            else:
+                print(box_line(""))
+                print(box_line(" Consume services have been restored from backup."))
             print(draw_box_bottom(box_width))
             
         except KeyboardInterrupt:
@@ -2241,7 +2257,10 @@ class PaperlessManager:
         print(box_line(colorize(" CONSUME INPUT METHODS", Colors.BOLD)))
         print(draw_box_divider(box_width))
         
-        from lib.installer.consume import load_consume_config, get_syncthing_status, get_syncthing_device_id
+        from lib.installer.consume import (
+            load_consume_config, get_syncthing_status, get_syncthing_device_id,
+            is_samba_available, is_sftp_available
+        )
         consume_config = load_consume_config(instance.env_file)
         
         # Syncthing
@@ -2249,6 +2268,8 @@ class PaperlessManager:
             status = get_syncthing_status(instance.name)
             if status["running"]:
                 st_status = colorize("● Running", Colors.GREEN)
+            elif status["status"] == "not found":
+                st_status = colorize("⚠ Not Found", Colors.YELLOW)
             else:
                 st_status = colorize("○ Stopped", Colors.YELLOW)
             print(box_line(f" Syncthing:      {st_status}"))
@@ -2263,17 +2284,25 @@ class PaperlessManager:
         else:
             print(box_line(f" Syncthing:      {colorize('○ Disabled', Colors.CYAN)}"))
         
-        # Samba
+        # Samba - check actual container status
         if consume_config.samba.enabled:
-            print(box_line(f" Samba:          {colorize('✓ Enabled', Colors.GREEN)}"))
+            samba_running = is_samba_available()
+            if samba_running:
+                print(box_line(f" Samba:          {colorize('● Running', Colors.GREEN)}"))
+            else:
+                print(box_line(f" Samba:          {colorize('⚠ Not Running', Colors.YELLOW)}"))
             print(box_line(f"   Share:        {consume_config.samba.share_name}"))
             print(box_line(f"   Username:     {consume_config.samba.username}"))
         else:
             print(box_line(f" Samba:          {colorize('○ Disabled', Colors.CYAN)}"))
         
-        # SFTP
+        # SFTP - check actual container status
         if consume_config.sftp.enabled:
-            print(box_line(f" SFTP:           {colorize('✓ Enabled', Colors.GREEN)}"))
+            sftp_running = is_sftp_available()
+            if sftp_running:
+                print(box_line(f" SFTP:           {colorize('● Running', Colors.GREEN)}"))
+            else:
+                print(box_line(f" SFTP:           {colorize('⚠ Not Running', Colors.YELLOW)}"))
             print(box_line(f"   Port:         {consume_config.sftp.port}"))
             print(box_line(f"   Username:     {consume_config.sftp.username}"))
         else:
@@ -2466,6 +2495,71 @@ class PaperlessManager:
         except Exception as e:
             # Don't fail health check on repair error
             pass
+    
+    def _ensure_consume_services(self, instance: Instance) -> None:
+        """Ensure consume services (Samba/SFTP) are running for an instance.
+        
+        This is called after individual instance restore to ensure the shared
+        Samba/SFTP containers are running and configured for this instance.
+        Syncthing is handled by restore.py directly.
+        """
+        try:
+            from lib.installer.consume import (
+                load_consume_config, is_samba_available, is_sftp_available,
+                start_samba_container, add_samba_user, reload_samba_config,
+                regenerate_samba_config, start_sftp_container, restart_sftp_with_config
+            )
+            
+            config = load_consume_config(instance.env_file)
+            
+            # Handle Samba
+            if config.samba.enabled:
+                # Collect all instance configs for shared Samba config
+                instances_config = {}
+                data_roots = {}
+                for inst in self.instance_manager.instances:
+                    try:
+                        inst_config = load_consume_config(inst.env_file)
+                        instances_config[inst.name] = inst_config
+                        data_roots[inst.name] = inst.data_root
+                    except:
+                        pass
+                
+                # Regenerate Samba config with all instances
+                regenerate_samba_config(instances_config, data_roots)
+                
+                # Start container if needed
+                if not is_samba_available():
+                    start_samba_container()
+                
+                # Add user for this instance
+                add_samba_user(config.samba.username, config.samba.password)
+                reload_samba_config()
+                ok("Samba share configured")
+            
+            # Handle SFTP
+            if config.sftp.enabled:
+                # Collect all instance configs for shared SFTP container
+                instances_config = {}
+                data_roots = {}
+                for inst in self.instance_manager.instances:
+                    try:
+                        inst_config = load_consume_config(inst.env_file)
+                        instances_config[inst.name] = inst_config
+                        data_roots[inst.name] = inst.data_root
+                    except:
+                        pass
+                
+                # Start or restart SFTP container
+                if not is_sftp_available():
+                    start_sftp_container(instances_config, data_roots)
+                else:
+                    # Restart to ensure new user is included
+                    restart_sftp_with_config(instances_config, data_roots)
+                ok("SFTP configured")
+                
+        except Exception as e:
+            warn(f"Could not ensure consume services: {e}")
     
     def update_instance(self, instance: Instance) -> None:
         """Update instance with automatic backup and Docker version tracking."""
@@ -2668,6 +2762,8 @@ class PaperlessManager:
                     ok("Restore completed!")
                     # Auto-repair CSRF settings after restore (handles old backups)
                     self._repair_csrf_settings(instance)
+                    # Ensure consume services are running for this instance
+                    self._ensure_consume_services(instance)
                 else:
                     error("Restore failed!")
         
@@ -2862,7 +2958,8 @@ class PaperlessManager:
     def consume_input_menu(self, instance: Instance) -> None:
         """Configure consume folder input methods (Syncthing, Samba, SFTP)."""
         from lib.installer.consume import (
-            load_consume_config, get_syncthing_status, load_global_consume_config
+            load_consume_config, get_syncthing_status, load_global_consume_config,
+            is_samba_available, is_sftp_available
         )
         
         while True:
@@ -2887,28 +2984,34 @@ class PaperlessManager:
                     syncthing_status = colorize(f"✓ RUNNING{uptime_str}", Colors.GREEN)
                 elif syncthing_live_status["status"] == "exited":
                     syncthing_status = colorize(f"✗ CRASHED", Colors.RED)
+                elif syncthing_live_status["status"] == "not found":
+                    syncthing_status = colorize(f"⚠ NOT FOUND", Colors.YELLOW)
                 else:
                     syncthing_status = colorize(f"⚠ {syncthing_live_status['status'].upper()}", Colors.YELLOW)
             else:
                 syncthing_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('Syncthing:', Colors.BOLD)} {syncthing_status}"))
             
-            # Samba status (uses global tailscale_only setting)
+            # Samba status - check actual container, not just config
             if config.samba.enabled:
-                if global_config.samba_tailscale_only:
-                    samba_status = colorize("✓ ENABLED (Tailscale only)", Colors.GREEN)
+                samba_running = is_samba_available()
+                if samba_running:
+                    ts_note = " (Tailscale only)" if global_config.samba_tailscale_only else ""
+                    samba_status = colorize(f"✓ RUNNING{ts_note}", Colors.GREEN)
                 else:
-                    samba_status = colorize("✓ ENABLED", Colors.GREEN)
+                    samba_status = colorize("⚠ NOT RUNNING", Colors.YELLOW)
             else:
                 samba_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('Samba:', Colors.BOLD)} {samba_status}"))
             
-            # SFTP status (uses global tailscale_only setting)
+            # SFTP status - check actual container, not just config
             if config.sftp.enabled:
-                if global_config.sftp_tailscale_only:
-                    sftp_status = colorize("✓ ENABLED (Tailscale only)", Colors.GREEN)
+                sftp_running = is_sftp_available()
+                if sftp_running:
+                    ts_note = " (Tailscale only)" if global_config.sftp_tailscale_only else ""
+                    sftp_status = colorize(f"✓ RUNNING{ts_note}", Colors.GREEN)
                 else:
-                    sftp_status = colorize("✓ ENABLED", Colors.GREEN)
+                    sftp_status = colorize("⚠ NOT RUNNING", Colors.YELLOW)
             else:
                 sftp_status = colorize("○ Disabled", Colors.YELLOW)
             print(box_line(f" {colorize('SFTP:', Colors.BOLD)} {sftp_status}"))
@@ -5569,6 +5672,69 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             # Reload instances after restoration
             self.instance_manager.load_instances()
             
+            # ─── Start Consume Services (Samba/SFTP) ────────────────────────────
+            # These are shared containers that need to be started after instance restore
+            if consume_info.get("enabled") and restored_count > 0:
+                print()
+                say("Starting consume folder services...")
+                
+                from lib.installer.consume import (
+                    start_samba_container, start_sftp_container,
+                    is_samba_available, is_sftp_available,
+                    load_consume_config, regenerate_samba_config, add_samba_user,
+                    reload_samba_config
+                )
+                
+                # Collect all instance configs for shared services
+                instances_config = {}
+                data_roots = {}
+                need_samba = False
+                need_sftp = False
+                
+                for inst in self.instance_manager.instances:
+                    try:
+                        config = load_consume_config(inst.env_file)
+                        instances_config[inst.name] = config
+                        data_roots[inst.name] = inst.data_root
+                        
+                        if config.samba.enabled:
+                            need_samba = True
+                        if config.sftp.enabled:
+                            need_sftp = True
+                    except Exception as e:
+                        warn(f"  Could not load config for {inst.name}: {e}")
+                
+                # Start Samba if any instance needs it
+                if need_samba:
+                    say("Configuring Samba shares...")
+                    # Regenerate complete smb.conf with all instances
+                    regenerate_samba_config(instances_config, data_roots)
+                    
+                    # Start container if needed
+                    if not is_samba_available():
+                        start_samba_container()
+                    
+                    # Add users for each instance
+                    for inst_name, config in instances_config.items():
+                        if config.samba.enabled:
+                            add_samba_user(config.samba.username, config.samba.password)
+                    
+                    # Reload config
+                    reload_samba_config()
+                    ok("Samba configured")
+                
+                # Start SFTP if any instance needs it
+                if need_sftp:
+                    say("Configuring SFTP...")
+                    # SFTP container reads config from instances at startup
+                    if not is_sftp_available():
+                        start_sftp_container(instances_config, data_roots)
+                    else:
+                        # Restart to pick up new users
+                        from lib.installer.consume import restart_sftp_with_config
+                        restart_sftp_with_config(instances_config, data_roots)
+                    ok("SFTP configured")
+            
             # ─── Summary & IP Change Guidance ─────────────────────────────────
             print()
             print(f"\n{colorize('─' * 60, Colors.CYAN)}")
@@ -5608,11 +5774,15 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 print(box_line(f" {colorize('To start your instances:', Colors.BOLD)}"))
                 print(box_line("   → Manage Instances → [instance] → Container operations → Start"))
             
-            # Consume services note
-            if consume_info.get("enabled"):
+            # Consume services note - these are now auto-restored
+            if consume_info.get("enabled") and (need_samba or need_sftp):
                 print(box_line(""))
                 print(box_line(f" {colorize('Consume folder services:', Colors.BOLD)}"))
-                print(box_line("   → Re-enable Samba/SFTP from instance Consume menu"))
+                if need_samba:
+                    print(box_line("   ✓ Samba shares restored and configured"))
+                if need_sftp:
+                    print(box_line("   ✓ SFTP users restored and configured"))
+                print(box_line("   ✓ Syncthing containers restored (per-instance)"))
             
             print(draw_box_divider(box_width))
             
