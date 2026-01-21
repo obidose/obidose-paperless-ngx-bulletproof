@@ -6545,8 +6545,22 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         delete_tailscale = confirm("Also disconnect Tailscale?", False)
         delete_backups = False
         if self.rclone_configured:
-            warn("⚠️  DANGER: This will permanently delete ALL backups!")
-            delete_backups = confirm("Also delete ALL pCloud backups?", False)
+            print()
+            warn("⚠️  DANGER ZONE ⚠️")
+            warn("Deleting backups is PERMANENT and IRREVERSIBLE!")
+            warn("Your backups are the ONLY way to recover your documents.")
+            print()
+            if confirm("Do you want to delete ALL cloud backups?", False):
+                # Require typing confirmation for this destructive action
+                print()
+                warn("To confirm backup deletion, type: DELETE BACKUPS")
+                backup_confirm = get_input("Type confirmation", "")
+                if backup_confirm == "DELETE BACKUPS":
+                    delete_backups = True
+                    error("Backups WILL be permanently deleted!")
+                else:
+                    say("Backup deletion cancelled - backups will be preserved")
+                    delete_backups = False
         
         print()
         say("Starting nuclear cleanup...")
