@@ -386,6 +386,19 @@ def check_port_conflicts_and_fix(config_dict: dict, warn_func=warn, say_func=say
         warn_func(f"Syncthing sync port {st_sync_port} in use, using {new_port}")
         config_dict["CONSUME_SYNCTHING_SYNC_PORT"] = str(new_port)
     
+    # Check Samba port (per-instance container)
+    samba_port = int(config_dict.get("CONSUME_SAMBA_PORT", "445"))
+    if not is_port_available(samba_port):
+        # Use Samba's port allocation function for proper sequencing
+        try:
+            from lib.installer.consume import get_next_available_samba_port
+            new_port = get_next_available_samba_port()
+        except ImportError:
+            # Fallback: find available port starting from 4451 (after 445)
+            new_port = find_available_port(4451 if samba_port == 445 else samba_port + 1)
+        warn_func(f"Samba port {samba_port} in use, using {new_port}")
+        config_dict["CONSUME_SAMBA_PORT"] = str(new_port)
+    
     # Check SFTP port
     sftp_port = int(config_dict.get("CONSUME_SFTP_PORT", "2222"))
     if not is_port_available(sftp_port):
