@@ -2510,8 +2510,9 @@ class PaperlessManager:
         """
         try:
             from lib.installer.consume import (
-                load_consume_config, is_samba_running, is_sftp_available,
-                start_samba, start_sftp_container, restart_sftp_with_config
+                load_consume_config, save_consume_config, is_samba_running, is_sftp_available,
+                start_samba, start_sftp_container, restart_sftp_with_config,
+                get_used_samba_ports, get_next_available_samba_port, get_instance_puid_pgid
             )
             
             config = load_consume_config(instance.env_file)
@@ -2520,11 +2521,20 @@ class PaperlessManager:
             if config.samba.enabled:
                 consume_path = instance.data_root / "consume"
                 if not is_samba_running(instance.name):
-                    # Get PUID/PGID from instance
-                    puid = int(instance.get_env_value("PUID", "1000"))
-                    pgid = int(instance.get_env_value("PGID", "1000"))
+                    # Check for port conflicts - another instance might have taken this port
+                    used_ports = get_used_samba_ports()
+                    if config.samba.port in used_ports:
+                        # Port conflict! Assign a new port
+                        old_port = config.samba.port
+                        config.samba.port = get_next_available_samba_port()
+                        save_consume_config(config, instance.env_file)
+                        self._update_instance_env(instance, "CONSUME_SAMBA_PORT", str(config.samba.port))
+                        warn(f"Samba port {old_port} in use, reassigned to {config.samba.port}")
+                    
+                    # Get UID/GID that Paperless actually uses
+                    puid, pgid = get_instance_puid_pgid(instance.name)
                     if start_samba(instance.name, config.samba, consume_path, puid=puid, pgid=pgid):
-                        ok(f"Samba started for {instance.name}")
+                        ok(f"Samba started for {instance.name} on port {config.samba.port}")
                     else:
                         warn(f"Failed to start Samba for {instance.name}")
                 else:
