@@ -5667,8 +5667,14 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     # Show archive prefix if it's an archive backup
                     display_latest = latest.replace("archive/", "📦 ") if latest.startswith("archive/") else latest
                     if at_backup and at_backup != latest:
-                        display_at = at_backup.replace("archive/", "📦 ") if at_backup.startswith("archive/") else at_backup
-                        print(box_line(f"   • {inst_name}: latest={display_latest[:16]}, at-backup={display_at[:16]}"))
+                        # Handle case where at_backup is just "archive" (old bug) vs "archive/timestamp"
+                        if at_backup == "archive":
+                            display_at = "📦 (unknown)"
+                        elif at_backup.startswith("archive/"):
+                            display_at = "📦 " + at_backup[8:][:16]  # Skip "archive/" prefix
+                        else:
+                            display_at = at_backup[:16]
+                        print(box_line(f"   • {inst_name}: latest={display_latest[:19]}, at-backup={display_at}"))
                     else:
                         print(box_line(f"   • {inst_name}: {display_latest[:19]}"))
                 else:
