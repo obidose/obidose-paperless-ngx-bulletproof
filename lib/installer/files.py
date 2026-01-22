@@ -304,13 +304,14 @@ def write_compose_file() -> None:
     # Cloudflared container running tunnel with config file
     # Config and credentials stored in per-instance cloudflared/ directory
     # This makes backup/restore self-contained per instance
+    # Use absolute path since compose runs from stack_dir, not data_root
     if cfg.enable_cloudflared == "yes":
         services.append(f"""  cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
     volumes:
-      - ./cloudflared:/etc/cloudflared:ro
+      - {cfg.data_root}/cloudflared:/etc/cloudflared:ro
     networks: [paperless]
     depends_on: [paperless]""")
     

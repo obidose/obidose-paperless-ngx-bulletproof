@@ -152,10 +152,12 @@ def create_tunnel(instance_name: str, domain: str, port: int = 8000, data_root: 
         instance_cf_dir.mkdir(parents=True, exist_ok=True)
         
         # Copy credentials file from ~/.cloudflared/ to instance dir
+        # Make it readable (cloudflared container runs as non-root)
         src_creds = Path.home() / ".cloudflared" / f"{tunnel_id}.json"
         dst_creds = instance_cf_dir / f"{tunnel_id}.json"
         if src_creds.exists():
             shutil.copy2(src_creds, dst_creds)
+            dst_creds.chmod(0o644)  # Make readable by container
         else:
             warn(f"Credentials file not found: {src_creds}")
             return False
