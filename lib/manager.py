@@ -5613,7 +5613,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         # Mark archive backups so we know where they came from
                         all_snaps.extend([f"archive/{s}" for s in archive_snaps])
                     
-                    all_snaps = sorted(all_snaps)
+                    # Sort by timestamp (strip archive/ prefix for comparison)
+                    all_snaps = sorted(all_snaps, key=lambda s: s.replace("archive/", ""))
                     latest = all_snaps[-1] if all_snaps else None
                 except:
                     all_snaps = []
@@ -5858,30 +5859,40 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     print()
                     
                     if confirm("Set up Tailscale now?", True):
-                        say("Starting Tailscale authentication...")
-                        say("A browser window may open for authentication.")
-                        print()
-                        
-                        # Run tailscale up interactively so user can authenticate
-                        result = subprocess.run(
-                            ["tailscale", "up"],
-                            check=False
-                        )
-                        
-                        if result.returncode == 0:
-                            # Give it a moment to connect
-                            import time
-                            time.sleep(2)
-                            new_ts_ip = tailscale.get_ip()
-                            if new_ts_ip:
-                                ok(f"Tailscale connected: {new_ts_ip}")
+                        # Check if Tailscale is installed, install if not
+                        if not tailscale.is_tailscale_installed():
+                            say("Installing Tailscale...")
+                            if not tailscale.install():
+                                warn("Tailscale installation failed - you can set it up later")
                             else:
-                                warn("Tailscale auth completed but IP not yet available")
-                        else:
-                            warn("Tailscale setup did not complete - you can set it up later")
+                                ok("Tailscale installed")
+                        
+                        # Now connect if installed
+                        if tailscale.is_tailscale_installed():
+                            say("Starting Tailscale authentication...")
+                            say("A browser window may open for authentication.")
+                            print()
+                            
+                            # Run tailscale up interactively so user can authenticate
+                            result = subprocess.run(
+                                ["tailscale", "up"],
+                                check=False
+                            )
+                            
+                            if result.returncode == 0:
+                                # Give it a moment to connect
+                                import time
+                                time.sleep(2)
+                                new_ts_ip = tailscale.get_ip()
+                                if new_ts_ip:
+                                    ok(f"Tailscale connected: {new_ts_ip}")
+                                else:
+                                    warn("Tailscale auth completed but IP not yet available")
+                            else:
+                                warn("Tailscale setup did not complete - you can set it up later")
                     else:
                         warn("Skipping Tailscale setup - some services may not work correctly")
-                        say("You can set up Tailscale later with: sudo tailscale up")
+                        say("You can set up Tailscale later from the Network menu")
             
             # ─── Restore Each Instance from Selected Backup ─────────────────────
             # NOTE: We DON'T restore the registry from backup!

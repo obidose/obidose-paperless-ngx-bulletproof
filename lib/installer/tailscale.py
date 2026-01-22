@@ -44,6 +44,9 @@ def install_tailscale() -> bool:
         warn(f"Failed to install Tailscale: {e}")
         return False
 
+# Alias for cleaner API
+install = install_tailscale
+
 
 def is_connected() -> bool:
     """Check if Tailscale is connected."""
