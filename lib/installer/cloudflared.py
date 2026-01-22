@@ -123,9 +123,10 @@ def create_tunnel(instance_name: str, domain: str, port: int = 8000, data_root: 
     """
     tunnel_name = f"paperless-{instance_name}"
     
-    # Use provided data_root or fall back to cfg
+    # data_root should be the instance data directory (e.g., /home/docker/mike)
+    # Fall back to constructing from cfg if not provided
     root = data_root or cfg.data_root
-    instance_cf_dir = Path(root) / instance_name / "cloudflared"
+    instance_cf_dir = Path(root) / "cloudflared"
     
     say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
@@ -193,9 +194,9 @@ def delete_tunnel(instance_name: str, data_root: str | None = None) -> bool:
     """Delete a Cloudflare tunnel and its local config."""
     tunnel_name = f"paperless-{instance_name}"
     
-    # Use provided data_root or fall back to cfg
+    # data_root should be the instance data directory (e.g., /home/docker/mike)
     root = data_root or cfg.data_root
-    instance_cf_dir = Path(root) / instance_name / "cloudflared"
+    instance_cf_dir = Path(root) / "cloudflared"
     
     try:
         # Force delete tunnel (removes connections too)
