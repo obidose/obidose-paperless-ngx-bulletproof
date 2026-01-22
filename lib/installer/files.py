@@ -143,7 +143,6 @@ def write_env_file() -> None:
 
         ENABLE_TRAEFIK={cfg.enable_traefik}
         ENABLE_CLOUDFLARED={cfg.enable_cloudflared}
-        CLOUDFLARE_TUNNEL_TOKEN={cfg.cloudflare_tunnel_token}
         ENABLE_TAILSCALE={cfg.enable_tailscale}
         DOMAIN={cfg.domain}
         LETSENCRYPT_EMAIL={cfg.letsencrypt_email}
@@ -302,14 +301,16 @@ def write_compose_file() -> None:
   paperless:
     name: paperless_{cfg.instance_name}_net"""
     
-    # Cloudflared container (token-based, no host binary needed to run)
-    if cfg.enable_cloudflared == "yes" and cfg.cloudflare_tunnel_token:
+    # Cloudflared container running tunnel with config file
+    # Config and credentials stored in per-instance cloudflared/ directory
+    # This makes backup/restore self-contained per instance
+    if cfg.enable_cloudflared == "yes":
         services.append(f"""  cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${{CLOUDFLARE_TUNNEL_TOKEN}}
-    environment:
-      CLOUDFLARE_TUNNEL_TOKEN: ${{CLOUDFLARE_TUNNEL_TOKEN}}
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
     networks: [paperless]
     depends_on: [paperless]""")
     

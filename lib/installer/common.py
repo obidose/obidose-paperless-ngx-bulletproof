@@ -235,7 +235,6 @@ class Config:
 
     enable_traefik: str = os.environ.get("ENABLE_TRAEFIK", "no")
     enable_cloudflared: str = os.environ.get("ENABLE_CLOUDFLARED", "no")
-    cloudflare_tunnel_token: str = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
     enable_tailscale: str = os.environ.get("ENABLE_TAILSCALE", "no")
     http_port: str = os.environ.get("HTTP_PORT", "8000")
     domain: str = os.environ.get("DOMAIN", "paperless.example.com")

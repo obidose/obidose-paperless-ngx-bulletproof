@@ -1,13 +1,15 @@
 """
 Cloudflare Tunnel management - secure tunnels without exposing ports.
 
-Uses containerized cloudflared for running tunnels (token-based auth).
+Uses containerized cloudflared for running tunnels.
+Config and credentials stored per-instance in {data_root}/{instance}/cloudflared/
 The cloudflared binary is only needed for initial setup/management.
 """
 import subprocess
 import json
+import shutil
 from pathlib import Path
-from .common import say, ok, warn, die
+from .common import say, ok, warn, die, cfg
 
 
 def is_cloudflared_installed() -> bool:
@@ -79,24 +81,26 @@ def list_tunnels() -> list[dict]:
 
 
 def get_base_domain() -> str | None:
-    """Extract base domain from existing tunnel configs or .env files."""
-    # Check existing tunnel configs
-    config_dir = Path("/etc/cloudflared")
-    if config_dir.exists():
-        for config_file in config_dir.glob("*.yml"):
-            try:
-                content = config_file.read_text()
-                for line in content.splitlines():
-                    if "hostname:" in line:
-                        domain = line.split("hostname:")[1].strip()
-                        if domain and "." in domain:
-                            parts = domain.split(".")
-                            if len(parts) >= 2:
-                                if len(parts) >= 3 and len(parts[-2]) <= 3:
-                                    return ".".join(parts[-3:])
-                                return ".".join(parts[-2:])
-            except Exception:
-                continue
+    """Extract base domain from existing tunnel configs in instance directories."""
+    # Check existing tunnel configs in per-instance directories
+    data_root = Path(cfg.data_root)
+    if data_root.exists():
+        for cf_dir in data_root.glob("*/cloudflared"):
+            config_file = cf_dir / "config.yml"
+            if config_file.exists():
+                try:
+                    content = config_file.read_text()
+                    for line in content.splitlines():
+                        if "hostname:" in line:
+                            domain = line.split("hostname:")[1].strip()
+                            if domain and "." in domain:
+                                parts = domain.split(".")
+                                if len(parts) >= 2:
+                                    if len(parts) >= 3 and len(parts[-2]) <= 3:
+                                        return ".".join(parts[-3:])
+                                    return ".".join(parts[-2:])
+                except Exception:
+                    continue
     return None
 
 
@@ -109,29 +113,19 @@ def get_tunnel_for_instance(instance_name: str) -> dict | None:
     return None
 
 
-def get_tunnel_token(tunnel_name: str) -> str | None:
-    """Get the connector token for a tunnel (used by container)."""
-    try:
-        result = subprocess.run(
-            ["cloudflared", "tunnel", "token", tunnel_name],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        token = result.stdout.strip()
-        return token if token else None
-    except subprocess.CalledProcessError:
-        return None
-
-
-def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> str | None:
+def create_tunnel(instance_name: str, domain: str, port: int = 8000, data_root: str | None = None) -> bool:
     """
     Create a Cloudflare tunnel for an instance.
     
-    Returns the tunnel token on success, None on failure.
-    The token should be stored in .env and used by the container.
+    Creates the tunnel, stores config and credentials in the instance's
+    cloudflared/ directory for self-contained backup/restore.
+    Returns True on success, False on failure.
     """
     tunnel_name = f"paperless-{instance_name}"
+    
+    # Use provided data_root or fall back to cfg
+    root = data_root or cfg.data_root
+    instance_cf_dir = Path(root) / instance_name / "cloudflared"
     
     say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
@@ -145,11 +139,38 @@ def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> str | No
             )
             if result.returncode != 0 and "already exists" not in result.stderr:
                 warn(f"Failed to create tunnel: {result.stderr}")
-                return None
+                return False
             tunnel = get_tunnel_for_instance(instance_name)
             if not tunnel:
                 warn("Tunnel not found after creation")
-                return None
+                return False
+        
+        tunnel_id = tunnel.get('id')
+        
+        # Create per-instance cloudflared directory
+        instance_cf_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy credentials file from ~/.cloudflared/ to instance dir
+        src_creds = Path.home() / ".cloudflared" / f"{tunnel_id}.json"
+        dst_creds = instance_cf_dir / f"{tunnel_id}.json"
+        if src_creds.exists():
+            shutil.copy2(src_creds, dst_creds)
+        else:
+            warn(f"Credentials file not found: {src_creds}")
+            return False
+        
+        # Write config file with ingress rules
+        # Note: paths are as seen inside the container (/etc/cloudflared)
+        config_content = f"""tunnel: {tunnel_id}
+credentials-file: /etc/cloudflared/{tunnel_id}.json
+
+ingress:
+  - hostname: {domain}
+    service: http://paperless:{port}
+  - service: http_status:404
+"""
+        config_file = instance_cf_dir / "config.yml"
+        config_file.write_text(config_content)
         
         # Create/update DNS record
         say(f"Configuring DNS for {domain}")
@@ -160,23 +181,21 @@ def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> str | No
         if result.returncode != 0:
             warn(f"DNS routing may need manual setup: {result.stderr.strip()}")
         
-        # Get the token for container use
-        token = get_tunnel_token(tunnel_name)
-        if not token:
-            warn("Could not get tunnel token")
-            return None
-        
         ok(f"Cloudflare tunnel ready for {domain}")
-        return token
+        return True
         
     except Exception as e:
         warn(f"Failed to set up tunnel: {e}")
-        return None
+        return False
 
 
-def delete_tunnel(instance_name: str) -> bool:
-    """Delete a Cloudflare tunnel."""
+def delete_tunnel(instance_name: str, data_root: str | None = None) -> bool:
+    """Delete a Cloudflare tunnel and its local config."""
     tunnel_name = f"paperless-{instance_name}"
+    
+    # Use provided data_root or fall back to cfg
+    root = data_root or cfg.data_root
+    instance_cf_dir = Path(root) / instance_name / "cloudflared"
     
     try:
         # Force delete tunnel (removes connections too)
@@ -184,6 +203,10 @@ def delete_tunnel(instance_name: str) -> bool:
             ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
             check=False, capture_output=True
         )
+        
+        # Remove local config directory
+        if instance_cf_dir.exists():
+            shutil.rmtree(instance_cf_dir)
         
         ok(f"Cloudflare tunnel {tunnel_name} deleted")
         return True
