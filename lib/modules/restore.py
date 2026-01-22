@@ -61,31 +61,52 @@ def _compose_cmd(*args: str) -> list[str]:
 
 
 def fetch_snapshots() -> list[tuple[str, str, str]]:
-    res = subprocess.run(
-        ["rclone", "lsd", REMOTE], capture_output=True, text=True, check=False
-    )
+    """Fetch snapshots from main path and archive subfolder."""
     snaps: list[tuple[str, str, str]] = []
-    for line in res.stdout.splitlines():
-        parts = line.strip().split()
-        if not parts:
-            continue
-        name = parts[-1].rstrip("/")
-        mode = parent = "?"
-        cat = subprocess.run(
-            ["rclone", "cat", f"{REMOTE}/{name}/manifest.yaml"],
-            capture_output=True,
-            text=True,
-            check=False,
+    
+    def get_snapshots_from_path(path: str, prefix: str = "") -> list[tuple[str, str, str]]:
+        """Helper to fetch snapshots from a specific path."""
+        res = subprocess.run(
+            ["rclone", "lsd", path], capture_output=True, text=True, check=False
         )
-        if cat.returncode == 0:
-            for mline in cat.stdout.splitlines():
-                if ":" in mline:
-                    k, v = mline.split(":", 1)
-                    if k.strip() == "mode":
-                        mode = v.strip()
-                    elif k.strip() == "parent":
-                        parent = v.strip()
-        snaps.append((name, mode, parent))
+        results = []
+        for line in res.stdout.splitlines():
+            parts = line.strip().split()
+            if not parts:
+                continue
+            name = parts[-1].rstrip("/")
+            
+            # Skip the archive folder itself (we query it separately)
+            if name == "archive" and not prefix:
+                continue
+            
+            mode = parent = "?"
+            cat = subprocess.run(
+                ["rclone", "cat", f"{path}/{name}/manifest.yaml"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if cat.returncode == 0:
+                for mline in cat.stdout.splitlines():
+                    if ":" in mline:
+                        k, v = mline.split(":", 1)
+                        if k.strip() == "mode":
+                            mode = v.strip()
+                        elif k.strip() == "parent":
+                            parent = v.strip()
+            
+            # Prefix archive snapshots so we know where they came from
+            display_name = f"{prefix}{name}" if prefix else name
+            results.append((display_name, mode, parent))
+        return results
+    
+    # Get main snapshots
+    snaps.extend(get_snapshots_from_path(REMOTE))
+    
+    # Also get archive snapshots
+    snaps.extend(get_snapshots_from_path(f"{REMOTE}/archive", prefix="archive/"))
+    
     return sorted(snaps, key=lambda x: x[0])
 
 
