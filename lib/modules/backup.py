@@ -39,9 +39,8 @@ elif os.environ.get("STACK_DIR") and (Path(os.environ["STACK_DIR"]) / ".env").ex
 else:
     ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 
+# Load env file if it exists - don't warn at import time
 load_env_to_environ(ENV_FILE)
-if not ENV_FILE.exists():
-    warn(f"No .env at {ENV_FILE} — using defaults")
 
 # STACK_DIR should match where this script lives (for multi-instance support)
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")

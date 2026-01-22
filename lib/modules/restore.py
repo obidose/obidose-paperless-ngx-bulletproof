@@ -35,11 +35,10 @@ elif os.environ.get("STACK_DIR") and (Path(os.environ["STACK_DIR"]) / ".env").ex
 else:
     ENV_FILE = Path(os.environ.get("ENV_FILE", "/home/docker/paperless-setup/.env"))
 
-# Only try to load env if it exists, warn but continue if it doesn't
+# Only try to load env if it exists
+# Don't warn at import time - config is refreshed via _refresh_globals_from_env()
 if ENV_FILE.exists():
     load_env_to_environ(ENV_FILE)
-else:
-    warn(f"No .env at {ENV_FILE} — continuing with environment defaults")
 
 # STACK_DIR should match where this script lives (for multi-instance support)
 INSTANCE_NAME = os.environ.get("INSTANCE_NAME", "paperless")
@@ -186,9 +185,7 @@ def main() -> None:
         say("Keeping instance configuration (already configured by manager)")
     
     # Stop existing containers if compose file exists
-    if not COMPOSE_FILE.exists():
-        warn(f"Docker compose file not found at {COMPOSE_FILE}")
-    else:
+    if COMPOSE_FILE.exists():
         subprocess.run(_compose_cmd("down"), check=False)
     dump_dir = Path(tempfile.mkdtemp(prefix="paperless-restore-dump."))
     final_dump: Path | None = None
@@ -286,7 +283,7 @@ def main() -> None:
         else:
             warn("Restore complete, but self-test failed")
     else:
-        warn("Docker compose file not found - services not started")
+        warn("Docker compose file missing after restore - backup may be incomplete")
     
     # Restart Syncthing if it was enabled (syncthing-config was restored)
     # Skip for clones (skip_config=True without force_syncthing_restore)

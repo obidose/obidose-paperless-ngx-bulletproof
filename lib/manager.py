@@ -90,6 +90,13 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import cloudflared, common
     
+    # Check if cloudflared is installed, install if not
+    if not cloudflared.is_cloudflared_installed():
+        common.say("Installing cloudflared...")
+        if not cloudflared.install_cloudflared():
+            common.warn("Failed to install cloudflared")
+            return False
+    
     if not cloudflared.is_authenticated():
         return False
     
