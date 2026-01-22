@@ -5116,13 +5116,11 @@ WantedBy=multi-user.target
         all_cloudflare_tunnels = cloudflared.list_tunnels() if cloudflared.is_authenticated() else []
         paperless_tunnels = [t for t in all_cloudflare_tunnels if t.get('name', '').startswith('paperless-')]
         tailscale_connected = tailscale.is_connected()
-        rclone_conf = Path.home() / ".config" / "rclone" / "rclone.conf"
         
         print("Network configuration to backup:")
-        print(f"  • Traefik: {'✓ Running' if traefik_running else '○ Not active'}")
-        print(f"  • Cloudflare Tunnels: {len(paperless_tunnels)} paperless tunnel(s)")
-        print(f"  • Tailscale: {'✓ Connected' if tailscale_connected else '○ Not active'}")
-        print(f"  • rclone config: {'✓ Found' if rclone_conf.exists() else '○ Not found'}")
+        print(f"  • Traefik: {'✓ Running (SSL certs will be backed up)' if traefik_running else '○ Not active'}")
+        print(f"  • Cloudflare: {len(paperless_tunnels)} tunnel(s) {'(credentials will be backed up)' if paperless_tunnels else ''}")
+        print(f"  • Tailscale: {'✓ Connected (will prompt for re-auth on restore)' if tailscale_connected else '○ Not active'}")
         print()
         
         if not confirm("Create system backup?", True):
@@ -5244,14 +5242,8 @@ WantedBy=multi-user.target
                 }
                 ok(f"Cloudflare config backed up ({len(tunnel_configs)} tunnel configs)")
             
-            # Backup rclone config
-            if rclone_conf.exists():
-                say("Backing up rclone configuration...")
-                rclone_backup_dir = network_dir / "rclone"
-                rclone_backup_dir.mkdir(exist_ok=True)
-                shutil.copy2(rclone_conf, rclone_backup_dir / "rclone.conf")
-                network_info["rclone"] = {"enabled": True}
-                ok("rclone config backed up")
+            # Note: We don't backup rclone config - it's already configured before
+            # we can access system backups, so there's no point backing it up
             
             # ─── Backup Consume Folder Services Configuration ─────────────────
             consume_backup_dir = work / "consume"
@@ -5300,10 +5292,14 @@ WantedBy=multi-user.target
                 }
             
             # ─── Backup Instance Information ──────────────────────────────────
+            # Note: We only store minimal info here. The actual instance settings
+            # (env vars, consume configs, etc.) are stored in each instance's snapshot.
+            # System restore will do a normal restore from snapshots, letting the
+            # snapshot's .env be the source of truth.
             system_info = {
                 "backup_date": datetime.now(timezone.utc).isoformat(),
                 "backup_name": backup_name,
-                "backup_version": "2.1",  # Version 2.1 adds consume config
+                "backup_version": "2.2",  # Version 2.2: simplified - snapshots are source of truth
                 "instance_count": len(instances),
                 "network": network_info,
                 "instances": {},
@@ -5311,21 +5307,16 @@ WantedBy=multi-user.target
             }
             
             for inst in instances:
+                # Only store essential info - snapshots contain the full .env
+                rclone_path = inst.get_env_value("RCLONE_REMOTE_PATH", f"backups/paperless/{inst.name}")
+                
                 inst_info = {
                     "name": inst.name,
                     "stack_dir": str(inst.stack_dir),
                     "data_root": str(inst.data_root),
-                    "running": inst.is_running(),  # Call method to get bool, not method object
-                    "env_vars": {},
+                    "rclone_path": rclone_path,
                     "latest_backup": None
                 }
-                
-                # Capture key env variables
-                if inst.env_file.exists():
-                    for key in ["DOMAIN", "PAPERLESS_URL", "POSTGRES_DB", "ENABLE_TRAEFIK", 
-                               "ENABLE_CLOUDFLARED", "ENABLE_TAILSCALE", "HTTP_PORT",
-                               "RCLONE_REMOTE_PATH", "INSTANCE_NAME", "COMPOSE_PROJECT_NAME"]:
-                        inst_info["env_vars"][key] = inst.get_env_value(key, "")
                 
                 # Find latest backup for this instance
                 try:
@@ -5342,13 +5333,13 @@ WantedBy=multi-user.target
             
             # Create manifest
             manifest = f"""system_backup: true
-backup_version: "2.1"
+backup_version: "2.2"
 backup_date: {datetime.now(timezone.utc).isoformat()}
 instance_count: {len(instances)}
 network_config: true
 traefik_enabled: {network_info['traefik']['enabled']}
 cloudflare_tunnels: {len(network_info['cloudflare'].get('tunnels', []))}
-rclone_config: {network_info['rclone']['enabled']}
+rclone_config: false
 consume_config: {network_info.get('consume', {}).get('enabled', False)}
 """
             (work / "manifest.yaml").write_text(manifest)
@@ -5375,17 +5366,15 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 print(box_line(" ✓ Traefik config + SSL certificates"))
             if network_info["cloudflare"]["enabled"]:
                 print(box_line(f" ✓ Cloudflare tunnel configs ({len(network_info['cloudflare']['tunnels'])})"))
-            if network_info["rclone"]["enabled"]:
-                print(box_line(" ✓ rclone backup server config"))
             if network_info.get("consume", {}).get("enabled"):
                 print(box_line(" ✓ Consume folder services config (Samba/SFTP)"))
             if network_info["tailscale"]["enabled"]:
-                print(box_line(" ✓ Tailscale info (requires re-auth)"))
+                print(box_line(" ✓ Tailscale info (will prompt on restore)"))
             print(draw_box_bottom(box_width))
             print()
             print("To restore on a new server:")
             print("  1. Install paperless-bulletproof")
-            print("  2. Configure backup server connection")
+            print("  2. Configure backup server connection (pCloud/Google Drive/etc)")
             print("  3. Use 'Restore system from backup'")
             
             # Cleanup
@@ -5492,13 +5481,12 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         print(box_line(f" {colorize('System Restore - Disaster Recovery', Colors.BOLD)}"))
         print(draw_box_divider(box_width))
         print(box_line(" This will restore:"))
-        print(box_line("   • Instance registry and metadata"))
         print(box_line("   • Traefik configuration + SSL certificates"))
         print(box_line("   • Cloudflare tunnel configs and credentials"))
-        print(box_line("   • Backup server (rclone) configuration"))
-        print(box_line("   • Samba/SFTP configs (Syncthing is per-instance)"))
+        print(box_line("   • Samba/SFTP global configs"))
+        print(box_line("   • Each instance from its backup snapshot"))
         print(draw_box_divider(box_width))
-        print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale requires re-authentication"))
+        print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale will prompt for re-authentication if needed"))
         print(draw_box_bottom(box_width))
         print()
         
@@ -5595,18 +5583,13 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 else:
                     print(box_line(f"   ○ Cloudflare: not configured"))
                 
-                if rclone_info.get("enabled"):
-                    print(box_line(f"   ✓ rclone backup config"))
-                else:
-                    print(box_line(f"   ○ rclone: not configured"))
-                
                 if consume_info.get("enabled"):
                     print(box_line(f"   ✓ Samba/SFTP configs"))
                 else:
                     print(box_line(f"   ○ Samba/SFTP: not configured"))
                 
                 if ts_info.get("enabled"):
-                    print(box_line(f"   ⚠ Tailscale: requires re-auth"))
+                    print(box_line(f"   ✓ Tailscale: will prompt for setup"))
                 else:
                     print(box_line(f"   ○ Tailscale: not configured"))
             else:
@@ -5623,7 +5606,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             # Gather snapshot info for each instance
             instance_snapshots = {}  # {inst_name: {"latest": ..., "at_backup": ..., "all": [...]}}
             for inst_name, inst_data in system_info["instances"].items():
-                rclone_path = inst_data.get("env_vars", {}).get("RCLONE_REMOTE_PATH", f"backups/paperless/{inst_name}")
+                # Support both v2.2 format (rclone_path) and older format (env_vars)
+                rclone_path = inst_data.get("rclone_path") or inst_data.get("env_vars", {}).get("RCLONE_REMOTE_PATH", f"backups/paperless/{inst_name}")
                 at_backup = inst_data.get("latest_backup")
                 
                 try:
@@ -5768,14 +5752,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             print()
             say("Restoring Network Configuration...")
             
-            # Restore rclone config first (needed for other restores)
-            rclone_backup = work / "network" / "rclone"
-            if rclone_backup.exists() and (rclone_backup / "rclone.conf").exists():
-                say("Restoring rclone configuration...")
-                rclone_dest = Path.home() / ".config" / "rclone"
-                rclone_dest.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(rclone_backup / "rclone.conf", rclone_dest / "rclone.conf")
-                ok("rclone config restored")
+            # Note: rclone config is already set up - we needed it to access system backups
             
             # Restore Traefik
             traefik_backup = work / "network" / "traefik"
@@ -5902,6 +5879,57 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 
                 ok("Consume folder services configuration restored")
             
+            # ─── Set Up Tailscale If Backup Had It Enabled ────────────────────
+            # This ensures the environment matches what instances expect
+            # (especially for Tailscale-only consume services)
+            if ts_info.get("enabled"):
+                print()
+                from lib.installer import tailscale
+                
+                # Check if Tailscale is already connected
+                current_ts_ip = tailscale.get_ip()
+                if current_ts_ip:
+                    ok(f"Tailscale already connected: {current_ts_ip}")
+                else:
+                    print(draw_box_top(box_width))
+                    print(box_line(f" {colorize('Tailscale Setup Required', Colors.YELLOW)}"))
+                    print(draw_box_divider(box_width))
+                    print(box_line(" This backup was created with Tailscale enabled."))
+                    print(box_line(" Some services may require Tailscale to function:"))
+                    print(box_line("   • Samba/SFTP in Tailscale-only mode"))
+                    print(box_line("   • Syncthing containers"))
+                    print(box_line("   • Tailscale Serve/Funnel"))
+                    if ts_info.get("hostname"):
+                        print(box_line(f" Previous hostname: {ts_info['hostname']}"))
+                    print(draw_box_bottom(box_width))
+                    print()
+                    
+                    if confirm("Set up Tailscale now?", True):
+                        say("Starting Tailscale authentication...")
+                        say("A browser window may open for authentication.")
+                        print()
+                        
+                        # Run tailscale up interactively so user can authenticate
+                        result = subprocess.run(
+                            ["tailscale", "up"],
+                            check=False
+                        )
+                        
+                        if result.returncode == 0:
+                            # Give it a moment to connect
+                            import time
+                            time.sleep(2)
+                            new_ts_ip = tailscale.get_ip()
+                            if new_ts_ip:
+                                ok(f"Tailscale connected: {new_ts_ip}")
+                            else:
+                                warn("Tailscale auth completed but IP not yet available")
+                        else:
+                            warn("Tailscale setup did not complete - you can set it up later")
+                    else:
+                        warn("Skipping Tailscale setup - some services may not work correctly")
+                        say("You can set up Tailscale later with: sudo tailscale up")
+            
             # ─── Restore Each Instance from Selected Backup ─────────────────────
             # NOTE: We DON'T restore the registry from backup!
             # Instead, each instance registers itself after successful restoration.
@@ -5973,67 +6001,63 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         failed_instances.append((inst_name, f"Backup {selected_snapshot} incomplete"))
                         continue
                     
-                    # Download the .env from the backup to get original settings
-                    env_result = subprocess.run(
-                        ["rclone", "cat", f"{remote_base}/{selected_snapshot}/.env"],
-                        capture_output=True, text=True, check=False
-                    )
-                    
-                    backup_env = {}
-                    if env_result.returncode == 0 and env_result.stdout.strip():
-                        for line in env_result.stdout.splitlines():
-                            line = line.strip()
-                            if line and not line.startswith("#") and "=" in line:
-                                k, v = line.split("=", 1)
-                                backup_env[k.strip()] = v.strip()
-                    
-                    # Configure instance settings from backup
-                    common.cfg.instance_name = inst_name
-                    common.cfg.data_root = str(data_root)
-                    common.cfg.stack_dir = str(stack_dir)
-                    common.cfg.rclone_remote_name = "pcloud"
-                    common.cfg.rclone_remote_path = f"backups/paperless/{inst_name}"
-                    common.cfg.refresh_paths()
-                    
-                    # Load all settings from backup
-                    load_backup_env_config(backup_env)
-                    
-                    common.cfg.refresh_paths()
-                    
                     # Create directories
                     say(f"  Creating directories...")
-                    common.ensure_dir_tree(common.cfg)
+                    stack_dir.mkdir(parents=True, exist_ok=True)
+                    data_root.mkdir(parents=True, exist_ok=True)
                     
-                    # Write config files
-                    say(f"  Writing configuration...")
-                    files.write_env_file()
-                    files.write_compose_file()
-                    files.copy_helper_scripts()
-                    
-                    # Run the actual restore
+                    # Run the actual restore - let snapshot's .env be the source of truth
+                    # This is a NORMAL restore (not MERGE_CONFIG) so .env and docker-compose
+                    # will be restored from the snapshot
                     say(f"  Restoring data...")
                     success = run_restore_with_env(
                         stack_dir=stack_dir,
                         data_root=data_root,
                         instance_name=inst_name,
                         remote_name="pcloud",
-                        remote_path=rclone_path,  # Use the saved path, not hardcoded
+                        remote_path=rclone_path,
                         snapshot=selected_snapshot,
-                        fresh_config=True,  # Use fresh config since manager wrote it
+                        fresh_config=False,  # Let snapshot's .env be restored
                         restore_syncthing=True  # Restore Syncthing for disaster recovery
                     )
                     
                     if not success:
                         raise Exception("Restore operation failed")
                     
-                    # Install backup cron
+                    # Copy helper scripts (restore.py etc) - these should be from current code
+                    files.copy_helper_scripts()
+                    
+                    # Read settings from the restored .env file
+                    restored_env = {}
+                    restored_env_file = stack_dir / ".env"
+                    if restored_env_file.exists():
+                        for line in restored_env_file.read_text().splitlines():
+                            line = line.strip()
+                            if line and not line.startswith("#") and "=" in line:
+                                k, v = line.split("=", 1)
+                                restored_env[k.strip()] = v.strip()
+                    
+                    # Install backup cron (needs to read from restored .env)
+                    # Set up common.cfg minimally for cron installation
+                    common.cfg.instance_name = inst_name
+                    common.cfg.stack_dir = str(stack_dir)
+                    common.cfg.data_root = str(data_root)
+                    common.cfg.rclone_remote_name = restored_env.get("RCLONE_REMOTE_NAME", "pcloud")
+                    common.cfg.rclone_remote_path = restored_env.get("RCLONE_REMOTE_PATH", rclone_path)
+                    common.cfg.cron_incr_time = restored_env.get("CRON_INCR_TIME", "0 */6 * * *")
+                    common.cfg.cron_full_time = restored_env.get("CRON_FULL_TIME", "30 3 * * 0")
+                    common.cfg.cron_archive_time = restored_env.get("CRON_ARCHIVE_TIME", "0 4 1 * *")
+                    common.cfg.refresh_paths()
                     files.install_cron_backup()
                     
-                    # Set up Cloudflare tunnel if it was enabled
-                    if common.cfg.enable_cloudflared == "yes" and cf_info.get("enabled"):
+                    # Set up Cloudflare tunnel if it was enabled in the restored config
+                    enable_cf = restored_env.get("ENABLE_CLOUDFLARED", "no")
+                    if enable_cf == "yes" and cf_info.get("enabled"):
                         say(f"  Setting up Cloudflare tunnel...")
-                        port = int(common.cfg.http_port)
-                        setup_cloudflare_tunnel(inst_name, common.cfg.domain, port)
+                        domain = restored_env.get("DOMAIN", "")
+                        http_port = int(restored_env.get("HTTP_PORT", "8000"))
+                        if domain:
+                            setup_cloudflare_tunnel(inst_name, domain, http_port)
                     
                     # Register the instance in the registry
                     self.instance_manager.add_instance(inst_name, stack_dir, data_root)
@@ -6193,10 +6217,14 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             
             # Tailscale guidance  
             if ts_info.get("enabled"):
+                from lib.installer import tailscale as ts_module
+                current_ts_ip = ts_module.get_ip()
                 print(box_line(f"   {colorize('Tailscale:', Colors.CYAN)}"))
-                print(box_line(f"   → Previous: {ts_info.get('hostname', '?')} ({ts_info.get('ip', '?')})"))
-                print(box_line("   → Re-authenticate: sudo tailscale up"))
-                print(box_line("   → Re-enable serve paths for each instance"))
+                if current_ts_ip:
+                    print(box_line(f"   ✓ Connected: {current_ts_ip}"))
+                else:
+                    print(box_line(f"   → Previous: {ts_info.get('hostname', '?')} ({ts_info.get('ip', '?')})"))
+                    print(box_line("   → Re-authenticate: sudo tailscale up"))
                 print(box_line(""))
             
             # If no network config needed special handling
@@ -6210,25 +6238,13 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             print()
             print(colorize("Useful Commands:", Colors.BOLD))
             print("  paperless                     - Open management TUI")
-            print("  systemctl status cloudflared-*  - Check Cloudflare tunnels")
-            print("  tailscale status              - Check Tailscale connection")
+            if cf_info.get("enabled"):
+                print("  systemctl status cloudflared-*  - Check Cloudflare tunnels")
+            if ts_info.get("enabled"):
+                print("  tailscale status              - Check Tailscale connection")
             print("  docker ps                     - Check running containers")
             
             shutil.rmtree(work)
-            
-            # Offer to reconnect Tailscale if it was previously enabled
-            if ts_info.get("enabled"):
-                print()
-                from lib.installer.tailscale import is_tailscale_installed, is_connected, connect
-                if is_tailscale_installed() and not is_connected():
-                    if confirm("Reconnect Tailscale now?", True):
-                        say("Starting Tailscale authentication...")
-                        if connect():
-                            ok("Tailscale reconnected!")
-                            # Note: Serve paths need to be re-enabled per instance
-                            say("Note: Re-enable Tailscale Serve for each instance if needed")
-                        else:
-                            warn("Tailscale connection failed - reconnect from Manage Tailscale menu")
             
         except Exception as e:
             error(f"System restore failed: {e}")
