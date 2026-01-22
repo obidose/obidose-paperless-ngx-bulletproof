@@ -1110,8 +1110,29 @@ def is_samba_available() -> bool:
 
 
 def get_used_samba_ports() -> set[int]:
-    """Get all ports currently used by Samba containers."""
+    """Get all ports claimed by Samba configs across all instances.
+    
+    Scans saved consume configs to find ports that are already assigned,
+    regardless of whether the containers are currently running.
+    """
     used_ports = set()
+    
+    # Scan all instance configs for claimed Samba ports
+    try:
+        from lib.instance import InstanceManager
+        instance_mgr = InstanceManager()
+        
+        for inst in instance_mgr.list_instances():
+            try:
+                config = load_consume_config(inst.env_file)
+                if config.samba.enabled and config.samba.port:
+                    used_ports.add(config.samba.port)
+            except:
+                pass
+    except:
+        pass
+    
+    # Also check running containers as fallback (catches orphaned containers)
     try:
         result = subprocess.run(
             ["docker", "ps", "--filter", "name=paperless-samba-", 
@@ -1130,6 +1151,7 @@ def get_used_samba_ports() -> set[int]:
                         used_ports.add(int(match.group(1)))
     except:
         pass
+    
     return used_ports
 
 
