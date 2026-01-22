@@ -5627,16 +5627,29 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 at_backup = inst_data.get("latest_backup")
                 
                 try:
+                    # Get standard backups from main path
                     result = subprocess.run(
                         ["rclone", "lsd", f"pcloud:{rclone_path}"],
                         capture_output=True, text=True, check=False, timeout=10
                     )
+                    all_snaps = []
                     if result.returncode == 0 and result.stdout.strip():
-                        all_snaps = sorted([l.split()[-1] for l in result.stdout.splitlines() if l.strip()])
-                        latest = all_snaps[-1] if all_snaps else None
-                    else:
-                        all_snaps = []
-                        latest = None
+                        # Filter out "archive" subfolder - we'll look inside it separately
+                        raw_snaps = [l.split()[-1] for l in result.stdout.splitlines() if l.strip()]
+                        all_snaps = [s for s in raw_snaps if s != "archive"]
+                    
+                    # Also get archive backups from the archive subfolder
+                    archive_result = subprocess.run(
+                        ["rclone", "lsd", f"pcloud:{rclone_path}/archive"],
+                        capture_output=True, text=True, check=False, timeout=10
+                    )
+                    if archive_result.returncode == 0 and archive_result.stdout.strip():
+                        archive_snaps = [l.split()[-1] for l in archive_result.stdout.splitlines() if l.strip()]
+                        # Mark archive backups so we know where they came from
+                        all_snaps.extend([f"archive/{s}" for s in archive_snaps])
+                    
+                    all_snaps = sorted(all_snaps)
+                    latest = all_snaps[-1] if all_snaps else None
                 except:
                     all_snaps = []
                     latest = None
@@ -5651,10 +5664,13 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 
                 # Display
                 if latest:
+                    # Show archive prefix if it's an archive backup
+                    display_latest = latest.replace("archive/", "📦 ") if latest.startswith("archive/") else latest
                     if at_backup and at_backup != latest:
-                        print(box_line(f"   • {inst_name}: latest={latest[:16]}, at-backup={at_backup[:16]}"))
+                        display_at = at_backup.replace("archive/", "📦 ") if at_backup.startswith("archive/") else at_backup
+                        print(box_line(f"   • {inst_name}: latest={display_latest[:16]}, at-backup={display_at[:16]}"))
                     else:
-                        print(box_line(f"   • {inst_name}: {latest[:19]}"))
+                        print(box_line(f"   • {inst_name}: {display_latest[:19]}"))
                 else:
                     print(box_line(f"   • {inst_name}: {colorize('no backups found', Colors.RED)}"))
             
@@ -5701,8 +5717,12 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                             markers.append(colorize("latest", Colors.GREEN))
                         if snap == snap_info["at_backup"]:
                             markers.append(colorize("at-backup", Colors.CYAN))
+                        if snap.startswith("archive/"):
+                            markers.append("📦 archive")
                         marker_str = f" ({', '.join(markers)})" if markers else ""
-                        print(f"    {idx}) {snap}{marker_str}")
+                        # Clean display: remove archive/ prefix since we show marker
+                        snap_display = snap.replace("archive/", "") if snap.startswith("archive/") else snap
+                        print(f"    {idx}) {snap_display}{marker_str}")
                     if len(snap_info["all"]) > 10:
                         print(f"    ... and {len(snap_info['all']) - 10} more")
                     
@@ -6331,9 +6351,11 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 print(colorize("─" * 85, Colors.CYAN))
                 
                 for idx, (name, mode, parent, created, has_vers) in enumerate(snapshots, 1):
-                    mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN
+                    mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.MAGENTA if mode == "archive" else Colors.CYAN
                     vers_icon = colorize("✓", Colors.GREEN) if has_vers else colorize("✗", Colors.RED)
-                    print(f"{idx:<5} {name:<30} {colorize(mode.upper(), mode_color):<20} {created:<20} {vers_icon}")
+                    # Clean display for archive snapshots
+                    display_name = name.replace("archive/", "📦 ") if name.startswith("archive/") else name
+                    print(f"{idx:<5} {display_name:<30} {colorize(mode.upper(), mode_color):<20} {created:<20} {vers_icon}")
                 print()
                 
                 # Options

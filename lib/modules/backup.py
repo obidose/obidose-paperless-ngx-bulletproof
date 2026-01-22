@@ -271,6 +271,7 @@ def main() -> Path:
     parent = snaps[-1] if snaps else ""
     if mode == "incr" and not snaps:
         mode = "full"
+    
     snap = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     work = Path(tempfile.mkdtemp(prefix="paperless-backup."))
     if mode == "incr" and parent:
@@ -381,16 +382,37 @@ def run_retention_cleanup() -> None:
     now = datetime.now()
     
     # 1. Clean up standard backups older than RETENTION_DAYS
+    # Note: Standard backups are in REMOTE, archive backups are in ARCHIVE_REMOTE (subfolder)
+    # We need to be careful not to delete the "archive" folder itself from standard path
     if RETENTION_DAYS > 0:
         say(f"  Cleaning standard backups older than {RETENTION_DAYS} days...")
-        subprocess.run(
-            [
-                "rclone", "delete", REMOTE,
-                "--min-age", f"{RETENTION_DAYS}d",
-                "--fast-list",
-            ],
-            check=False,
+        # Get list of snapshots and delete old ones individually to avoid deleting archive folder
+        result = subprocess.run(
+            ["rclone", "lsd", REMOTE],
+            capture_output=True, text=True, check=False
         )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                snap_name = parts[-1].rstrip("/")
+                
+                # Skip the archive folder itself (it's a special folder, not a snapshot)
+                if snap_name == "archive":
+                    continue
+                
+                snap_date = parse_snapshot_date(snap_name)
+                if snap_date is None:
+                    continue
+                
+                age_days = (datetime.now() - snap_date).days
+                if age_days > RETENTION_DAYS:
+                    say(f"  Removing old snapshot {snap_name} ({age_days}d old)...")
+                    subprocess.run(
+                        ["rclone", "purge", f"{REMOTE}/{snap_name}"],
+                        check=False, capture_output=True
+                    )
         subprocess.run(["rclone", "rmdirs", REMOTE, "--leave-root"], check=False)
     
     # 2. Clean up archive backups with tiered retention

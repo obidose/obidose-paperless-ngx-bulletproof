@@ -138,6 +138,310 @@ else:
     _setup_imports()
 
 
+def _get_input(prompt: str, default: str = "") -> str:
+    """Get input from user with optional default."""
+    if default:
+        result = input(f"{prompt} [{default}]: ").strip()
+        return result if result else default
+    return input(f"{prompt}: ").strip()
+
+
+def _confirm(prompt: str, default: bool = True) -> bool:
+    """Get yes/no confirmation from user."""
+    yn = "Y/n" if default else "y/N"
+    answer = input(f"{prompt} [{yn}]: ").strip().lower()
+    if not answer:
+        return default
+    return answer in ("y", "yes")
+
+
+def _initial_backup_server_setup() -> None:
+    """Advanced backup server configuration during initial setup.
+    
+    Uses the same logic as the main app's backup server menu, supporting
+    multiple cloud providers (pCloud, Google Drive, Dropbox, etc.)
+    """
+    import subprocess
+    import json
+    
+    print("Backups are stored in the cloud using rclone, which supports")
+    print("70+ cloud storage providers including:")
+    print()
+    print("   • pCloud      - Great value, EU/US servers (recommended)")
+    print("   • Google Drive - 15GB free")
+    print("   • Dropbox      - 2GB free")
+    print("   • OneDrive     - 5GB free")
+    print("   • Backblaze B2 - 10GB free, cheap storage")
+    print("   • Amazon S3    - Enterprise scalable")
+    print("   • SFTP/WebDAV  - Self-hosted options")
+    print()
+    
+    while True:
+        print("Select backup provider:")
+        print("  1) pCloud (recommended)")
+        print("  2) Google Drive")
+        print("  3) Dropbox")
+        print("  4) Other provider (advanced)")
+        print("  5) Skip for now")
+        print()
+        
+        choice = _get_input("Choose", "1")
+        
+        if choice == "1":
+            # pCloud setup (same as PaperlessManager._setup_pcloud)
+            print()
+            print("=" * 60)
+            print(" pCloud Setup")
+            print("=" * 60)
+            print()
+            print(" pCloud offers excellent value with lifetime plans and")
+            print(" servers in both EU and US regions.")
+            print()
+            print(" Step 1: On any computer with a browser, run:")
+            print()
+            print('    rclone authorize "pcloud"')
+            print()
+            print(" Step 2: Log in to pCloud in the browser")
+            print()
+            print(" Step 3: Copy the token JSON that appears")
+            print()
+            
+            token = _get_input("Paste token JSON (or 'skip' to go back)", "")
+            
+            if token.lower() == "skip" or not token:
+                continue
+            
+            # Validate JSON
+            try:
+                json.loads(token)
+            except:
+                common.error("Invalid JSON format. Make sure you copy the entire token.")
+                continue
+            
+            common.say("Configuring pCloud remote...")
+            
+            # Try EU region first, then US
+            for host, region in [("eapi.pcloud.com", "EU"), ("api.pcloud.com", "US")]:
+                subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run([
+                    "rclone", "config", "create", "pcloud", "pcloud",
+                    "token", token, "hostname", host, "--non-interactive"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # Test connection
+                result = subprocess.run(
+                    ["rclone", "about", "pcloud:", "--json"],
+                    capture_output=True,
+                    timeout=15,
+                    check=False
+                )
+                if result.returncode == 0:
+                    common.ok(f"pCloud configured successfully ({region} region)")
+                    return
+            
+            common.error("Failed to connect with provided token. Please try again.")
+            
+        elif choice == "2":
+            # Google Drive setup
+            print()
+            print("=" * 60)
+            print(" Google Drive Setup")
+            print("=" * 60)
+            print()
+            print(" Google Drive offers 15GB free storage.")
+            print()
+            print(' Step 1: On any computer with a browser, run:')
+            print()
+            print('    rclone authorize "drive"')
+            print()
+            print(" Step 2: Log in to Google in the browser")
+            print()
+            print(" Step 3: Copy the token JSON that appears")
+            print()
+            
+            token = _get_input("Paste token JSON (or 'skip' to go back)", "")
+            
+            if token.lower() == "skip" or not token:
+                continue
+            
+            try:
+                json.loads(token)
+            except:
+                common.error("Invalid JSON format.")
+                continue
+            
+            common.say("Configuring Google Drive remote...")
+            
+            subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                "rclone", "config", "create", "pcloud", "drive",
+                "token", token, "--non-interactive"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            result = subprocess.run(
+                ["rclone", "about", "pcloud:", "--json"],
+                capture_output=True,
+                timeout=15,
+                check=False
+            )
+            if result.returncode == 0:
+                common.ok("Google Drive configured successfully")
+                return
+            else:
+                common.error("Failed to configure Google Drive.")
+                
+        elif choice == "3":
+            # Dropbox setup
+            print()
+            print("=" * 60)
+            print(" Dropbox Setup")
+            print("=" * 60)
+            print()
+            print(" Dropbox offers 2GB free storage.")
+            print()
+            print(' Step 1: On any computer with a browser, run:')
+            print()
+            print('    rclone authorize "dropbox"')
+            print()
+            print(" Step 2: Log in to Dropbox in the browser")
+            print()
+            print(" Step 3: Copy the token JSON that appears")
+            print()
+            
+            token = _get_input("Paste token JSON (or 'skip' to go back)", "")
+            
+            if token.lower() == "skip" or not token:
+                continue
+            
+            try:
+                json.loads(token)
+            except:
+                common.error("Invalid JSON format.")
+                continue
+            
+            common.say("Configuring Dropbox remote...")
+            
+            subprocess.run(["rclone", "config", "delete", "pcloud"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                "rclone", "config", "create", "pcloud", "dropbox",
+                "token", token, "--non-interactive"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            result = subprocess.run(
+                ["rclone", "about", "pcloud:", "--json"],
+                capture_output=True,
+                timeout=15,
+                check=False
+            )
+            if result.returncode == 0:
+                common.ok("Dropbox configured successfully")
+                return
+            else:
+                common.error("Failed to configure Dropbox.")
+                
+        elif choice == "4":
+            # Other provider - use rclone config interactive mode
+            print()
+            print("=" * 60)
+            print(" Other Provider Setup")
+            print("=" * 60)
+            print()
+            print(" For other providers, you'll use rclone's interactive setup.")
+            print()
+            print(" Important: When prompted for remote name, enter: pcloud")
+            print(" (This is required for the backup system to work)")
+            print()
+            
+            if _confirm("Run 'rclone config' now?", True):
+                subprocess.run(["rclone", "config"])
+                
+                # Check if configured
+                result = subprocess.run(
+                    ["rclone", "listremotes"],
+                    capture_output=True, text=True, check=False
+                )
+                if "pcloud:" in result.stdout:
+                    common.ok("Backup provider configured")
+                    return
+                else:
+                    common.warn("Remote 'pcloud:' not found. Please configure again.")
+        
+        elif choice == "5":
+            common.warn("Skipping backup configuration. You can set this up later via:")
+            print("  paperless → Configure Backup Server")
+            print()
+            return
+        
+        else:
+            common.warn("Invalid choice")
+
+
+def _initial_network_setup() -> None:
+    """Offer to set up network services during initial installation.
+    
+    Uses the same methods as the main app's Tailscale and Traefik menus.
+    """
+    import subprocess
+    from lib.installer import tailscale, traefik
+    
+    print("Network services allow secure remote access to your instances:")
+    print()
+    print("   • Tailscale - Zero-config VPN for private remote access")
+    print("   • Traefik   - HTTPS proxy with auto SSL certificates")
+    print()
+    print("These can be set up now or later from the main menu.")
+    print()
+    
+    # Tailscale setup
+    if not tailscale.is_tailscale_installed():
+        if _confirm("Set up Tailscale (private remote access)?", False):
+            common.say("Installing Tailscale...")
+            if tailscale.install():
+                common.ok("Tailscale installed")
+                print()
+                print("To connect your device to Tailscale:")
+                print("  1. Run: sudo tailscale up")
+                print("  2. Follow the authentication link")
+                print()
+            else:
+                common.warn("Tailscale installation failed")
+    else:
+        common.ok("Tailscale already installed")
+        if not tailscale.is_connected():
+            if _confirm("Connect Tailscale now?", True):
+                tailscale.connect()
+    
+    print()
+    
+    # Traefik setup
+    if not traefik.is_traefik_running():
+        if _confirm("Set up Traefik (HTTPS with auto SSL)?", False):
+            print()
+            print("Traefik requires a valid email for Let's Encrypt SSL certificates.")
+            print()
+            email = _get_input("Email address for SSL certificates", "")
+            
+            if email and "@" in email:
+                common.say("Setting up Traefik...")
+                if traefik.setup_system_traefik(email):
+                    common.ok("Traefik installed and running")
+                    print()
+                    print("Note: Instances can be configured to use Traefik for HTTPS.")
+                    print("DNS records must point to this server's IP address.")
+                    print()
+                else:
+                    common.warn("Traefik setup failed")
+            else:
+                common.warn("Invalid or empty email - skipping Traefik setup")
+    else:
+        common.ok("Traefik already running")
+    
+    print()
+
+
 def main():
     """Main entry point."""
     from pathlib import Path
@@ -176,12 +480,19 @@ def main():
         deps.install_docker()
         deps.install_rclone()
         
-        # Set up pCloud connection
+        # Set up backup server connection using advanced menu (same as main app)
         print("\n" + "="*70)
-        print("  Backup Configuration")
+        print("  Backup Server Configuration")
         print("="*70)
         print()
-        pcloud.ensure_pcloud_remote_or_menu()
+        _initial_backup_server_setup()
+        
+        # Offer Tailscale setup
+        print("\n" + "="*70)
+        print("  Network Configuration (Optional)")
+        print("="*70)
+        print()
+        _initial_network_setup()
         
         # Install the manager
         files.copy_helper_scripts()

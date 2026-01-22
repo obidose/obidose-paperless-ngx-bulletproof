@@ -45,7 +45,7 @@ class BackupManager:
         self.remote_base = f"{self.remote_name}:{self.remote_path}"
 
     @staticmethod
-    def fetch_snapshots_for_path(remote_path: str) -> list[Snapshot]:
+    def fetch_snapshots_for_path(remote_path: str, include_archives: bool = True) -> list[Snapshot]:
         """Fetch snapshots from a specific remote path.
         
         This is a static method that can be used without an Instance object,
@@ -53,61 +53,81 @@ class BackupManager:
         
         Args:
             remote_path: Full rclone path like 'pcloud:backups/paperless/john'
+            include_archives: If True, also fetch archive backups from /archive subfolder
             
         Returns:
             List of Snapshot objects sorted by name (oldest first)
         """
-        result = subprocess.run(
-            ["rclone", "lsd", remote_path],
-            capture_output=True, text=True, check=False
-        )
+        def get_snapshots_from_path(path: str, is_archive: bool = False) -> list[Snapshot]:
+            """Helper to fetch snapshots from a single path."""
+            result = subprocess.run(
+                ["rclone", "lsd", path],
+                capture_output=True, text=True, check=False
+            )
+            
+            if result.returncode != 0:
+                return []
+            
+            snaps = []
+            for line in result.stdout.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 1:
+                    snap_name = parts[-1]
+                    
+                    # Skip the "archive" subfolder - it contains archive backups, not a snapshot itself
+                    if snap_name == "archive":
+                        continue
+                    
+                    # Get manifest info
+                    mode = "full"
+                    parent = ""
+                    created = ""
+                    
+                    manifest_result = subprocess.run(
+                        ["rclone", "cat", f"{path}/{snap_name}/manifest.yaml"],
+                        capture_output=True, text=True, check=False, timeout=10
+                    )
+                    
+                    if manifest_result.returncode == 0:
+                        for mline in manifest_result.stdout.splitlines():
+                            if ":" in mline:
+                                k, v = mline.split(":", 1)
+                                k, v = k.strip(), v.strip()
+                                if k == "mode":
+                                    mode = v
+                                elif k == "parent":
+                                    parent = v
+                                elif k == "created":
+                                    created = v[:19]  # Just date/time portion
+                    
+                    # Check for docker versions file
+                    has_docker = subprocess.run(
+                        ["rclone", "lsf", f"{path}/{snap_name}/docker-images.txt"],
+                        capture_output=True, check=False
+                    ).returncode == 0
+                    
+                    # For archive backups, prefix the name so restore knows where to find them
+                    display_name = f"archive/{snap_name}" if is_archive else snap_name
+                    
+                    snaps.append(Snapshot(
+                        name=display_name,
+                        mode="archive" if is_archive else mode,
+                        parent=parent,
+                        created=created,
+                        has_docker_versions=has_docker
+                    ))
+            
+            return snaps
         
-        if result.returncode != 0:
-            return []
+        # Get standard snapshots
+        snapshots = get_snapshots_from_path(remote_path)
         
-        snapshots = []
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                continue
-            parts = line.split()
-            if len(parts) >= 1:
-                snap_name = parts[-1]
-                
-                # Get manifest info
-                mode = "full"
-                parent = ""
-                created = ""
-                
-                manifest_result = subprocess.run(
-                    ["rclone", "cat", f"{remote_path}/{snap_name}/manifest.yaml"],
-                    capture_output=True, text=True, check=False, timeout=10
-                )
-                
-                if manifest_result.returncode == 0:
-                    for mline in manifest_result.stdout.splitlines():
-                        if ":" in mline:
-                            k, v = mline.split(":", 1)
-                            k, v = k.strip(), v.strip()
-                            if k == "mode":
-                                mode = v
-                            elif k == "parent":
-                                parent = v
-                            elif k == "created":
-                                created = v[:19]  # Just date/time portion
-                
-                # Check for docker versions file
-                has_docker = subprocess.run(
-                    ["rclone", "lsf", f"{remote_path}/{snap_name}/docker-images.txt"],
-                    capture_output=True, check=False
-                ).returncode == 0
-                
-                snapshots.append(Snapshot(
-                    name=snap_name,
-                    mode=mode,
-                    parent=parent,
-                    created=created,
-                    has_docker_versions=has_docker
-                ))
+        # Also get archive snapshots if requested
+        if include_archives:
+            archive_snapshots = get_snapshots_from_path(f"{remote_path}/archive", is_archive=True)
+            snapshots.extend(archive_snapshots)
         
         # Sort by name descending (newest first - names are date-based)
         snapshots.sort(key=lambda x: x.name, reverse=True)
