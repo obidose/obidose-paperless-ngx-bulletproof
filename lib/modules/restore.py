@@ -167,7 +167,8 @@ def main() -> None:
     while True:
         chain.append(cur)
         mode, parent = meta.get(cur, ("full", ""))
-        if mode == "full" or not parent:
+        # Stop at full backups, archive backups (standalone), or if no valid parent
+        if mode in ("full", "archive") or not parent or parent == "?":
             break
         cur = parent
     chain.reverse()
