@@ -83,16 +83,16 @@ class Instance:
             except Exception:
                 pass
         
-        # Check Cloudflare Tunnel
+        # Check Cloudflare Tunnel (now runs as container)
         enable_cloudflare = self.get_env_value("ENABLE_CLOUDFLARED", "no")
         if enable_cloudflare.lower() == "yes":
-            # Verify cloudflared service is running
+            # Check if cloudflared container is running
             try:
                 result = subprocess.run(
-                    ["systemctl", "is-active", f"cloudflared-{self.name}"],
+                    ["docker", "ps", "-q", "-f", f"name=paperless-{self.name}-cloudflared"],
                     capture_output=True, text=True, check=False
                 )
-                if result.stdout.strip() == "active":
+                if result.stdout.strip():
                     modes.append("cloudflare")
             except Exception:
                 pass
@@ -678,14 +678,13 @@ class InstanceManager:
             # Clean up consume services (Syncthing, Samba, SFTP)
             self._cleanup_consume_services(instance)
             
-            # Remove cloudflared service if it exists
-            service_file = Path(f"/etc/systemd/system/cloudflared-{name}.service")
-            if service_file.exists():
-                say(f"Removing cloudflared service for {name}...")
-                subprocess.run(["systemctl", "stop", f"cloudflared-{name}"], capture_output=True, check=False)
-                subprocess.run(["systemctl", "disable", f"cloudflared-{name}"], capture_output=True, check=False)
-                service_file.unlink()
-                subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False)
+            # Delete Cloudflare tunnel from Cloudflare
+            try:
+                from lib.installer.cloudflared import delete_tunnel, is_authenticated
+                if is_authenticated():
+                    delete_tunnel(name)
+            except Exception:
+                pass
             
             # Remove Tailscale serve if configured
             try:

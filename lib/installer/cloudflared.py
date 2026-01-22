@@ -1,5 +1,8 @@
 """
 Cloudflare Tunnel management - secure tunnels without exposing ports.
+
+Uses containerized cloudflared for running tunnels (token-based auth).
+The cloudflared binary is only needed for initial setup/management.
 """
 import subprocess
 import json
@@ -8,7 +11,7 @@ from .common import say, ok, warn, die
 
 
 def is_cloudflared_installed() -> bool:
-    """Check if cloudflared is installed."""
+    """Check if cloudflared CLI is installed (needed for tunnel management)."""
     try:
         result = subprocess.run(
             ["which", "cloudflared"],
@@ -22,10 +25,9 @@ def is_cloudflared_installed() -> bool:
 
 
 def install_cloudflared() -> bool:
-    """Install cloudflared binary."""
-    say("Installing cloudflared...")
+    """Install cloudflared binary (for management commands only)."""
+    say("Installing cloudflared CLI...")
     try:
-        # Download and install cloudflared
         subprocess.run([
             "curl", "-L", "--output", "/tmp/cloudflared.deb",
             "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
@@ -34,7 +36,7 @@ def install_cloudflared() -> bool:
         subprocess.run(["dpkg", "-i", "/tmp/cloudflared.deb"], check=True)
         subprocess.run(["rm", "/tmp/cloudflared.deb"], check=False)
         
-        ok("Cloudflared installed successfully")
+        ok("Cloudflared CLI installed")
         return True
     except subprocess.CalledProcessError as e:
         warn(f"Failed to install cloudflared: {e}")
@@ -42,13 +44,13 @@ def install_cloudflared() -> bool:
 
 
 def is_authenticated() -> bool:
-    """Check if cloudflared is authenticated."""
+    """Check if cloudflared is authenticated with Cloudflare."""
     cert_file = Path.home() / ".cloudflared" / "cert.pem"
     return cert_file.exists()
 
 
 def authenticate() -> bool:
-    """Authenticate with Cloudflare."""
+    """Authenticate with Cloudflare (opens browser)."""
     say("Opening browser for Cloudflare authentication...")
     say("You'll need to log in to your Cloudflare account")
     try:
@@ -77,27 +79,24 @@ def list_tunnels() -> list[dict]:
 
 
 def get_base_domain() -> str | None:
-    """Extract base domain from existing Cloudflare tunnel configs."""
+    """Extract base domain from existing tunnel configs or .env files."""
+    # Check existing tunnel configs
     config_dir = Path("/etc/cloudflared")
-    if not config_dir.exists():
-        return None
-    
-    for config_file in config_dir.glob("*.yml"):
-        try:
-            content = config_file.read_text()
-            for line in content.splitlines():
-                if "hostname:" in line:
-                    domain = line.split("hostname:")[1].strip()
-                    if domain and "." in domain:
-                        # Extract base domain (e.g., "cft.dromey.co.uk" -> "dromey.co.uk")
-                        parts = domain.split(".")
-                        if len(parts) >= 2:
-                            # Handle TLDs like .co.uk, .com.au
-                            if len(parts) >= 3 and len(parts[-2]) <= 3:
-                                return ".".join(parts[-3:])
-                            return ".".join(parts[-2:])
-        except Exception:
-            continue
+    if config_dir.exists():
+        for config_file in config_dir.glob("*.yml"):
+            try:
+                content = config_file.read_text()
+                for line in content.splitlines():
+                    if "hostname:" in line:
+                        domain = line.split("hostname:")[1].strip()
+                        if domain and "." in domain:
+                            parts = domain.split(".")
+                            if len(parts) >= 2:
+                                if len(parts) >= 3 and len(parts[-2]) <= 3:
+                                    return ".".join(parts[-3:])
+                                return ".".join(parts[-2:])
+            except Exception:
+                continue
     return None
 
 
@@ -110,72 +109,69 @@ def get_tunnel_for_instance(instance_name: str) -> dict | None:
     return None
 
 
-def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> bool:
-    """Create a Cloudflare tunnel for an instance."""
+def get_tunnel_token(tunnel_name: str) -> str | None:
+    """Get the connector token for a tunnel (used by container)."""
+    try:
+        result = subprocess.run(
+            ["cloudflared", "tunnel", "token", tunnel_name],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        token = result.stdout.strip()
+        return token if token else None
+    except subprocess.CalledProcessError:
+        return None
+
+
+def create_tunnel(instance_name: str, domain: str, port: int = 8000) -> str | None:
+    """
+    Create a Cloudflare tunnel for an instance.
+    
+    Returns the tunnel token on success, None on failure.
+    The token should be stored in .env and used by the container.
+    """
     tunnel_name = f"paperless-{instance_name}"
     
     say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
     try:
-        # Check existing tunnel
+        # Check/create tunnel
         tunnel = get_tunnel_for_instance(instance_name)
         if not tunnel:
-            # Create tunnel
-            try:
-                subprocess.run(["cloudflared", "tunnel", "create", tunnel_name], check=True)
-            except subprocess.CalledProcessError as e:
-                # If already exists, continue
-                warn(f"Create failed or already exists: {e}")
+            result = subprocess.run(
+                ["cloudflared", "tunnel", "create", tunnel_name],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode != 0 and "already exists" not in result.stderr:
+                warn(f"Failed to create tunnel: {result.stderr}")
+                return None
             tunnel = get_tunnel_for_instance(instance_name)
             if not tunnel:
-                warn("Tunnel not found after creation attempt")
-                return False
+                warn("Tunnel not found after creation")
+                return None
         
-        tunnel_id = tunnel.get("id")
-        
-        # Create config file pointing to the tunnel
-        config_dir = Path("/etc/cloudflared")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / f"{instance_name}.yml"
-        config_content = f"""tunnel: {tunnel_id}
-credentials-file: /root/.cloudflared/{tunnel_id}.json
-
-ingress:
-  - hostname: {domain}
-    service: http://localhost:{port}
-  - service: http_status:404
-"""
-        config_file.write_text(config_content)
-        
-        # Create or ensure DNS record
-        say(f"Ensuring DNS record for {domain}")
+        # Create/update DNS record
+        say(f"Configuring DNS for {domain}")
         result = subprocess.run(
-            ["cloudflared", "tunnel", "route", "dns", tunnel_name, domain],
-            capture_output=True,
-            text=True,
-            check=False
+            ["cloudflared", "tunnel", "route", "dns", "-f", tunnel_name, domain],
+            capture_output=True, text=True, check=False
         )
+        if result.returncode != 0:
+            warn(f"DNS routing may need manual setup: {result.stderr.strip()}")
         
-        # If failed because record exists, use --force to overwrite
-        if result.returncode != 0 and "already exists" in result.stderr:
-            say(f"DNS record exists, forcing update to new tunnel...")
-            result = subprocess.run(
-                ["cloudflared", "tunnel", "route", "dns", "-f", tunnel_name, domain],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode != 0:
-                warn(f"Could not update DNS automatically. Please delete the existing CNAME record for {domain} in Cloudflare dashboard, then re-run setup.")
-                warn(f"Error: {result.stderr.strip()}")
+        # Get the token for container use
+        token = get_tunnel_token(tunnel_name)
+        if not token:
+            warn("Could not get tunnel token")
+            return None
         
         ok(f"Cloudflare tunnel ready for {domain}")
-        say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
-        return True
+        return token
         
     except Exception as e:
         warn(f"Failed to set up tunnel: {e}")
-        return False
+        return None
 
 
 def delete_tunnel(instance_name: str) -> bool:
@@ -183,66 +179,26 @@ def delete_tunnel(instance_name: str) -> bool:
     tunnel_name = f"paperless-{instance_name}"
     
     try:
-        # Delete tunnel (ignore errors if it was already removed)
-        subprocess.run(["cloudflared", "tunnel", "delete", "-f", tunnel_name], check=False)
-        
-        # Remove config file
-        config_file = Path(f"/etc/cloudflared/{instance_name}.yml")
-        if config_file.exists():
-            config_file.unlink()
+        # Force delete tunnel (removes connections too)
+        subprocess.run(
+            ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
+            check=False, capture_output=True
+        )
         
         ok(f"Cloudflare tunnel {tunnel_name} deleted")
         return True
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         warn(f"Failed to delete tunnel: {e}")
         return False
 
 
-def update_tunnel_dns(instance_name: str, domain: str) -> bool:
-    """Update DNS record to point to the tunnel (fixes stale DNS)."""
-    tunnel_name = f"paperless-{instance_name}"
-    
-    tunnel = get_tunnel_for_instance(instance_name)
-    if not tunnel:
-        warn(f"No tunnel found for instance {instance_name}")
-        return False
-    
-    say(f"Updating DNS for {domain} to point to tunnel {tunnel_name}...")
-    
-    # Use -f (force) flag to overwrite existing DNS record
-    result = subprocess.run(
-        ["cloudflared", "tunnel", "route", "dns", "-f", tunnel_name, domain],
-        capture_output=True,
-        text=True,
-        check=False
-    )
-    
-    if result.returncode == 0:
-        ok(f"DNS record updated for {domain}")
-        return True
-    else:
-        warn(f"Failed to update DNS: {result.stderr}")
-        warn("You may need to manually delete the CNAME record in Cloudflare dashboard")
-        return False
-
-
-def is_tunnel_service_running(instance_name: str) -> bool:
-    """Check if the tunnel systemd service is running."""
-    result = subprocess.run(
-        ["systemctl", "is-active", f"cloudflared-{instance_name}"],
-        capture_output=True,
-        text=True,
-        check=False
-    )
-    return result.stdout.strip() == "active"
-
-
-def restart_tunnel_service(instance_name: str) -> bool:
-    """Restart the tunnel systemd service."""
+def is_tunnel_running(instance_name: str) -> bool:
+    """Check if the tunnel container is running."""
     try:
-        subprocess.run(["systemctl", "restart", f"cloudflared-{instance_name}"], check=True)
-        ok(f"Tunnel service cloudflared-{instance_name} restarted")
-        return True
-    except subprocess.CalledProcessError:
-        warn("Failed to restart tunnel service")
+        result = subprocess.run(
+            ["docker", "ps", "-q", "-f", f"name=paperless-{instance_name}-cloudflared"],
+            capture_output=True, text=True, check=False
+        )
+        return bool(result.stdout.strip())
+    except Exception:
         return False

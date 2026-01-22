@@ -143,6 +143,7 @@ def write_env_file() -> None:
 
         ENABLE_TRAEFIK={cfg.enable_traefik}
         ENABLE_CLOUDFLARED={cfg.enable_cloudflared}
+        CLOUDFLARE_TUNNEL_TOKEN={cfg.cloudflare_tunnel_token}
         ENABLE_TAILSCALE={cfg.enable_tailscale}
         DOMAIN={cfg.domain}
         LETSENCRYPT_EMAIL={cfg.letsencrypt_email}
@@ -187,154 +188,133 @@ def write_env_file() -> None:
 
 
 def write_compose_file() -> None:
-    log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik})")
+    log(f"Writing {cfg.compose_file} (Traefik={cfg.enable_traefik}, Cloudflare={cfg.enable_cloudflared})")
     Path(cfg.stack_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Build services list
+    services = []
+    networks_section = ""
+    
+    # Common services
+    services.append(f"""  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server","--save","60","1","--loglevel","warning"]
+    networks: [paperless]""")
+    
+    services.append(f"""  db:
+    image: postgres:{cfg.postgres_version}-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {cfg.postgres_db}
+      POSTGRES_USER: {cfg.postgres_user}
+      POSTGRES_PASSWORD: {cfg.postgres_password}
+    volumes:
+      - {cfg.dir_db}:/var/lib/postgresql/data
+    networks: [paperless]""")
+    
+    services.append(f"""  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command: ["gotenberg","--chromium-disable-javascript=true"]
+    networks: [paperless]""")
+    
+    services.append(f"""  tika:
+    image: apache/tika:latest
+    restart: unless-stopped
+    networks: [paperless]""")
+    
+    # Paperless service - varies based on Traefik
     if cfg.enable_traefik == "yes":
-        # Use shared system Traefik - instances connect to external traefik network
-        # and have labels for routing
-        compose = textwrap.dedent(
-            f"""
-            services:
-              redis:
-                image: redis:7-alpine
-                restart: unless-stopped
-                command: ["redis-server","--save","60","1","--loglevel","warning"]
-                networks: [paperless]
-
-              db:
-                image: postgres:{cfg.postgres_version}-alpine
-                restart: unless-stopped
-                environment:
-                  POSTGRES_DB: {cfg.postgres_db}
-                  POSTGRES_USER: {cfg.postgres_user}
-                  POSTGRES_PASSWORD: {cfg.postgres_password}
-                volumes:
-                  - {cfg.dir_db}:/var/lib/postgresql/data
-                networks: [paperless]
-
-              gotenberg:
-                image: gotenberg/gotenberg:8
-                restart: unless-stopped
-                command: ["gotenberg","--chromium-disable-javascript=true"]
-                networks: [paperless]
-
-              tika:
-                image: apache/tika:latest
-                restart: unless-stopped
-                networks: [paperless]
-
-              paperless:
-                image: ghcr.io/paperless-ngx/paperless-ngx:latest
-                depends_on: [db, redis, gotenberg, tika]
-                restart: unless-stopped
-                environment:
-                  PUID: {cfg.puid}
-                  PGID: {cfg.pgid}
-                  TZ: {cfg.tz}
-                  PAPERLESS_REDIS: redis://redis:6379
-                  PAPERLESS_DBHOST: db
-                  PAPERLESS_DBPORT: 5432
-                  PAPERLESS_DBNAME: {cfg.postgres_db}
-                  PAPERLESS_DBUSER: {cfg.postgres_user}
-                  PAPERLESS_DBPASS: {cfg.postgres_password}
-                  PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
-                  PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
-                  PAPERLESS_URL: ${{PAPERLESS_URL}}
-                  PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
-                  PAPERLESS_TIKA_ENABLED: "1"
-                  PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
-                  PAPERLESS_TIKA_ENDPOINT: http://tika:9998
-                  PAPERLESS_CONSUMER_POLLING: "10"
-                volumes:
-                  - {cfg.dir_data}:/usr/src/paperless/data
-                  - {cfg.dir_media}:/usr/src/paperless/media
-                  - {cfg.dir_export}:/usr/src/paperless/export
-                  - {cfg.dir_consume}:/usr/src/paperless/consume
-                labels:
-                  - traefik.enable=true
-                  - traefik.http.routers.{cfg.instance_name}.rule=Host(`{cfg.domain}`)
-                  - traefik.http.routers.{cfg.instance_name}.entrypoints=websecure
-                  - traefik.http.routers.{cfg.instance_name}.tls.certresolver=letsencrypt
-                  - traefik.http.services.{cfg.instance_name}.loadbalancer.server.port=8000
-                networks:
-                  - paperless
-                  - traefik
-
-            networks:
-              paperless:
-                name: paperless_{cfg.instance_name}_net
-              traefik:
-                external: true
-            """
-        ).strip() + "\n"
+        services.append(f"""  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    depends_on: [db, redis, gotenberg, tika]
+    restart: unless-stopped
+    environment:
+      PUID: {cfg.puid}
+      PGID: {cfg.pgid}
+      TZ: {cfg.tz}
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: {cfg.postgres_db}
+      PAPERLESS_DBUSER: {cfg.postgres_user}
+      PAPERLESS_DBPASS: {cfg.postgres_password}
+      PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
+      PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
+      PAPERLESS_URL: ${{PAPERLESS_URL}}
+      PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_CONSUMER_POLLING: "10"
+    volumes:
+      - {cfg.dir_data}:/usr/src/paperless/data
+      - {cfg.dir_media}:/usr/src/paperless/media
+      - {cfg.dir_export}:/usr/src/paperless/export
+      - {cfg.dir_consume}:/usr/src/paperless/consume
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.{cfg.instance_name}.rule=Host(`{cfg.domain}`)
+      - traefik.http.routers.{cfg.instance_name}.entrypoints=websecure
+      - traefik.http.routers.{cfg.instance_name}.tls.certresolver=letsencrypt
+      - traefik.http.services.{cfg.instance_name}.loadbalancer.server.port=8000
+    networks:
+      - paperless
+      - traefik""")
+        networks_section = f"""networks:
+  paperless:
+    name: paperless_{cfg.instance_name}_net
+  traefik:
+    external: true"""
     else:
-        compose = textwrap.dedent(
-            f"""
-            services:
-              redis:
-                image: redis:7-alpine
-                restart: unless-stopped
-                command: ["redis-server","--save","60","1","--loglevel","warning"]
-                networks: [paperless]
-
-              db:
-                image: postgres:{cfg.postgres_version}-alpine
-                restart: unless-stopped
-                environment:
-                  POSTGRES_DB: {cfg.postgres_db}
-                  POSTGRES_USER: {cfg.postgres_user}
-                  POSTGRES_PASSWORD: {cfg.postgres_password}
-                volumes:
-                  - {cfg.dir_db}:/var/lib/postgresql/data
-                networks: [paperless]
-
-              gotenberg:
-                image: gotenberg/gotenberg:8
-                restart: unless-stopped
-                command: ["gotenberg","--chromium-disable-javascript=true"]
-                networks: [paperless]
-
-              tika:
-                image: apache/tika:latest
-                restart: unless-stopped
-                networks: [paperless]
-
-              paperless:
-                image: ghcr.io/paperless-ngx/paperless-ngx:latest
-                depends_on: [db, redis, gotenberg, tika]
-                restart: unless-stopped
-                environment:
-                  PUID: {cfg.puid}
-                  PGID: {cfg.pgid}
-                  TZ: {cfg.tz}
-                  PAPERLESS_REDIS: redis://redis:6379
-                  PAPERLESS_DBHOST: db
-                  PAPERLESS_DBPORT: 5432
-                  PAPERLESS_DBNAME: {cfg.postgres_db}
-                  PAPERLESS_DBUSER: {cfg.postgres_user}
-                  PAPERLESS_DBPASS: {cfg.postgres_password}
-                  PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
-                  PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
-                  PAPERLESS_URL: ${{PAPERLESS_URL}}
-                  PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
-                  PAPERLESS_TIKA_ENABLED: "1"
-                  PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
-                  PAPERLESS_TIKA_ENDPOINT: http://tika:9998
-                  PAPERLESS_CONSUMER_POLLING: "10"
-                ports:
-                  - {cfg.http_port}:8000
-                volumes:
-                  - {cfg.dir_data}:/usr/src/paperless/data
-                  - {cfg.dir_media}:/usr/src/paperless/media
-                  - {cfg.dir_export}:/usr/src/paperless/export
-                  - {cfg.dir_consume}:/usr/src/paperless/consume
-                networks: [paperless]
-
-            networks:
-              paperless:
-                name: paperless_{cfg.instance_name}_net
-            """
-        ).strip() + "\n"
+        services.append(f"""  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    depends_on: [db, redis, gotenberg, tika]
+    restart: unless-stopped
+    environment:
+      PUID: {cfg.puid}
+      PGID: {cfg.pgid}
+      TZ: {cfg.tz}
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: {cfg.postgres_db}
+      PAPERLESS_DBUSER: {cfg.postgres_user}
+      PAPERLESS_DBPASS: {cfg.postgres_password}
+      PAPERLESS_ADMIN_USER: {cfg.paperless_admin_user}
+      PAPERLESS_ADMIN_PASSWORD: {cfg.paperless_admin_password}
+      PAPERLESS_URL: ${{PAPERLESS_URL}}
+      PAPERLESS_CSRF_TRUSTED_ORIGINS: ${{PAPERLESS_CSRF_TRUSTED_ORIGINS}}
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_CONSUMER_POLLING: "10"
+    ports:
+      - {cfg.http_port}:8000
+    volumes:
+      - {cfg.dir_data}:/usr/src/paperless/data
+      - {cfg.dir_media}:/usr/src/paperless/media
+      - {cfg.dir_export}:/usr/src/paperless/export
+      - {cfg.dir_consume}:/usr/src/paperless/consume
+    networks: [paperless]""")
+        networks_section = f"""networks:
+  paperless:
+    name: paperless_{cfg.instance_name}_net"""
+    
+    # Cloudflared container (token-based, no host binary needed to run)
+    if cfg.enable_cloudflared == "yes" and cfg.cloudflare_tunnel_token:
+        services.append(f"""  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${{CLOUDFLARE_TUNNEL_TOKEN}}
+    environment:
+      CLOUDFLARE_TUNNEL_TOKEN: ${{CLOUDFLARE_TUNNEL_TOKEN}}
+    networks: [paperless]
+    depends_on: [paperless]""")
+    
+    # Build final compose file
+    compose = "services:\n" + "\n\n".join(services) + "\n\n" + networks_section + "\n"
     Path(cfg.compose_file).write_text(compose)
 
 

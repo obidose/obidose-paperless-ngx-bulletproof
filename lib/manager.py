@@ -85,57 +85,39 @@ def check_networking_dependencies() -> dict[str, bool]:
     }
 
 
-def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -> bool:
-    """Set up Cloudflare tunnel for an instance. Returns success status."""
+def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -> str | None:
+    """
+    Set up Cloudflare tunnel for an instance.
+    
+    Returns the tunnel token on success (to be stored in .env), None on failure.
+    The token is used by the cloudflared container in docker-compose.
+    """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import cloudflared, common
     
-    # Check if cloudflared is installed, install if not
+    # Check if cloudflared CLI is installed (needed for management)
     if not cloudflared.is_cloudflared_installed():
-        common.say("Installing cloudflared...")
+        common.say("Installing cloudflared CLI...")
         if not cloudflared.install_cloudflared():
-            common.warn("Failed to install cloudflared")
-            return False
+            common.warn("Failed to install cloudflared CLI")
+            return None
     
     if not cloudflared.is_authenticated():
-        return False
+        common.warn("Cloudflared not authenticated")
+        return None
     
     print()
     common.say("Setting up Cloudflare Tunnel...")
     
-    if not cloudflared.create_tunnel(instance_name, domain, port):
+    # Create tunnel and get token
+    token = cloudflared.create_tunnel(instance_name, domain, port)
+    if not token:
         common.warn("Failed to create Cloudflare tunnel")
-        return False
+        return None
     
-    common.ok(f"Cloudflare tunnel ready for {domain}")
-    common.say(f"To start: cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run")
-    
-    # Start tunnel as systemd service automatically
-    try:
-        service_content = f"""[Unit]
-Description=Cloudflare Tunnel for {instance_name}
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-"""
-        service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
-        service_file.write_text(service_content)
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
-        subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
-        common.ok("Tunnel service started")
-        return True
-    except Exception as e:
-        common.warn(f"Failed to create service: {e}")
-        return False
+    common.ok(f"Cloudflare tunnel configured for {domain}")
+    common.say("Tunnel will run as container with the instance")
+    return token
 
 
 def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: str, 
@@ -148,9 +130,8 @@ def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: 
     # Install backup cron
     files.install_cron_backup()
     
-    # Set up Cloudflare tunnel if enabled
-    if enable_cloudflared == "yes":
-        setup_cloudflare_tunnel(instance_name, domain, port)
+    # Note: Cloudflare tunnel is now handled via docker-compose container
+    # Token should already be in .env and compose file regenerated before this
     
     # Register instance
     instance_manager.add_instance(instance_name, stack_dir, data_root)
@@ -339,11 +320,10 @@ class PaperlessManager:
             ("1", colorize("▸", Colors.GREEN) + " Manage Instances" + (f" ({len(instances)})" if instances else "")),
             ("2", colorize("▸", Colors.BLUE) + " Browse Backups" + (" ✓" if self.rclone_configured else " ⚠")),
             ("3", colorize("▸", Colors.MAGENTA) + " System Backup/Restore"),
-            ("4", colorize("▸", Colors.CYAN) + " Manage Traefik (HTTPS)"),
-            ("5", colorize("▸", Colors.CYAN) + " Manage Cloudflare Tunnel"),
-            ("6", colorize("▸", Colors.CYAN) + " Manage Tailscale"),
-            ("7", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
-            ("8", colorize("▸", Colors.RED) + " Nuke Setup (Clean Start)"),
+            ("4", colorize("▸", Colors.CYAN) + " Traefik Setup (HTTPS)"),
+            ("5", colorize("▸", Colors.CYAN) + " Tailscale Setup"),
+            ("6", colorize("▸", Colors.YELLOW) + " Configure Backup Server"),
+            ("7", colorize("▸", Colors.RED) + " Nuke Setup (Clean Start)"),
             ("0", colorize("◀", Colors.RED) + " Quit")
         ]
         print_menu(options)
@@ -364,12 +344,10 @@ class PaperlessManager:
         elif choice == "4":
             self.traefik_menu()
         elif choice == "5":
-            self.cloudflared_menu()
-        elif choice == "6":
             self.tailscale_menu()
-        elif choice == "7":
+        elif choice == "6":
             self.configure_backup_connection()
-        elif choice == "8":
+        elif choice == "7":
             self.nuke_setup()
         else:
             warn("Invalid option")
@@ -854,7 +832,7 @@ class PaperlessManager:
                 print("  • All instance directories")
                 print("  • All Docker containers")
                 print("  • All data and configurations")
-                print("  • All Cloudflared services")
+                print("  • All Cloudflared tunnels")
                 print()
                 
                 if confirm("Delete ALL instances and their files?", False):
@@ -1452,10 +1430,15 @@ class PaperlessManager:
             files.install_cron_backup()
             ok("Backup schedule configured")
             
-            # Set up Cloudflare tunnel if enabled
+            # Set up Cloudflare tunnel if enabled (get token and update config)
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
                 port = int(common.cfg.http_port)
-                setup_cloudflare_tunnel(new_name, common.cfg.domain, port)
+                token = setup_cloudflare_tunnel(new_name, common.cfg.domain, port)
+                if token:
+                    common.cfg.cloudflare_tunnel_token = token
+                    files.write_env_file()
+                    files.write_compose_file()
+                    ok("Cloudflare tunnel configured")
             
             # Register instance
             self.instance_manager.add_instance(
@@ -1739,12 +1722,40 @@ class PaperlessManager:
                 common.cfg.domain = get_domain_input("Domain (configured in Cloudflare)", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
-                    warn("Cloudflare Tunnel not configured!")
-                    say("Set up from main menu: Manage Cloudflare Tunnel")
-                    if not confirm("Continue anyway? (Tunnel won't be created automatically)", False):
+                    warn("Cloudflare not authenticated!")
+                    print()
+                    print("  1) Set up Cloudflare now (recommended)")
+                    print("  2) Continue anyway (configure Cloudflare later)")
+                    print("  0) Cancel")
+                    print()
+                    cf_choice = get_input("Choose option", "1")
+                    
+                    if cf_choice == "0":
                         say("Setup cancelled")
                         input("\nPress Enter to continue...")
                         return
+                    elif cf_choice == "1":
+                        # Set up Cloudflare auth inline
+                        from lib.installer import cloudflared
+                        if not cloudflared.is_cloudflared_installed():
+                            say("Installing cloudflared CLI...")
+                            if not cloudflared.install_cloudflared():
+                                error("Failed to install cloudflared")
+                                if not confirm("Continue anyway?", False):
+                                    say("Setup cancelled")
+                                    input("\nPress Enter to continue...")
+                                    return
+                        say("Authenticating with Cloudflare...")
+                        if cloudflared.authenticate():
+                            ok("Cloudflare authenticated")
+                            net_status["cloudflared_authenticated"] = True
+                        else:
+                            error("Cloudflare authentication failed")
+                            if not confirm("Continue anyway?", False):
+                                say("Setup cancelled")
+                                input("\nPress Enter to continue...")
+                                return
+                    # cf_choice == "2" just continues
             else:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
@@ -1966,6 +1977,16 @@ class PaperlessManager:
             print()
             say("Creating instance...")
             
+            # Set up Cloudflare tunnel first (to get token before compose is written)
+            if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
+                port = int(common.cfg.http_port)
+                token = setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain, port)
+                if token:
+                    common.cfg.cloudflare_tunnel_token = token
+                else:
+                    warn("Could not set up Cloudflare tunnel")
+                    common.cfg.enable_cloudflared = "no"
+            
             # Create directories
             common.ensure_dir_tree(common.cfg)
             ok("Directories created")
@@ -1992,10 +2013,10 @@ class PaperlessManager:
                 files.install_cron_backup()
                 ok("Backup schedule installed")
             
-            # Set up Cloudflare tunnel if enabled
-            if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                port = int(common.cfg.http_port)
-                setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain, port)
+            # Set up Cloudflare tunnel if enabled (token already in config from setup phase)
+            # Container will start with the stack since it's in docker-compose
+            if common.cfg.enable_cloudflared == "yes" and common.cfg.cloudflare_tunnel_token:
+                ok("Cloudflare tunnel container running")
             
             # Register instance
             self.instance_manager.add_instance(
@@ -2195,7 +2216,7 @@ class PaperlessManager:
                 print(f"  • Stack directory: {instance.stack_dir}")
                 print(f"  • Data directory:  {instance.data_root}")
                 print(f"  • Docker containers")
-                print(f"  • Cloudflared service (if exists)")
+                print(f"  • Cloudflare tunnel (if configured)")
                 print()
                 
                 if confirm("Delete ALL files and containers?", False):
@@ -4498,22 +4519,17 @@ class PaperlessManager:
             # Disable Cloudflare
             if confirm("Disable Cloudflare Tunnel for this instance?", False):
                 self._update_instance_env(instance, "ENABLE_CLOUDFLARED", "no")
+                self._update_instance_env(instance, "CLOUDFLARE_TUNNEL_TOKEN", "")
                 port = instance.get_env_value("HTTP_PORT", "8000")
                 self._update_instance_env(instance, "PAPERLESS_URL", f"http://localhost:{port}")
                 self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", "http://localhost")
                 
-                # Stop and remove tunnel service
-                service_name = f"cloudflared-{instance.name}"
-                try:
-                    subprocess.run(["systemctl", "stop", service_name], check=False, capture_output=True)
-                    subprocess.run(["systemctl", "disable", service_name], check=False, capture_output=True)
-                    service_file = Path(f"/etc/systemd/system/{service_name}.service")
-                    if service_file.exists():
-                        service_file.unlink()
-                    subprocess.run(["systemctl", "daemon-reload"], check=False, capture_output=True)
-                except:
-                    pass
+                # Delete the tunnel (this also cleans up any legacy systemd service)
+                from lib.installer.cloudflared import delete_tunnel
+                delete_tunnel(instance.name)
                 
+                # Regenerate compose file to remove cloudflared container
+                self._offer_regenerate_compose(instance, skip_confirm=True)
                 ok("Cloudflare Tunnel disabled")
         else:
             # Enable Cloudflare
@@ -4538,14 +4554,15 @@ class PaperlessManager:
                 # Get the instance port
                 port = int(instance.get_env_value("HTTP_PORT", "8000"))
                 
-                # Create tunnel
+                # Create tunnel - returns token for container-based approach
                 say("Creating Cloudflare tunnel...")
-                if create_tunnel(instance.name, domain, port):
-                    # Create and start systemd service
-                    self._create_cloudflare_service(instance.name)
+                token = create_tunnel(instance.name, domain, port)
+                if token:
+                    # Store token in .env for the cloudflared container
+                    self._update_instance_env(instance, "CLOUDFLARE_TUNNEL_TOKEN", token)
                     ok(f"Cloudflare Tunnel enabled for https://{domain}")
-                    # Regenerate compose file to remove Traefik labels (if switching from Traefik)
-                    self._offer_regenerate_compose(instance)
+                    # Regenerate compose file to add cloudflared container
+                    self._offer_regenerate_compose(instance, skip_confirm=True)
                 else:
                     warn("Tunnel creation failed - you may need to set it up manually")
         
@@ -4972,36 +4989,6 @@ class PaperlessManager:
         common.cfg.cron_incr_time = get_input("Incremental schedule", "0 */6 * * *")
         common.cfg.cron_full_time = get_input("Full backup schedule", "30 3 * * 0")
         common.cfg.cron_archive_time = get_input("Archive schedule", "0 4 1 * *")
-
-    def _create_cloudflare_service(self, instance_name: str) -> bool:
-        """Create and start a systemd service for Cloudflare tunnel."""
-        try:
-            service_content = f"""[Unit]
-Description=Cloudflare Tunnel for {instance_name}
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/{instance_name}.yml run
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-"""
-            service_file = Path(f"/etc/systemd/system/cloudflared-{instance_name}.service")
-            service_file.write_text(service_content)
-            
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
-            subprocess.run(["systemctl", "enable", f"cloudflared-{instance_name}"], check=True)
-            subprocess.run(["systemctl", "start", f"cloudflared-{instance_name}"], check=True)
-            
-            ok("Cloudflare tunnel service started")
-            return True
-        except Exception as e:
-            warn(f"Failed to create service: {e}")
-            return False
     
     def _offer_regenerate_compose(self, instance: Instance, skip_confirm: bool = False) -> None:
         """Offer to regenerate docker-compose.yml for the instance.
@@ -5202,52 +5189,29 @@ WantedBy=multi-user.target
                 }
                 ok("Traefik config backed up (including SSL certificates)")
             
-            # Backup Cloudflare Tunnel configs
-            cloudflared_etc = Path("/etc/cloudflared")
+            # Backup Cloudflare auth cert (tunnel tokens are in instance .env files)
             cloudflared_home = Path.home() / ".cloudflared"
             
-            if cloudflared_etc.exists() or cloudflared_home.exists():
-                say("Backing up Cloudflare Tunnel configuration...")
+            if cloudflared_home.exists():
+                say("Backing up Cloudflare authentication...")
                 cf_backup_dir = network_dir / "cloudflared"
                 cf_backup_dir.mkdir(exist_ok=True)
                 
-                tunnel_configs = []
-                
-                # Backup /etc/cloudflared/*.yml (tunnel configs)
-                if cloudflared_etc.exists():
-                    etc_backup = cf_backup_dir / "etc"
-                    etc_backup.mkdir(exist_ok=True)
-                    for yml_file in cloudflared_etc.glob("*.yml"):
-                        shutil.copy2(yml_file, etc_backup / yml_file.name)
-                        tunnel_configs.append(yml_file.name.replace(".yml", ""))
-                
-                # Backup ~/.cloudflared/ (credentials and cert)
-                if cloudflared_home.exists():
-                    home_backup = cf_backup_dir / "home"
-                    home_backup.mkdir(exist_ok=True)
-                    
-                    # cert.pem (authentication cert)
-                    cert_pem = cloudflared_home / "cert.pem"
-                    if cert_pem.exists():
-                        shutil.copy2(cert_pem, home_backup / "cert.pem")
-                    
-                    # *.json (tunnel credentials)
-                    for json_file in cloudflared_home.glob("*.json"):
-                        shutil.copy2(json_file, home_backup / json_file.name)
-                
-                # Backup systemd services
-                services_backup = cf_backup_dir / "services"
-                services_backup.mkdir(exist_ok=True)
-                for service_file in Path("/etc/systemd/system").glob("cloudflared-*.service"):
-                    shutil.copy2(service_file, services_backup / service_file.name)
+                # Backup ~/.cloudflared/cert.pem (auth cert for cloudflared CLI)
+                # Note: Tunnel tokens are stored in instance .env files and
+                # backed up as part of instance snapshots
+                home_backup = cf_backup_dir / "home"
+                home_backup.mkdir(exist_ok=True)
+                cert_pem = cloudflared_home / "cert.pem"
+                if cert_pem.exists():
+                    shutil.copy2(cert_pem, home_backup / "cert.pem")
                 
                 network_info["cloudflare"] = {
                     "enabled": True,
                     "authenticated": cloudflared.is_authenticated(),
-                    "tunnels": tunnel_configs,
-                    "tunnel_count": len(paperless_tunnels)  # Only count paperless tunnels
+                    "tunnel_count": len(paperless_tunnels)
                 }
-                ok(f"Cloudflare config backed up ({len(tunnel_configs)} tunnel configs)")
+                ok("Cloudflare auth backed up")
             
             # Note: We don't backup rclone config - it's already configured before
             # we can access system backups, so there's no point backing it up
@@ -6021,14 +5985,36 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     common.cfg.refresh_paths()
                     files.install_cron_backup()
                     
-                    # Set up Cloudflare tunnel if it was enabled in the restored config
+                    # Set up Cloudflare tunnel if enabled
+                    # Check for existing token first (from backup), otherwise create new tunnel
                     enable_cf = restored_env.get("ENABLE_CLOUDFLARED", "no")
+                    existing_token = restored_env.get("CLOUDFLARE_TUNNEL_TOKEN", "")
                     if enable_cf == "yes" and cf_info.get("enabled"):
-                        say(f"  Setting up Cloudflare tunnel...")
-                        domain = restored_env.get("DOMAIN", "")
-                        http_port = int(restored_env.get("HTTP_PORT", "8000"))
-                        if domain:
-                            setup_cloudflare_tunnel(inst_name, domain, http_port)
+                        if existing_token:
+                            # Token exists from backup - just ensure compose has cloudflared container
+                            say(f"  Using restored Cloudflare tunnel token...")
+                            ok("  Cloudflare tunnel configured from backup")
+                        else:
+                            # No token - create new tunnel
+                            say(f"  Setting up Cloudflare tunnel...")
+                            domain = restored_env.get("DOMAIN", "")
+                            http_port = int(restored_env.get("HTTP_PORT", "8000"))
+                            if domain:
+                                token = setup_cloudflare_tunnel(inst_name, domain, http_port)
+                                if token:
+                                    # Update .env with new token
+                                    env_content = restored_env_file.read_text()
+                                    if "CLOUDFLARE_TUNNEL_TOKEN=" in env_content:
+                                        import re
+                                        env_content = re.sub(
+                                            r'CLOUDFLARE_TUNNEL_TOKEN=.*',
+                                            f'CLOUDFLARE_TUNNEL_TOKEN={token}',
+                                            env_content
+                                        )
+                                    else:
+                                        env_content += f"\nCLOUDFLARE_TUNNEL_TOKEN={token}\n"
+                                    restored_env_file.write_text(env_content)
+                                    ok("  Cloudflare tunnel configured")
                     
                     # Register the instance in the registry
                     self.instance_manager.add_instance(inst_name, stack_dir, data_root)
@@ -6181,9 +6167,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             # Cloudflare guidance
             if cf_info.get("enabled"):
                 print(box_line(f"   {colorize('Cloudflare Tunnels:', Colors.CYAN)}"))
-                print(box_line("   → Tunnels auto-reconnect (IP doesn't matter)"))
-                print(box_line("   → Check: systemctl status cloudflared-*"))
-                print(box_line("   → If issues: cloudflared service install"))
+                print(box_line("   → Tunnels run as Docker containers"))
+                print(box_line("   → Check: docker ps | grep cloudflared"))
+                print(box_line("   → Tokens restored from backup in .env"))
                 print(box_line(""))
             
             # Tailscale guidance  
@@ -6210,7 +6196,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             print(colorize("Useful Commands:", Colors.BOLD))
             print("  paperless                     - Open management TUI")
             if cf_info.get("enabled"):
-                print("  systemctl status cloudflared-*  - Check Cloudflare tunnels")
+                print("  docker ps | grep cloudflared  - Check Cloudflare tunnels")
             if ts_info.get("enabled"):
                 print("  tailscale status              - Check Tailscale connection")
             print("  docker ps                     - Check running containers")
@@ -6805,142 +6791,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             error(f"Failed to delete folder: {e}")
         input("\nPress Enter to continue...")
     
-    def cloudflared_menu(self) -> None:
-        """Cloudflare Tunnel management menu."""
-        sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-        from lib.installer import cloudflared
-        
-        while True:
-            print_header("Manage Cloudflare Tunnel")
-            
-            installed = cloudflared.is_cloudflared_installed()
-            authenticated = cloudflared.is_authenticated() if installed else False
-            
-            if not installed:
-                say(colorize("⚠ Cloudflared not installed", Colors.YELLOW))
-                print("\nCloudflare Tunnel provides secure access without exposing ports.")
-                print()
-                options = [("1", "Install cloudflared"), ("0", "Back to main menu")]
-            elif not authenticated:
-                say(colorize("⚠ Not authenticated with Cloudflare", Colors.YELLOW))
-                print()
-                options = [("1", "Authenticate with Cloudflare"), ("0", "Back to main menu")]
-            else:
-                say(colorize("✓ Cloudflared installed and authenticated", Colors.GREEN))
-                
-                # Show per-instance tunnel status
-                instances = self.instance_manager.list_instances()
-                tunnels = cloudflared.list_tunnels()
-                paperless_tunnels = [t for t in tunnels if t.get('name', '').startswith('paperless-')]
-                
-                if instances:
-                    print()
-                    print(colorize("Instance Tunnel Status:", Colors.BOLD))
-                    for inst in instances:
-                        tunnel = cloudflared.get_tunnel_for_instance(inst.name)
-                        cf_enabled = inst.get_env_value("ENABLE_CLOUDFLARED", "no") == "yes"
-                        
-                        # Check if service is running
-                        service_active = False
-                        try:
-                            result = subprocess.run(
-                                ["systemctl", "is-active", f"cloudflared-{inst.name}"],
-                                capture_output=True, check=False
-                            )
-                            service_active = result.returncode == 0
-                        except:
-                            pass
-                        
-                        if tunnel and service_active:
-                            status = colorize("● Active", Colors.GREEN)
-                            domain = inst.get_env_value("DOMAIN", "?")
-                            print(f"  {inst.name}: {status} → https://{domain}")
-                        elif tunnel:
-                            status = colorize("○ Configured", Colors.YELLOW)
-                            print(f"  {inst.name}: {status} (tunnel exists, service stopped)")
-                        elif cf_enabled:
-                            status = colorize("⚠ Misconfigured", Colors.RED)
-                            print(f"  {inst.name}: {status} (enabled but no tunnel)")
-                        else:
-                            status = colorize("○ Not enabled", Colors.CYAN)
-                            print(f"  {inst.name}: {status}")
-                
-                print()
-                options = [
-                    ("1", "List all tunnels"),
-                    ("2", "Enable tunnel for an instance"),
-                    ("3", "Disable tunnel for an instance"),
-                    ("0", "Back to main menu")
-                ]
-            
-            print_menu(options)
-            choice = get_input("Select option", "")
-            
-            if choice == "0":
-                break
-            elif choice == "1":
-                if not installed:
-                    if cloudflared.install_cloudflared():
-                        ok("Cloudflared installed!")
-                    else:
-                        error("Installation failed")
-                elif not authenticated:
-                    if cloudflared.authenticate():
-                        ok("Authentication successful!")
-                    else:
-                        error("Authentication failed")
-                else:
-                    # List tunnels
-                    tunnels = cloudflared.list_tunnels()
-                    paperless_tunnels = [t for t in tunnels if t.get('name', '').startswith('paperless-')]
-                    other_tunnels = [t for t in tunnels if not t.get('name', '').startswith('paperless-')]
-                    
-                    print()
-                    if paperless_tunnels:
-                        print(colorize("Paperless Tunnels:", Colors.BOLD))
-                        for t in paperless_tunnels:
-                            print(f"  {t.get('name')} - {t.get('id')}")
-                    else:
-                        say("No paperless tunnels found")
-                    
-                    if other_tunnels:
-                        print()
-                        if confirm(f"Show {len(other_tunnels)} non-paperless tunnel(s)?", False):
-                            print(colorize("\nOther Tunnels:", Colors.BOLD))
-                            for t in other_tunnels:
-                                print(f"  {t.get('name')} - {t.get('id')}")
-                input("\nPress Enter to continue...")
-            elif choice == "2" and authenticated:
-                # Enable tunnel for an instance
-                instances = self.instance_manager.list_instances()
-                available = [i for i in instances if i.get_env_value("ENABLE_CLOUDFLARED", "no") != "yes"]
-                if not available:
-                    say("All instances already have Cloudflare enabled")
-                else:
-                    print("\nSelect instance to enable Cloudflare tunnel:")
-                    for idx, inst in enumerate(available, 1):
-                        print(f"  {idx}) {inst.name}")
-                    sel = get_input(f"Select [1-{len(available)}]", "")
-                    if sel.isdigit() and 1 <= int(sel) <= len(available):
-                        inst = available[int(sel) - 1]
-                        self._toggle_instance_cloudflare(inst)
-                input("\nPress Enter to continue...")
-            elif choice == "3" and authenticated:
-                # Disable tunnel for an instance
-                instances = self.instance_manager.list_instances()
-                enabled = [i for i in instances if i.get_env_value("ENABLE_CLOUDFLARED", "no") == "yes"]
-                if not enabled:
-                    say("No instances have Cloudflare enabled")
-                else:
-                    print("\nSelect instance to disable Cloudflare tunnel:")
-                    for idx, inst in enumerate(enabled, 1):
-                        print(f"  {idx}) {inst.name}")
-                    sel = get_input(f"Select [1-{len(enabled)}]", "")
-                    if sel.isdigit() and 1 <= int(sel) <= len(enabled):
-                        inst = enabled[int(sel) - 1]
-                        self._toggle_instance_cloudflare(inst)
-                input("\nPress Enter to continue...")
-    
     def tailscale_menu(self) -> None:
         """Tailscale management menu."""
         sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
@@ -7184,14 +7034,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 say(f"Cleaning up {len(instances)} instance(s)...")
                 for inst in instances:
                     try:
-                        # Remove cloudflared service
-                        service_file = Path(f"/etc/systemd/system/cloudflared-{inst.name}.service")
-                        if service_file.exists():
-                            subprocess.run(["systemctl", "stop", f"cloudflared-{inst.name}"], 
-                                          capture_output=True, check=False)
-                            subprocess.run(["systemctl", "disable", f"cloudflared-{inst.name}"], 
-                                          capture_output=True, check=False)
-                            service_file.unlink()
+                        # Delete Cloudflare tunnel if exists
+                        from lib.installer import cloudflared
+                        cloudflared.delete_tunnel(inst.name)
                         
                         # Remove Tailscale serve
                         try:
