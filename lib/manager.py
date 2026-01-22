@@ -5065,7 +5065,7 @@ WantedBy=multi-user.target
             print(colorize("What is System Backup?", Colors.BOLD))
             print("  • Backs up metadata about ALL instances")
             print("  • Records which instances exist, their config, state")
-            print("  • System-level Samba/SFTP configs (Syncthing is per-instance)")
+            print("  • Global consume settings (per-instance configs in snapshots)")
             print("  • Enables disaster recovery: restore entire multi-instance setup")
             print("  • Separate from individual instance data backups")
             print()
@@ -5245,35 +5245,16 @@ WantedBy=multi-user.target
             # Note: We don't backup rclone config - it's already configured before
             # we can access system backups, so there's no point backing it up
             
-            # ─── Backup Consume Folder Services Configuration ─────────────────
+            # ─── Backup Global Consume Config ─────────────────────────────────
+            # Note: Per-instance Samba/SFTP configs are in instance snapshots
+            # We only backup the global consume settings here
             consume_backup_dir = work / "consume"
-            consume_backup_dir.mkdir(parents=True, exist_ok=True)
-            consume_info = {"enabled": False, "global_config": False, "samba_config": False, "sftp_config": False}
-            
-            # Global consume config
             global_consume_conf = Path("/etc/paperless-bulletproof/consume-global.conf")
             if global_consume_conf.exists():
+                consume_backup_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(global_consume_conf, consume_backup_dir / "consume-global.conf")
-                consume_info["global_config"] = True
-            
-            # Samba config directory
-            samba_config_dir = Path("/etc/paperless-bulletproof/samba")
-            if samba_config_dir.exists():
-                samba_backup = consume_backup_dir / "samba"
-                shutil.copytree(samba_config_dir, samba_backup, dirs_exist_ok=True)
-                consume_info["samba_config"] = True
-            
-            # SFTP config directory
-            sftp_config_dir = Path("/etc/paperless-bulletproof/sftp")
-            if sftp_config_dir.exists():
-                sftp_backup = consume_backup_dir / "sftp"
-                shutil.copytree(sftp_config_dir, sftp_backup, dirs_exist_ok=True)
-                consume_info["sftp_config"] = True
-            
-            consume_info["enabled"] = consume_info["global_config"] or consume_info["samba_config"] or consume_info["sftp_config"]
-            if consume_info["enabled"]:
-                network_info["consume"] = consume_info
-                ok("Consume folder services config backed up")
+                network_info["consume"] = {"enabled": True, "global_config": True}
+                ok("Global consume config backed up")
             
             # Note Tailscale status (can't really backup Tailscale auth)
             if tailscale_connected:
@@ -5367,7 +5348,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             if network_info["cloudflare"]["enabled"]:
                 print(box_line(f" ✓ Cloudflare tunnel configs ({len(network_info['cloudflare']['tunnels'])})"))
             if network_info.get("consume", {}).get("enabled"):
-                print(box_line(" ✓ Consume folder services config (Samba/SFTP)"))
+                print(box_line(" ✓ Global consume folder settings"))
             if network_info["tailscale"]["enabled"]:
                 print(box_line(" ✓ Tailscale info (will prompt on restore)"))
             print(draw_box_bottom(box_width))
@@ -5483,7 +5464,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         print(box_line(" This will restore:"))
         print(box_line("   • Traefik configuration + SSL certificates"))
         print(box_line("   • Cloudflare tunnel configs and credentials"))
-        print(box_line("   • Samba/SFTP global configs"))
+        print(box_line("   • Global consume folder settings"))
         print(box_line("   • Each instance from its backup snapshot"))
         print(draw_box_divider(box_width))
         print(box_line(f" {colorize('Note:', Colors.YELLOW)} Tailscale will prompt for re-authentication if needed"))
@@ -5584,9 +5565,9 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     print(box_line(f"   ○ Cloudflare: not configured"))
                 
                 if consume_info.get("enabled"):
-                    print(box_line(f"   ✓ Samba/SFTP configs"))
+                    print(box_line(f"   ✓ Global consume settings"))
                 else:
-                    print(box_line(f"   ○ Samba/SFTP: not configured"))
+                    print(box_line(f"   ○ Global consume: not configured"))
                 
                 if ts_info.get("enabled"):
                     print(box_line(f"   ✓ Tailscale: will prompt for setup"))
@@ -5839,45 +5820,17 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 # Old tunnels/configs are invalid after system nuke
                 say("Cloudflare tunnels will be recreated during instance restore")
             
-            # Restore Consume Folder Services Configuration (Samba/SFTP)
+            # Restore Global Consume Config
+            # Note: Per-instance Samba/SFTP configs come from instance snapshots
             consume_backup = work / "consume"
             consume_info = network_info.get("consume", {})
             if consume_backup.exists() and consume_info.get("enabled"):
-                say("Restoring Consume Folder Services configuration...")
-                
-                # Restore global consume config
                 global_conf_backup = consume_backup / "consume-global.conf"
                 if global_conf_backup.exists():
                     dest_dir = Path("/etc/paperless-bulletproof")
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(global_conf_backup, dest_dir / "consume-global.conf")
                     ok("Global consume config restored")
-                
-                # Restore Samba config directory
-                samba_backup = consume_backup / "samba"
-                if samba_backup.exists():
-                    samba_dest = Path("/etc/paperless-bulletproof/samba")
-                    samba_dest.mkdir(parents=True, exist_ok=True)
-                    for file in samba_backup.iterdir():
-                        if file.is_file():
-                            shutil.copy2(file, samba_dest / file.name)
-                        elif file.is_dir():
-                            shutil.copytree(file, samba_dest / file.name, dirs_exist_ok=True)
-                    ok("Samba config restored")
-                
-                # Restore SFTP config directory
-                sftp_backup = consume_backup / "sftp"
-                if sftp_backup.exists():
-                    sftp_dest = Path("/etc/paperless-bulletproof/sftp")
-                    sftp_dest.mkdir(parents=True, exist_ok=True)
-                    for file in sftp_backup.iterdir():
-                        if file.is_file():
-                            shutil.copy2(file, sftp_dest / file.name)
-                        elif file.is_dir():
-                            shutil.copytree(file, sftp_dest / file.name, dirs_exist_ok=True)
-                    ok("SFTP config restored")
-                
-                ok("Consume folder services configuration restored")
             
             # ─── Set Up Tailscale If Backup Had It Enabled ────────────────────
             # This ensures the environment matches what instances expect
