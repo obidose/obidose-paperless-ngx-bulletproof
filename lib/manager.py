@@ -1770,6 +1770,10 @@ class PaperlessManager:
                 
                 backup_choice = get_input("Choose backup plan [1-4]", "1")
                 
+                while backup_choice not in ["1", "2", "3", "4"]:
+                    warn("Please enter 1, 2, 3, or 4")
+                    backup_choice = get_input("Choose backup plan [1-4]", "1")
+                
                 if backup_choice == "1":
                     # Recommended: comprehensive coverage
                     common.cfg.cron_incr_time = "0 */6 * * *"   # Every 6 hours
@@ -1798,6 +1802,10 @@ class PaperlessManager:
                 print()
                 
                 retention_choice = get_input("Choose retention policy [1-4]", "1")
+                
+                while retention_choice not in ["1", "2", "3", "4"]:
+                    warn("Please enter 1, 2, 3, or 4")
+                    retention_choice = get_input("Choose retention policy [1-4]", "1")
                 
                 if retention_choice == "1":
                     common.cfg.retention_days = "30"
