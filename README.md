@@ -44,7 +44,7 @@ Configure how each instance is accessed:
 
 **Traefik HTTPS** - Automatic SSL via Let's Encrypt. Point your domain DNS to the server and Traefik handles certificates with auto-renewal.
 
-**Cloudflare Tunnels** - No exposed ports needed. Cloudflare handles the tunnel connection; works behind NAT or restrictive firewalls.
+**Cloudflare Tunnels** - No exposed ports needed. Each instance runs its own containerized tunnel. Works behind NAT or restrictive firewalls.
 
 **Tailscale** - Private network access. All instances accessible from your devices over Tailscale without exposing to the public internet.
 
@@ -247,9 +247,10 @@ To recover on fresh hardware after complete system failure:
    ```
 5. Select "System Backup/Restore" and choose your system backup snapshot
 6. The system will:
-   - Download system metadata (instance list, configurations, settings)
+   - Restore Cloudflare account authentication
+   - Download system metadata (instance list, configurations)
    - Restore each instance from its LATEST available backup in pCloud
-   - Recreate all instances with their most recent data
+   - Recreate Cloudflare tunnels for instances that had them enabled
    - Restore Syncthing configs for consume folder sync
 
 System backup preserves metadata. Instance data comes from the most recent instance backups, not from the backup created at system backup time.
@@ -290,7 +291,7 @@ Choose during installation:
 
 **Traefik** - Reverse proxy with automatic HTTPS via Let's Encrypt. Requires domain DNS pointing to server.
 
-**Cloudflare Tunnel** - Automated tunnel with Cloudflare. No port forwarding needed.
+**Cloudflare Tunnel** - Per-instance containerized tunnel. No port forwarding needed. Requires Cloudflare account.
 
 **Direct** - Direct HTTP access on localhost (default port 8000). No HTTPS.
 
