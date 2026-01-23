@@ -6865,12 +6865,12 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         print("  • All Docker volumes")
         print("  • All instance directories (/home/docker/*)")
         print("  • All instance tracking data")
+        print("  • All paperless-* Cloudflare tunnels")
         print()
         
         # Optional cleanups
         print(colorize("Optional cleanups (you will be asked):", Colors.YELLOW))
         print("  • Traefik configuration")
-        print("  • Cloudflare tunnels (only paperless-* tunnels)")
         print("  • Tailscale connection")
         print("  • All pCloud backups")
         print()
@@ -6884,7 +6884,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
         
         # Ask about optional cleanups
         delete_traefik = confirm("Also delete Traefik configuration?", False)
-        delete_cloudflared = confirm("Also delete Cloudflare tunnels? (only paperless-* tunnels)", False)
         delete_tailscale = confirm("Also disconnect Tailscale?", False)
         delete_backups = False
         if self.rclone_configured:
@@ -6979,10 +6978,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 say(f"Cleaning up {len(instances)} instance(s)...")
                 for inst in instances:
                     try:
-                        # Delete Cloudflare tunnel if exists
-                        from lib.installer import cloudflared
-                        cloudflared.delete_tunnel(inst.name)
-                        
                         # Remove Tailscale serve
                         try:
                             port = inst.get_env_value("HTTP_PORT", "8000")
@@ -7007,6 +7002,30 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     except Exception as e:
                         warn(f"Error cleaning up {inst.name}: {e}")
             
+            # ─── STEP 5b: Delete ALL paperless-* Cloudflare tunnels ──────────
+            # Always clean up CF tunnels (not optional) - they're tied to instances
+            from lib.installer.cloudflared import list_tunnels, is_cloudflared_installed
+            if is_cloudflared_installed():
+                say("Cleaning up Cloudflare tunnels...")
+                try:
+                    tunnels = list_tunnels()
+                    deleted_count = 0
+                    for tunnel in tunnels:
+                        tunnel_name = tunnel.get('name', '')
+                        if tunnel_name.startswith('paperless-'):
+                            result = subprocess.run(
+                                ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
+                                capture_output=True, text=True, check=False
+                            )
+                            if result.returncode == 0:
+                                deleted_count += 1
+                            else:
+                                warn(f"Could not delete tunnel {tunnel_name}: {result.stderr.strip()}")
+                    if deleted_count > 0:
+                        ok(f"Deleted {deleted_count} Cloudflare tunnel(s)")
+                except Exception as e:
+                    warn(f"Error cleaning Cloudflare tunnels: {e}")
+            
             # ─── STEP 6: Remove ALL instance directories ─────────────────────
             say("Removing ALL instance directories...")
             docker_home = Path("/home/docker")
@@ -7028,27 +7047,6 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                 if traefik_dir.exists():
                     subprocess.run(["rm", "-rf", str(traefik_dir)], check=False, capture_output=True)
                 ok("Traefik removed")
-            
-            # Optional: Delete all Cloudflare tunnels and local configs
-            if delete_cloudflared:
-                say("Deleting all Cloudflare tunnels...")
-                sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
-                try:
-                    from lib.installer.cloudflared import list_tunnels
-                    tunnels = list_tunnels()
-                    for tunnel in tunnels:
-                        if tunnel.get('name', '').startswith('paperless-'):
-                            try:
-                                subprocess.run(
-                                    ["cloudflared", "tunnel", "delete", "-f", tunnel.get('name')],
-                                    check=False,
-                                    capture_output=True
-                                )
-                            except:
-                                pass
-                    ok("Cloudflare tunnels deleted")
-                except Exception as e:
-                    warn(f"Could not delete tunnels: {e}")
             
             # Optional: Disconnect Tailscale
             if delete_tailscale:

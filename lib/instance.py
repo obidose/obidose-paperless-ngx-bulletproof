@@ -678,13 +678,13 @@ class InstanceManager:
             # Clean up consume services (Syncthing, Samba, SFTP)
             self._cleanup_consume_services(instance)
             
-            # Delete Cloudflare tunnel from Cloudflare
+            # Delete Cloudflare tunnel from Cloudflare (always try if CLI installed)
             try:
-                from lib.installer.cloudflared import delete_tunnel, is_authenticated
-                if is_authenticated():
+                from lib.installer.cloudflared import delete_tunnel, is_cloudflared_installed
+                if is_cloudflared_installed():
                     delete_tunnel(name)
-            except Exception:
-                pass
+            except Exception as e:
+                warn(f"Could not delete Cloudflare tunnel for {name}: {e}")
             
             # Remove Tailscale serve if configured
             try:

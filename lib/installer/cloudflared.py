@@ -197,15 +197,27 @@ def delete_tunnel(instance_name: str, data_root: str | None = None) -> bool:
     tunnel_name = f"paperless-{instance_name}"
     
     # data_root should be the instance data directory (e.g., /home/docker/mike)
-    root = data_root or cfg.data_root
+    # If not provided, construct from instance name
+    if data_root:
+        root = data_root
+    else:
+        root = f"/home/docker/{instance_name}"
     instance_cf_dir = Path(root) / "cloudflared"
     
     try:
-        # Force delete tunnel (removes connections too)
-        subprocess.run(
+        # Force delete tunnel from Cloudflare (removes connections too)
+        result = subprocess.run(
             ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
-            check=False, capture_output=True
+            capture_output=True, text=True, check=False
         )
+        
+        # Check if deletion succeeded or tunnel didn't exist
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            # "does not exist" is fine - tunnel already gone
+            if "does not exist" not in stderr.lower():
+                warn(f"Could not delete tunnel {tunnel_name}: {stderr}")
+                return False
         
         # Remove local config directory
         if instance_cf_dir.exists():
