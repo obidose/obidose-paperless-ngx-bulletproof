@@ -139,21 +139,31 @@ def create_tunnel(instance_name: str, domain: str, data_root: str | None = None)
     say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
     try:
-        # Check/create tunnel
-        tunnel = get_tunnel_for_instance(instance_name)
-        if not tunnel:
-            result = subprocess.run(
-                ["cloudflared", "tunnel", "create", tunnel_name],
+        # Always delete any existing tunnel first to ensure fresh credentials
+        # This handles the case where tunnel exists on Cloudflare but local
+        # credentials are missing (e.g., after instance deletion/restore)
+        existing = get_tunnel_for_instance(instance_name)
+        if existing:
+            say(f"Removing stale tunnel {tunnel_name} to create fresh...")
+            subprocess.run(
+                ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
                 capture_output=True, text=True, check=False
             )
-            if result.returncode != 0 and "already exists" not in result.stderr:
-                err = result.stderr.strip() or f"cloudflared exited with code {result.returncode}"
-                warn(f"Failed to create tunnel: {err}")
-                return False, f"Tunnel creation failed: {err}"
-            tunnel = get_tunnel_for_instance(instance_name)
-            if not tunnel:
-                warn("Tunnel not found after creation")
-                return False, "Tunnel created but not found in list (API lag?)"
+        
+        # Create fresh tunnel
+        result = subprocess.run(
+            ["cloudflared", "tunnel", "create", tunnel_name],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0 and "already exists" not in result.stderr:
+            err = result.stderr.strip() or f"cloudflared exited with code {result.returncode}"
+            warn(f"Failed to create tunnel: {err}")
+            return False, f"Tunnel creation failed: {err}"
+        
+        tunnel = get_tunnel_for_instance(instance_name)
+        if not tunnel:
+            warn("Tunnel not found after creation")
+            return False, "Tunnel created but not found in list (API lag?)"
         
         tunnel_id = tunnel.get('id')
         

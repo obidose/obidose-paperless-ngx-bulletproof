@@ -85,12 +85,19 @@ def check_networking_dependencies() -> dict[str, bool]:
     }
 
 
-def setup_cloudflare_tunnel(instance_name: str, domain: str) -> tuple[bool, str]:
+def setup_cloudflare_tunnel(instance_name: str, domain: str, data_root: str | None = None) -> tuple[bool, str]:
     """
     Set up Cloudflare tunnel for an instance.
     
     Creates the tunnel, config file, and DNS record.
     Note: Always uses internal container port 8000.
+    
+    Args:
+        instance_name: Name of the instance (e.g., 'mike')
+        domain: Domain for the tunnel (e.g., 'docs.dromey.co.uk')
+        data_root: Instance data directory (e.g., '/home/docker/mike')
+                   If not provided, will construct from instance_name.
+    
     Returns (True, "") on success, (False, error_message) on failure.
     """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
@@ -110,8 +117,12 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str) -> tuple[bool, str]
     print()
     common.say("Setting up Cloudflare Tunnel...")
     
+    # Construct data_root if not provided
+    if not data_root:
+        data_root = f"/home/docker/{instance_name}"
+    
     # Create tunnel with config file (always uses internal port 8000)
-    success, error = cloudflared.create_tunnel(instance_name, domain)
+    success, error = cloudflared.create_tunnel(instance_name, domain, data_root)
     if not success:
         return False, error
     
@@ -1421,7 +1432,7 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel if enabled
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                success, cf_error = setup_cloudflare_tunnel(new_name, common.cfg.domain)
+                success, cf_error = setup_cloudflare_tunnel(new_name, common.cfg.domain, common.cfg.data_root)
                 if success:
                     files.write_compose_file()
                     ok("Cloudflare tunnel configured")
@@ -1960,7 +1971,7 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel first (creates config file before compose is written)
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                success, cf_error = setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain)
+                success, cf_error = setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain, common.cfg.data_root)
                 if not success:
                     warn(f"Could not set up Cloudflare tunnel: {cf_error}")
                     common.cfg.enable_cloudflared = "no"
@@ -4552,12 +4563,14 @@ class PaperlessManager:
                 
                 # Create tunnel with config file (always uses internal port 8000)
                 say("Creating Cloudflare tunnel...")
-                if create_tunnel(instance.name, domain):
+                success, cf_error = create_tunnel(instance.name, domain, str(instance.data_root))
+                if success:
                     ok(f"Cloudflare Tunnel enabled for https://{domain}")
                     # Regenerate compose file to add cloudflared container
                     self._offer_regenerate_compose(instance, skip_confirm=True)
                 else:
-                    warn("Tunnel creation failed - you may need to set it up manually")
+                    error(f"Tunnel creation failed: {cf_error}")
+                    warn("You may need to set it up manually")
         
         input("\nPress Enter to continue...")
     
@@ -5987,7 +6000,7 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                         say(f"  Setting up Cloudflare tunnel...")
                         domain = restored_env.get("DOMAIN", "")
                         if domain:
-                            success, cf_error = setup_cloudflare_tunnel(inst_name, domain)
+                            success, cf_error = setup_cloudflare_tunnel(inst_name, domain, str(data_root))
                             if success:
                                 ok("  Cloudflare tunnel configured")
                             else:
