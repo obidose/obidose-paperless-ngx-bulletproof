@@ -139,36 +139,61 @@ def create_tunnel(instance_name: str, domain: str, data_root: str | None = None)
     say(f"Setting up Cloudflare tunnel: {tunnel_name}")
     
     try:
-        # Check/create tunnel
-        tunnel = get_tunnel_for_instance(instance_name)
-        if not tunnel:
-            result = subprocess.run(
-                ["cloudflared", "tunnel", "create", tunnel_name],
+        # Create per-instance cloudflared directory first (needed for credentials)
+        instance_cf_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Always delete any existing tunnel first to ensure fresh credentials
+        # This handles the case where tunnel exists on Cloudflare but local
+        # credentials are missing (e.g., after instance deletion/restore)
+        existing = get_tunnel_for_instance(instance_name)
+        if existing:
+            say(f"Removing stale tunnel {tunnel_name} to create fresh...")
+            subprocess.run(
+                ["cloudflared", "tunnel", "delete", "-f", tunnel_name],
                 capture_output=True, text=True, check=False
             )
-            if result.returncode != 0 and "already exists" not in result.stderr:
-                err = result.stderr.strip() or f"cloudflared exited with code {result.returncode}"
-                warn(f"Failed to create tunnel: {err}")
-                return False, f"Tunnel creation failed: {err}"
-            tunnel = get_tunnel_for_instance(instance_name)
-            if not tunnel:
-                warn("Tunnel not found after creation")
-                return False, "Tunnel created but not found in list (API lag?)"
+        
+        # Create fresh tunnel with credentials stored directly in instance dir
+        # This avoids issues with ~/.cloudflared/ path resolution in subprocesses
+        # We'll get the tunnel ID after creation from the tunnel list
+        result = subprocess.run(
+            ["cloudflared", "tunnel", "create", tunnel_name],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0 and "already exists" not in result.stderr:
+            err = result.stderr.strip() or f"cloudflared exited with code {result.returncode}"
+            warn(f"Failed to create tunnel: {err}")
+            return False, f"Tunnel creation failed: {err}"
+        
+        tunnel = get_tunnel_for_instance(instance_name)
+        if not tunnel:
+            warn("Tunnel not found after creation")
+            return False, "Tunnel created but not found in list (API lag?)"
         
         tunnel_id = tunnel.get('id')
         
-        # Create per-instance cloudflared directory
-        instance_cf_dir.mkdir(parents=True, exist_ok=True)
-        
         # Copy credentials file from ~/.cloudflared/ to instance dir
-        # Make it readable (cloudflared container runs as non-root)
-        src_creds = Path.home() / ".cloudflared" / f"{tunnel_id}.json"
+        # cloudflared stores credentials in ~/.cloudflared/{uuid}.json by default
+        # We need to find it - check both possible locations
+        home_cf_dir = Path.home() / ".cloudflared"
+        src_creds = home_cf_dir / f"{tunnel_id}.json"
         dst_creds = instance_cf_dir / f"{tunnel_id}.json"
+        
+        # Also check if credentials might be at /root/.cloudflared when running as sudo
+        if not src_creds.exists():
+            alt_src = Path("/root/.cloudflared") / f"{tunnel_id}.json"
+            if alt_src.exists():
+                src_creds = alt_src
+        
         if src_creds.exists():
             shutil.copy2(src_creds, dst_creds)
             dst_creds.chmod(0o644)  # Make readable by container
         else:
+            # List what's actually in ~/.cloudflared for debugging
+            cf_files = list(home_cf_dir.glob("*.json")) if home_cf_dir.exists() else []
             warn(f"Credentials file not found: {src_creds}")
+            if cf_files:
+                warn(f"  Files in {home_cf_dir}: {[f.name for f in cf_files]}")
             return False, f"Credentials not found at {src_creds}"
         
         # Write config file with ingress rules
