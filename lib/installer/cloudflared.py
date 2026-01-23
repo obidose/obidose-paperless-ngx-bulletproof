@@ -113,12 +113,16 @@ def get_tunnel_for_instance(instance_name: str) -> dict | None:
     return None
 
 
-def create_tunnel(instance_name: str, domain: str, port: int = 8000, data_root: str | None = None) -> bool:
+def create_tunnel(instance_name: str, domain: str, data_root: str | None = None) -> bool:
     """
     Create a Cloudflare tunnel for an instance.
     
     Creates the tunnel, stores config and credentials in the instance's
     cloudflared/ directory for self-contained backup/restore.
+    
+    Note: The tunnel always connects to http://paperless:8000 (internal container port)
+    regardless of what host port the instance is mapped to.
+    
     Returns True on success, False on failure.
     """
     tunnel_name = f"paperless-{instance_name}"
@@ -164,12 +168,14 @@ def create_tunnel(instance_name: str, domain: str, port: int = 8000, data_root: 
         
         # Write config file with ingress rules
         # Note: paths are as seen inside the container (/etc/cloudflared)
+        # IMPORTANT: Use port 8000 (internal container port), NOT the host port
+        # The Paperless container always listens on 8000 internally
         config_content = f"""tunnel: {tunnel_id}
 credentials-file: /etc/cloudflared/{tunnel_id}.json
 
 ingress:
   - hostname: {domain}
-    service: http://paperless:{port}
+    service: http://paperless:8000
   - service: http_status:404
 """
         config_file = instance_cf_dir / "config.yml"

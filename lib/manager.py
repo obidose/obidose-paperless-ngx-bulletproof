@@ -85,11 +85,12 @@ def check_networking_dependencies() -> dict[str, bool]:
     }
 
 
-def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -> bool:
+def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
     """
     Set up Cloudflare tunnel for an instance.
     
     Creates the tunnel, config file, and DNS record.
+    Note: Always uses internal container port 8000.
     Returns True on success, False on failure.
     """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
@@ -109,8 +110,8 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str, port: int = 8000) -
     print()
     common.say("Setting up Cloudflare Tunnel...")
     
-    # Create tunnel with config file
-    if not cloudflared.create_tunnel(instance_name, domain, port):
+    # Create tunnel with config file (always uses internal port 8000)
+    if not cloudflared.create_tunnel(instance_name, domain):
         common.warn("Failed to create Cloudflare tunnel")
         return False
     
@@ -1048,60 +1049,56 @@ class PaperlessManager:
             if not snapshot:
                 say(f"Loading snapshots for '{backup_instance}'...")
                 
-                result = subprocess.run(
-                    ["rclone", "lsd", f"{remote_base}/{backup_instance}"],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
+                # Use BackupManager to fetch snapshots with proper mode info (full/incr/archive)
+                remote_path = f"{remote_base}/{backup_instance}"
+                snapshot_objs = BackupManager.fetch_snapshots_for_path(remote_path)
                 
-                if result.returncode != 0 or not result.stdout.strip():
+                if not snapshot_objs:
                     warn(f"No snapshots found for {backup_instance}")
                     input("\nPress Enter to continue...")
                     return
-                
-                snapshots = []
-                for line in result.stdout.splitlines():
-                    parts = line.strip().split()
-                    if parts:
-                        snap_name = parts[-1]
-                        # Skip the 'archive' folder - it contains monthly archives, not snapshots
-                        if snap_name != "archive":
-                            snapshots.append(snap_name)
-                
-                if not snapshots:
-                    warn(f"No snapshots found for {backup_instance}")
-                    input("\nPress Enter to continue...")
-                    return
-                
-                # Sort newest first (date-based names)
-                snapshots = sorted(snapshots, reverse=True)
                 
                 print()
                 print(draw_box_top(box_width))
                 print(box_line(f" {colorize('Available Snapshots', Colors.BOLD)} ({backup_instance})"))
                 print(box_line(""))
-                for idx, snap in enumerate(snapshots, 1):
-                    # Parse date from snapshot name (format: YYYY-MM-DD_HH-MM-SS)
-                    display = snap
-                    try:
-                        date_part = snap.split("_")[0]
-                        time_part = snap.split("_")[1].replace("-", ":")
-                        display = f"{date_part} {time_part}"
-                    except:
-                        pass
+                
+                # Header row
+                print(box_line(f"   {'#':<4} {'Snapshot':<26} {'Mode':<10} {'Created'}"))
+                print(box_line(f"   {'─' * 70}"))
+                
+                for idx, snap in enumerate(snapshot_objs, 1):
+                    # Format display name
+                    display_name = snap.name.replace("archive/", "📦 ") if snap.name.startswith("archive/") else snap.name
+                    
+                    # Parse date from snapshot name if created is empty
+                    created_display = snap.created[:16] if snap.created else ""
+                    if not created_display:
+                        try:
+                            clean_name = snap.name.replace("archive/", "")
+                            date_part = clean_name.split("_")[0]
+                            time_part = clean_name.split("_")[1].replace("-", ":")
+                            created_display = f"{date_part} {time_part}"
+                        except:
+                            created_display = ""
+                    
+                    # Color mode
+                    mode_color = Colors.GREEN if snap.mode == "full" else Colors.YELLOW if snap.mode == "incr" else Colors.MAGENTA
+                    mode_display = colorize(snap.mode.upper(), mode_color)
+                    
                     latest_marker = colorize(" (latest)", Colors.GREEN) if idx == 1 else ""
-                    print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD)} {display}{latest_marker}"))
+                    print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD):<4} {display_name:<26} {mode_display:<20} {created_display}{latest_marker}"))
+                
                 print(draw_box_bottom(box_width))
                 print()
                 
                 say("Tip: Enter 'L' for latest snapshot")
-                snap_choice = get_input(f"Select snapshot [1-{len(snapshots)}, L=latest]", "L")
+                snap_choice = get_input(f"Select snapshot [1-{len(snapshot_objs)}, L=latest]", "L")
                 
                 if snap_choice.lower() == "l":
-                    snapshot = snapshots[0]  # Latest is now first
-                elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshots):
-                    snapshot = snapshots[int(snap_choice) - 1]
+                    snapshot = snapshot_objs[0].name  # Latest is now first
+                elif snap_choice.isdigit() and 1 <= int(snap_choice) <= len(snapshot_objs):
+                    snapshot = snapshot_objs[int(snap_choice) - 1].name
                 else:
                     warn("Invalid selection")
                     return
@@ -1424,8 +1421,7 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel if enabled
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                port = int(common.cfg.http_port)
-                if setup_cloudflare_tunnel(new_name, common.cfg.domain, port):
+                if setup_cloudflare_tunnel(new_name, common.cfg.domain):
                     files.write_compose_file()
                     ok("Cloudflare tunnel configured")
             
@@ -1953,8 +1949,7 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel first (creates config file before compose is written)
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                port = int(common.cfg.http_port)
-                if not setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain, port):
+                if not setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain):
                     warn("Could not set up Cloudflare tunnel")
                     common.cfg.enable_cloudflared = "no"
             
@@ -2728,32 +2723,55 @@ class PaperlessManager:
         print_header(f"Restore/Revert: {instance.name}")
         
         backup_mgr = BackupManager(instance)
-        snapshots = backup_mgr.fetch_snapshots()
+        snapshot_objs = backup_mgr.fetch_snapshots_detailed()
         
-        if not snapshots:
+        if not snapshot_objs:
             warn("No backups found for this instance")
             input("\nPress Enter to continue...")
             return
         
-        print(f"{'#':<5} {'Name':<35} {'Mode':<10} {'Parent'}")
-        print("─" * 80)
+        box_line, box_width = create_box_helper(80)
         
-        for idx, (name, mode, parent) in enumerate(snapshots, 1):
-            parent_display = parent if mode == "incr" else "-"
-            mode_color = Colors.GREEN if mode == "full" else Colors.YELLOW if mode == "incr" else Colors.CYAN
-            latest_marker = " (latest)" if idx == 1 else ""
-            print(f"{idx:<5} {name:<35} {colorize(mode, mode_color):<20} {parent_display}{latest_marker}")
+        print(draw_box_top(box_width))
+        print(box_line(f" {colorize('Available Snapshots', Colors.BOLD)} ({instance.name})"))
+        print(box_line(""))
+        print(box_line(f"   {'#':<4} {'Snapshot':<26} {'Mode':<10} {'Created'}"))
+        print(box_line(f"   {'─' * 70}"))
+        
+        for idx, snap in enumerate(snapshot_objs, 1):
+            # Format display name
+            display_name = snap.name.replace("archive/", "📦 ") if snap.name.startswith("archive/") else snap.name
+            
+            # Parse date from snapshot name if created is empty
+            created_display = snap.created[:16] if snap.created else ""
+            if not created_display:
+                try:
+                    clean_name = snap.name.replace("archive/", "")
+                    date_part = clean_name.split("_")[0]
+                    time_part = clean_name.split("_")[1].replace("-", ":")
+                    created_display = f"{date_part} {time_part}"
+                except:
+                    created_display = ""
+            
+            # Color mode
+            mode_color = Colors.GREEN if snap.mode == "full" else Colors.YELLOW if snap.mode == "incr" else Colors.MAGENTA
+            mode_display = colorize(snap.mode.upper(), mode_color)
+            
+            latest_marker = colorize(" (latest)", Colors.GREEN) if idx == 1 else ""
+            print(box_line(f"   {colorize(str(idx) + ')', Colors.BOLD):<4} {display_name:<26} {mode_display:<20} {created_display}{latest_marker}"))
+        
+        print(draw_box_bottom(box_width))
         print()
         
         say("Tip: Enter 'L' for latest snapshot")
-        choice = get_input(f"Select snapshot [1-{len(snapshots)}, L=latest] or 'cancel'", "cancel")
+        choice = get_input(f"Select snapshot [1-{len(snapshot_objs)}, L=latest] or 'cancel'", "cancel")
         
         # Handle 'latest' shortcut
         if choice.lower() == 'l':
             choice = "1"  # Latest is now first in list
         
-        if choice.isdigit() and 1 <= int(choice) <= len(snapshots):
-            snapshot = snapshots[int(choice) - 1][0]
+        if choice.isdigit() and 1 <= int(choice) <= len(snapshot_objs):
+            snapshot = snapshot_objs[int(choice) - 1].name
             
             print()
             warn("This will stop the instance and restore data!")
@@ -4520,12 +4538,9 @@ class PaperlessManager:
                 self._update_instance_env(instance, "PAPERLESS_URL", f"https://{domain}")
                 self._update_instance_env(instance, "PAPERLESS_CSRF_TRUSTED_ORIGINS", f"https://{domain},http://localhost")
                 
-                # Get the instance port
-                port = int(instance.get_env_value("HTTP_PORT", "8000"))
-                
-                # Create tunnel with config file
+                # Create tunnel with config file (always uses internal port 8000)
                 say("Creating Cloudflare tunnel...")
-                if create_tunnel(instance.name, domain, port):
+                if create_tunnel(instance.name, domain):
                     ok(f"Cloudflare Tunnel enabled for https://{domain}")
                     # Regenerate compose file to add cloudflared container
                     self._offer_regenerate_compose(instance, skip_confirm=True)
@@ -5965,9 +5980,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                             # No config - create new tunnel
                             say(f"  Setting up Cloudflare tunnel...")
                             domain = restored_env.get("DOMAIN", "")
-                            http_port = int(restored_env.get("HTTP_PORT", "8000"))
                             if domain:
-                                if setup_cloudflare_tunnel(inst_name, domain, http_port):
+                                if setup_cloudflare_tunnel(inst_name, domain):
                                     ok("  Cloudflare tunnel configured")
                     
                     # Register the instance in the registry
