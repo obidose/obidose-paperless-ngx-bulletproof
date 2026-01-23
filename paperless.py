@@ -402,10 +402,8 @@ def _initial_network_setup() -> None:
             if tailscale.install():
                 common.ok("Tailscale installed")
                 print()
-                print("To connect your device to Tailscale:")
-                print("  1. Run: sudo tailscale up")
-                print("  2. Follow the authentication link")
-                print()
+                if _confirm("Connect Tailscale now?", True):
+                    tailscale.connect()
             else:
                 common.warn("Tailscale installation failed")
     else:

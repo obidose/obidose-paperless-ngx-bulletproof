@@ -572,7 +572,7 @@ def add_device_to_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = get_syncthing_api_base(config_dir)
+    api_base = get_syncthing_api_base(config_dir, config.gui_port)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -639,7 +639,7 @@ def get_pending_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = get_syncthing_api_base(config_dir)
+    api_base = get_syncthing_api_base(config_dir, config.gui_port)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -681,7 +681,7 @@ def list_syncthing_devices(instance_name: str, config: SyncthingConfig,
     if not api_key:
         return []
     
-    api_base = get_syncthing_api_base(config_dir)
+    api_base = get_syncthing_api_base(config_dir, config.gui_port)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
@@ -741,7 +741,7 @@ def remove_device_from_syncthing(instance_name: str, config: SyncthingConfig,
         error("Could not get Syncthing API key")
         return False
     
-    api_base = get_syncthing_api_base(config_dir)
+    api_base = get_syncthing_api_base(config_dir, config.gui_port)
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
