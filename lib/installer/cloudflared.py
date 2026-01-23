@@ -2,8 +2,12 @@
 Cloudflare Tunnel management - secure tunnels without exposing ports.
 
 Uses containerized cloudflared for running tunnels.
-Config and credentials stored per-instance in {data_root}/{instance}/cloudflared/
+Config and credentials stored per-instance in {data_root}/cloudflared/
 The cloudflared binary is only needed for initial setup/management.
+
+Note: Tunnel credentials are ephemeral - they're tied to specific tunnel IDs
+on Cloudflare's servers. On restore, tunnels should be recreated fresh
+rather than attempting to restore old credentials.
 """
 import subprocess
 import json
@@ -113,7 +117,7 @@ def get_tunnel_for_instance(instance_name: str) -> dict | None:
     return None
 
 
-def create_tunnel(instance_name: str, domain: str, data_root: str | None = None) -> bool:
+def create_tunnel(instance_name: str, domain: str, data_root: str | None = None) -> tuple[bool, str]:
     """
     Create a Cloudflare tunnel for an instance.
     
@@ -123,7 +127,7 @@ def create_tunnel(instance_name: str, domain: str, data_root: str | None = None)
     Note: The tunnel always connects to http://paperless:8000 (internal container port)
     regardless of what host port the instance is mapped to.
     
-    Returns True on success, False on failure.
+    Returns (True, "") on success, (False, error_message) on failure.
     """
     tunnel_name = f"paperless-{instance_name}"
     
@@ -143,12 +147,13 @@ def create_tunnel(instance_name: str, domain: str, data_root: str | None = None)
                 capture_output=True, text=True, check=False
             )
             if result.returncode != 0 and "already exists" not in result.stderr:
-                warn(f"Failed to create tunnel: {result.stderr}")
-                return False
+                err = result.stderr.strip() or f"cloudflared exited with code {result.returncode}"
+                warn(f"Failed to create tunnel: {err}")
+                return False, f"Tunnel creation failed: {err}"
             tunnel = get_tunnel_for_instance(instance_name)
             if not tunnel:
                 warn("Tunnel not found after creation")
-                return False
+                return False, "Tunnel created but not found in list (API lag?)"
         
         tunnel_id = tunnel.get('id')
         
@@ -164,7 +169,7 @@ def create_tunnel(instance_name: str, domain: str, data_root: str | None = None)
             dst_creds.chmod(0o644)  # Make readable by container
         else:
             warn(f"Credentials file not found: {src_creds}")
-            return False
+            return False, f"Credentials not found at {src_creds}"
         
         # Write config file with ingress rules
         # Note: paths are as seen inside the container (/etc/cloudflared)
@@ -191,11 +196,11 @@ ingress:
             warn(f"DNS routing may need manual setup: {result.stderr.strip()}")
         
         ok(f"Cloudflare tunnel ready for {domain}")
-        return True
+        return True, ""
         
     except Exception as e:
         warn(f"Failed to set up tunnel: {e}")
-        return False
+        return False, str(e)
 
 
 def delete_tunnel(instance_name: str, data_root: str | None = None) -> bool:

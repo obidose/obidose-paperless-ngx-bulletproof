@@ -85,13 +85,13 @@ def check_networking_dependencies() -> dict[str, bool]:
     }
 
 
-def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
+def setup_cloudflare_tunnel(instance_name: str, domain: str) -> tuple[bool, str]:
     """
     Set up Cloudflare tunnel for an instance.
     
     Creates the tunnel, config file, and DNS record.
     Note: Always uses internal container port 8000.
-    Returns True on success, False on failure.
+    Returns (True, "") on success, (False, error_message) on failure.
     """
     sys.path.insert(0, "/usr/local/lib/paperless-bulletproof")
     from lib.installer import cloudflared, common
@@ -101,23 +101,23 @@ def setup_cloudflare_tunnel(instance_name: str, domain: str) -> bool:
         common.say("Installing cloudflared CLI...")
         if not cloudflared.install_cloudflared():
             common.warn("Failed to install cloudflared CLI")
-            return False
+            return False, "Could not install cloudflared CLI"
     
     if not cloudflared.is_authenticated():
         common.warn("Cloudflared not authenticated")
-        return False
+        return False, "Cloudflared not authenticated (run 'cloudflared tunnel login')"
     
     print()
     common.say("Setting up Cloudflare Tunnel...")
     
     # Create tunnel with config file (always uses internal port 8000)
-    if not cloudflared.create_tunnel(instance_name, domain):
-        common.warn("Failed to create Cloudflare tunnel")
-        return False
+    success, error = cloudflared.create_tunnel(instance_name, domain)
+    if not success:
+        return False, error
     
     common.ok(f"Cloudflare tunnel configured for {domain}")
     common.say("Tunnel will run as container with the instance")
-    return True
+    return True, ""
 
 
 def finalize_instance_setup(instance_manager: 'InstanceManager', instance_name: str, 
@@ -1421,9 +1421,12 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel if enabled
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                if setup_cloudflare_tunnel(new_name, common.cfg.domain):
+                success, cf_error = setup_cloudflare_tunnel(new_name, common.cfg.domain)
+                if success:
                     files.write_compose_file()
                     ok("Cloudflare tunnel configured")
+                else:
+                    warn(f"Cloudflare tunnel failed: {cf_error}")
             
             # Register instance
             self.instance_manager.add_instance(
@@ -1957,8 +1960,9 @@ class PaperlessManager:
             
             # Set up Cloudflare tunnel first (creates config file before compose is written)
             if common.cfg.enable_cloudflared == "yes" and net_status["cloudflared_authenticated"]:
-                if not setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain):
-                    warn("Could not set up Cloudflare tunnel")
+                success, cf_error = setup_cloudflare_tunnel(common.cfg.instance_name, common.cfg.domain)
+                if not success:
+                    warn(f"Could not set up Cloudflare tunnel: {cf_error}")
                     common.cfg.enable_cloudflared = "no"
             
             # Create directories
@@ -5976,21 +5980,20 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
                     files.install_cron_backup()
                     
                     # Set up Cloudflare tunnel if enabled
-                    # Check if cloudflared/ dir exists in instance data (restored from backup)
+                    # Tunnel config/credentials are ephemeral - always create fresh
+                    # (old tunnel IDs don't exist after nuke, credentials are useless)
                     enable_cf = restored_env.get("ENABLE_CLOUDFLARED", "no")
-                    cf_config_dir = Path(data_root) / inst_name / "cloudflared"
                     if enable_cf == "yes" and cf_info.get("enabled"):
-                        if cf_config_dir.exists() and (cf_config_dir / "config.yml").exists():
-                            # Config exists from backup - tunnel should work
-                            say(f"  Using restored Cloudflare tunnel config...")
-                            ok("  Cloudflare tunnel configured from backup")
+                        say(f"  Setting up Cloudflare tunnel...")
+                        domain = restored_env.get("DOMAIN", "")
+                        if domain:
+                            success, cf_error = setup_cloudflare_tunnel(inst_name, domain)
+                            if success:
+                                ok("  Cloudflare tunnel configured")
+                            else:
+                                warn(f"  Cloudflare tunnel failed: {cf_error}")
                         else:
-                            # No config - create new tunnel
-                            say(f"  Setting up Cloudflare tunnel...")
-                            domain = restored_env.get("DOMAIN", "")
-                            if domain:
-                                if setup_cloudflare_tunnel(inst_name, domain):
-                                    ok("  Cloudflare tunnel configured")
+                            warn("  No domain in .env - skipping Cloudflare tunnel")
                     
                     # Register the instance in the registry
                     self.instance_manager.add_instance(inst_name, stack_dir, data_root)
