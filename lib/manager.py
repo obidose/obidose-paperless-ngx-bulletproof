@@ -1064,7 +1064,15 @@ class PaperlessManager:
                 for line in result.stdout.splitlines():
                     parts = line.strip().split()
                     if parts:
-                        snapshots.append(parts[-1])
+                        snap_name = parts[-1]
+                        # Skip the 'archive' folder - it contains monthly archives, not snapshots
+                        if snap_name != "archive":
+                            snapshots.append(snap_name)
+                
+                if not snapshots:
+                    warn(f"No snapshots found for {backup_instance}")
+                    input("\nPress Enter to continue...")
+                    return
                 
                 # Sort newest first (date-based names)
                 snapshots = sorted(snapshots, reverse=True)
