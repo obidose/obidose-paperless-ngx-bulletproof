@@ -5275,7 +5275,8 @@ consume_config: {network_info.get('consume', {}).get('enabled', False)}
             if network_info["traefik"]["enabled"]:
                 print(box_line(" ✓ Traefik config + SSL certificates"))
             if network_info["cloudflare"]["enabled"]:
-                print(box_line(f" ✓ Cloudflare tunnel configs ({len(network_info['cloudflare']['tunnels'])})"))
+                tunnel_count = network_info['cloudflare'].get('tunnel_count', 0)
+                print(box_line(f" ✓ Cloudflare tunnel configs ({tunnel_count})"))
             if network_info.get("consume", {}).get("enabled"):
                 print(box_line(" ✓ Global consume folder settings"))
             if network_info["tailscale"]["enabled"]:
