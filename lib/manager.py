@@ -1300,9 +1300,36 @@ class PaperlessManager:
                 common.cfg.domain = get_domain_input("Domain", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
-                    warn("Cloudflare Tunnel not configured")
-                    if not confirm("Continue anyway? (tunnel won't be created)", False):
-                        return
+                    from lib.installer.cloudflared import is_cloudflared_installed, install_cloudflared, authenticate
+                    
+                    # Check if cloudflared tools are installed
+                    if not is_cloudflared_installed():
+                        say("Cloudflared CLI not found - needed for tunnel management")
+                        if confirm("Install cloudflared CLI now?", True):
+                            if not install_cloudflared():
+                                error("Failed to install cloudflared CLI")
+                                if not confirm("Continue without Cloudflare Tunnel?", False):
+                                    return
+                                # Switch to direct access
+                                common.cfg.enable_cloudflared = "no"
+                        else:
+                            if not confirm("Continue without Cloudflare Tunnel?", False):
+                                return
+                            common.cfg.enable_cloudflared = "no"
+                    
+                    # Check authentication if cloudflared is installed
+                    if common.cfg.enable_cloudflared == "yes" and is_cloudflared_installed():
+                        say("Cloudflared not authenticated with Cloudflare account")
+                        if confirm("Authenticate now?", True):
+                            if not authenticate():
+                                error("Authentication failed")
+                                if not confirm("Continue without Cloudflare Tunnel?", False):
+                                    return
+                                common.cfg.enable_cloudflared = "no"
+                        else:
+                            if not confirm("Continue without Cloudflare Tunnel?", False):
+                                return
+                            common.cfg.enable_cloudflared = "no"
             else:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
