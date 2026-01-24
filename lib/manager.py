@@ -4532,14 +4532,35 @@ class PaperlessManager:
                 ok("Cloudflare Tunnel disabled")
         else:
             # Enable Cloudflare
-            from lib.installer.cloudflared import is_cloudflared_installed, is_authenticated, create_tunnel
+            from lib.installer.cloudflared import is_cloudflared_installed, is_authenticated, create_tunnel, install_cloudflared, authenticate
+            
+            # Check if cloudflared tools are installed, offer to install if not
             if not is_cloudflared_installed():
-                error("Cloudflared is not installed!")
-                say("Install from main menu: Manage Cloudflare Tunnel")
-            elif not is_authenticated():
-                error("Cloudflared is not authenticated!")
-                say("Authenticate from main menu: Manage Cloudflare Tunnel")
-            elif confirm("Enable Cloudflare Tunnel for this instance?", True):
+                say("Cloudflared CLI not found - needed for tunnel management")
+                if confirm("Install cloudflared CLI now?", True):
+                    if not install_cloudflared():
+                        error("Failed to install cloudflared CLI")
+                        input("\nPress Enter to continue...")
+                        return
+                else:
+                    say("Cannot proceed without cloudflared CLI")
+                    input("\nPress Enter to continue...")
+                    return
+            
+            # Check authentication
+            if not is_authenticated():
+                say("Cloudflared not authenticated with Cloudflare account")
+                if confirm("Authenticate now?", True):
+                    if not authenticate():
+                        error("Authentication failed")
+                        input("\nPress Enter to continue...")
+                        return
+                else:
+                    say("Cannot proceed without authentication")
+                    input("\nPress Enter to continue...")
+                    return
+            
+            if confirm("Enable Cloudflare Tunnel for this instance?", True):
                 domain = instance.get_env_value("DOMAIN", "localhost")
                 if domain == "localhost":
                     domain = get_domain_input("Enter domain for Cloudflare Tunnel", "paperless.example.com")
