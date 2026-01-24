@@ -1300,7 +1300,7 @@ class PaperlessManager:
                 common.cfg.domain = get_domain_input("Domain", default_domain)
                 
                 if not net_status["cloudflared_authenticated"]:
-                    from lib.installer.cloudflared import is_cloudflared_installed, install_cloudflared, authenticate
+                    from lib.installer.cloudflared import is_cloudflared_installed, install_cloudflared, authenticate, is_authenticated
                     
                     # Check if cloudflared tools are installed
                     if not is_cloudflared_installed():
@@ -1319,17 +1319,25 @@ class PaperlessManager:
                     
                     # Check authentication if cloudflared is installed
                     if common.cfg.enable_cloudflared == "yes" and is_cloudflared_installed():
-                        say("Cloudflared not authenticated with Cloudflare account")
-                        if confirm("Authenticate now?", True):
-                            if not authenticate():
-                                error("Authentication failed")
+                        if not is_authenticated():
+                            say("Cloudflared not authenticated with Cloudflare account")
+                            if confirm("Authenticate now?", True):
+                                if authenticate():
+                                    ok("Cloudflare authentication successful")
+                                    # Update net_status so tunnel creation works later
+                                    net_status["cloudflared_authenticated"] = True
+                                else:
+                                    error("Authentication failed")
+                                    if not confirm("Continue without Cloudflare Tunnel?", False):
+                                        return
+                                    common.cfg.enable_cloudflared = "no"
+                            else:
                                 if not confirm("Continue without Cloudflare Tunnel?", False):
                                     return
                                 common.cfg.enable_cloudflared = "no"
                         else:
-                            if not confirm("Continue without Cloudflare Tunnel?", False):
-                                return
-                            common.cfg.enable_cloudflared = "no"
+                            # Already authenticated, update net_status
+                            net_status["cloudflared_authenticated"] = True
             else:
                 common.cfg.enable_traefik = "no"
                 common.cfg.enable_cloudflared = "no"
@@ -1405,8 +1413,6 @@ class PaperlessManager:
             # Check dependencies
             if common.cfg.enable_traefik == "yes" and not net_status["traefik_running"]:
                 warn("Traefik not running - HTTPS won't work until configured")
-            if common.cfg.enable_cloudflared == "yes" and not net_status["cloudflared_authenticated"]:
-                warn("Cloudflare not configured - tunnel won't be created")
             
             # Create directories
             say("Creating directories...")
